@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(npm install:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(py:*)"
+    ]
+  }
+}
