@@ -5,3 +5,4 @@ python-dotenv
 supabase
 playwright
 shapely
+python-jose[cryptography]

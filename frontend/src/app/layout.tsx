@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Orbitron, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import AuthProvider from "@/components/AuthProvider";
+import Navbar from "@/components/Navbar";
 
 const orbitron = Orbitron({
   subsets: ["latin"],
@@ -26,7 +28,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${orbitron.variable} ${jetbrainsMono.variable}`}>{children}</body>
+      <body className={`${orbitron.variable} ${jetbrainsMono.variable}`}>
+        <AuthProvider>
+          <Navbar />
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }
