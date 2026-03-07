@@ -9,8 +9,10 @@ from pathlib import Path
 from difflib import SequenceMatcher
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+
+from routers.auth import get_current_user
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel
 from shapely.geometry import Point, shape
@@ -1448,7 +1450,7 @@ async def _fetch_lease_details(uprn: str | None) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.post("/search")
-async def search_property(body: SearchRequest):
+async def search_property(body: SearchRequest, _user: dict = Depends(get_current_user)):
     try:
         postcode = extract_postcode(body.address)
         if not postcode:
@@ -1753,7 +1755,7 @@ def _render_epc_pdf(print_url: str) -> bytes:
 
 
 @router.get("/epc-pdf")
-async def download_epc_pdf(cert_url: str = Query(...)):
+async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get_current_user)):
     if not cert_url.startswith(_EPC_CERT_BASE):
         raise HTTPException(status_code=400, detail="Invalid EPC certificate URL.")
     try:
@@ -1770,7 +1772,7 @@ async def download_epc_pdf(cert_url: str = Query(...)):
 
 
 @router.get("/autocomplete")
-async def autocomplete_addresses(postcode: str):
+async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_current_user)):
     """Return address list for a postcode from the EPC API. Powers the search dropdown."""
     pc = extract_postcode(postcode)
     if not pc:

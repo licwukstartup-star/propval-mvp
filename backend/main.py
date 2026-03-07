@@ -17,8 +17,6 @@ from routers.property import _load_green_belt_polygons
 # Load .env from project root (one level above /backend)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
-print(f"DEBUG: EPC_EMAIL={os.getenv('EPC_EMAIL')}, KEY_LEN={len(os.getenv('EPC_API_KEY',''))}")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

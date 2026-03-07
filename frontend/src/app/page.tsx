@@ -7,6 +7,7 @@ import { HpiBarChart } from "./components/HpiBarChart";
 import { HpiIndexChart } from "./components/HpiIndexChart";
 import ComparableSearch, { type ComparableCandidate, CompCard } from "@/components/ComparableSearch";
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
+import { useAuth } from "@/components/AuthProvider";
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -425,6 +426,7 @@ function PropCard({ id, isCustomising, cardSizes, onSizeChange, children }: Prop
 const FULL_POSTCODE_RE = /[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}/i;
 
 export default function Home() {
+  const { session } = useAuth();
   const [address, setAddress] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PropertyResult | null>(null);
@@ -548,7 +550,9 @@ export default function Home() {
     autocompleteTimer.current = setTimeout(async () => {
       setSuggestionsLoading(true);
       try {
-        const res = await fetch(`${API_BASE}/api/property/autocomplete?postcode=${encodeURIComponent(pcMatch[0])}`);
+        const res = await fetch(`${API_BASE}/api/property/autocomplete?postcode=${encodeURIComponent(pcMatch[0])}`, {
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        });
         if (res.ok) {
           const data = await res.json();
           const list: { address: string; uprn: string }[] = data.addresses ?? [];
@@ -590,7 +594,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API_BASE}/api/property/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
         body: JSON.stringify({ address }),
         signal: controller.signal,
       });
@@ -622,11 +626,22 @@ export default function Home() {
     }
   }
 
-  function downloadEpc(certUrl: string) {
-    window.open(
-      `${API_BASE}/api/property/epc-pdf?cert_url=${encodeURIComponent(certUrl)}`,
-      "_blank"
-    );
+  async function downloadEpc(certUrl: string) {
+    try {
+      const res = await fetch(`${API_BASE}/api/property/epc-pdf?cert_url=${encodeURIComponent(certUrl)}`, {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `epc-${certUrl.split("/").pop()}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Failed to download EPC PDF.");
+    }
   }
 
   const epcFields: [string, string | number | null][] = result

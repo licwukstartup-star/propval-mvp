@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useAuth } from "@/components/AuthProvider";
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -173,6 +174,7 @@ export default function ComparableSearch({
   uprn, postcode, floorArea, rooms, ageBand, epcRating,
   propertyType, builtForm, tenure, buildingName, paonNumber, saon, streetName,
 }: Props) {
+  const { session } = useAuth();
   const isBuilding = mode === "building";
   const [targetCount,    setTargetCount]    = useState(10);
   const [loading,             setLoading]             = useState(false);
@@ -232,7 +234,7 @@ export default function ComparableSearch({
     try {
       const r = await fetch(`${API_BASE}/api/comparables/search`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
         body:    JSON.stringify(body),
       });
       if (!r.ok) {

@@ -32,7 +32,9 @@ from dateutil.relativedelta import relativedelta
 from difflib import SequenceMatcher
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from routers.auth import get_current_user
 from pydantic import BaseModel, model_validator
 
 router = APIRouter(prefix="/api/comparables", tags=["comparables"])
@@ -1318,7 +1320,7 @@ async def _batch_lease_remaining(uprns: list[str], as_of: date) -> dict[str, str
 # ---------------------------------------------------------------------------
 
 @router.post("/search", response_model=ComparableSearchResponse)
-async def search_comparables(req: ComparableSearchRequest) -> ComparableSearchResponse:
+async def search_comparables(req: ComparableSearchRequest, _user: dict = Depends(get_current_user)) -> ComparableSearchResponse:
     t0 = time.monotonic()
 
     epc_email = os.getenv("EPC_EMAIL", "")
