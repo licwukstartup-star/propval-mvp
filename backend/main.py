@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import admin as admin_router
+from routers import cases as cases_router
 from routers import comparables as comparables_router
 from routers import property as property_router
 from routers.property import _load_green_belt_polygons
@@ -46,6 +47,7 @@ app.add_middleware(
 
 app.include_router(property_router.router)
 app.include_router(comparables_router.router)
+app.include_router(cases_router.router)
 app.include_router(admin_router.router)
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { EpcBadge } from "./components/EpcBadge";
 import { HpiBarChart } from "./components/HpiBarChart";
@@ -479,6 +479,98 @@ export default function Home() {
   const [mapEducationCache, setMapEducationCache] = useState<GeoJSON.FeatureCollection | null>(null);
   const [mapCrimeCache, setMapCrimeCache] = useState<CrimeCluster[] | null>(null);
 
+  // ── Saved cases state ──────────────────────────────────────────────────
+  interface SavedCaseSummary { id: string; title: string; address: string; postcode: string | null; uprn: string | null; created_at: string; updated_at: string; }
+  const [showCasesPanel, setShowCasesPanel] = useState(false);
+  const [casesList, setCasesList] = useState<SavedCaseSummary[]>([]);
+  const [casesLoading, setCasesLoading] = useState(false);
+  const [currentCaseId, setCurrentCaseId] = useState<string | null>(null);
+  const [savingCase, setSavingCase] = useState(false);
+  const [saveTitle, setSaveTitle] = useState("");
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+
+  const fetchCases = useCallback(async () => {
+    if (!session?.access_token) return;
+    setCasesLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/cases`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCasesList(data.cases ?? []);
+      }
+    } catch { /* ignore */ }
+    finally { setCasesLoading(false); }
+  }, [session?.access_token]);
+
+  async function saveCase() {
+    if (!result || !saveTitle.trim() || !session?.access_token) return;
+    setSavingCase(true);
+    try {
+      const body = {
+        title: saveTitle.trim(),
+        address: result.address,
+        postcode: result.postcode,
+        uprn: result.uprn,
+        property_data: result,
+        comparables: adoptedComparables,
+        valuation_date: valuationDate || null,
+        hpi_correlation: hpiCorrelation,
+        size_elasticity: sizeElasticity,
+      };
+      const method = currentCaseId ? "PATCH" : "POST";
+      const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(currentCaseId ? { title: body.title, comparables: body.comparables, valuation_date: body.valuation_date, hpi_correlation: body.hpi_correlation, size_elasticity: body.size_elasticity } : body),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      const saved = await res.json();
+      setCurrentCaseId(saved.id);
+      setShowSaveDialog(false);
+    } catch { alert("Failed to save case."); }
+    finally { setSavingCase(false); }
+  }
+
+  async function loadCase(c: SavedCaseSummary) {
+    if (!session?.access_token) return;
+    setCasesLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/cases/${c.id}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!res.ok) throw new Error("Load failed");
+      const data = await res.json();
+      setResult(data.property_data as PropertyResult);
+      setAdoptedComparables(data.comparables ?? []);
+      setValuationDate(data.valuation_date ?? "");
+      setHpiCorrelation(data.hpi_correlation ?? 100);
+      setSizeElasticity(data.size_elasticity ?? 0);
+      setCurrentCaseId(data.id);
+      setSaveTitle(data.title);
+      setAddress(data.address);
+      setActiveTab("property");
+      setShowCasesPanel(false);
+      setError(null);
+    } catch { alert("Failed to load case."); }
+    finally { setCasesLoading(false); }
+  }
+
+  async function deleteCase(id: string) {
+    if (!session?.access_token) return;
+    if (!confirm("Delete this saved case?")) return;
+    try {
+      await fetch(`${API_BASE}/api/cases/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      setCasesList(prev => prev.filter(c => c.id !== id));
+      if (currentCaseId === id) setCurrentCaseId(null);
+    } catch { alert("Failed to delete case."); }
+  }
+
   useEffect(() => {
     const onBefore = () => { document.title = printTitleRef.current; };
     const onAfter  = () => { document.title = "PropVal"; };
@@ -613,6 +705,8 @@ export default function Home() {
       setBuildingSearchAddressKeys([]);
       setBuildingSearchDone(false);
       setAdoptedComparables([]);
+      setCurrentCaseId(null);
+      setSaveTitle("");
       setValuationDate("");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -797,7 +891,15 @@ export default function Home() {
       {!result ? (
         /* ── Initial state: no result yet ─ centred search ────────────────── */
         <div className="w-full max-w-xl py-16">
-          <h1 className="text-3xl font-bold font-orbitron text-[#00F0FF] mb-1 tracking-wider">PropVal</h1>
+          <div className="flex items-center justify-between mb-1">
+            <h1 className="text-3xl font-bold font-orbitron text-[#00F0FF] tracking-wider">PropVal</h1>
+            <button
+              onClick={() => { setShowCasesPanel(true); fetchCases(); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
+            >
+              My Cases
+            </button>
+          </div>
           <p className="text-sm text-[#94A3B8] mb-8">
             Enter a UK address to start a valuation
           </p>
@@ -916,16 +1018,16 @@ export default function Home() {
                 </button>
               );
             })}
-            {activeTab === "property" && (
-              <div className="ml-auto pb-1 flex items-center gap-2">
-                {isCustomising && (
-                  <button
-                    onClick={resetCardSizes}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
-                  >
-                    ↺ Reset
-                  </button>
-                )}
+            <div className="ml-auto pb-1 flex items-center gap-2">
+              {activeTab === "property" && isCustomising && (
+                <button
+                  onClick={resetCardSizes}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
+                >
+                  ↺ Reset
+                </button>
+              )}
+              {activeTab === "property" && (
                 <button
                   onClick={() => setIsCustomising(v => !v)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
@@ -936,8 +1038,23 @@ export default function Home() {
                 >
                   {isCustomising ? "✓ Done" : "⊹ Customise"}
                 </button>
-              </div>
-            )}
+              )}
+              <button
+                onClick={() => {
+                  setSaveTitle(currentCaseId ? saveTitle : (result?.address ?? ""));
+                  setShowSaveDialog(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#39FF14]/40 text-[#39FF14] hover:bg-[#39FF14]/10 transition-colors"
+              >
+                {currentCaseId ? "Update Case" : "Save Case"}
+              </button>
+              <button
+                onClick={() => { setShowCasesPanel(true); fetchCases(); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
+              >
+                My Cases
+              </button>
+            </div>
           </div>
 
           {/* ── Tab 1: Property Information ─────────────────────────────────── */}
@@ -2980,6 +3097,94 @@ export default function Home() {
         </div>
       )
       }
+
+      {/* ── Save Case dialog ────────────────────────────────────────────────── */}
+      {showSaveDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => setShowSaveDialog(false)}>
+          <div className="bg-[#111827] border border-[#334155] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">
+              {currentCaseId ? "Update Case" : "Save Case"}
+            </h2>
+            <label className="block text-xs text-[#94A3B8] mb-1">Case title</label>
+            <input
+              type="text"
+              value={saveTitle}
+              onChange={e => setSaveTitle(e.target.value)}
+              placeholder="e.g. 10 Cutter Lane - Flat 404"
+              className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-[#00F0FF]"
+              autoFocus
+              onKeyDown={e => { if (e.key === "Enter" && saveTitle.trim()) saveCase(); }}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowSaveDialog(false)}
+                className="px-4 py-2 text-sm rounded-lg border border-[#334155] text-[#94A3B8] hover:bg-[#1E293B] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveCase}
+                disabled={!saveTitle.trim() || savingCase}
+                className="px-4 py-2 text-sm font-bold rounded-lg bg-[#39FF14] text-[#0A0E1A] hover:bg-[#32E612] disabled:opacity-50 transition-colors"
+              >
+                {savingCase ? "Saving…" : currentCaseId ? "Update" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── My Cases slide-out panel ────────────────────────────────────────── */}
+      {showCasesPanel && (
+        <div className="fixed inset-0 z-[60] flex justify-end" onClick={() => setShowCasesPanel(false)}>
+          <div className="bg-[#0A0E1A] border-l border-[#334155] w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-[#334155]">
+              <h2 className="text-lg font-orbitron font-bold text-[#00F0FF]">My Cases</h2>
+              <button onClick={() => setShowCasesPanel(false)} className="text-[#94A3B8] hover:text-[#E2E8F0] text-lg">✕</button>
+            </div>
+            <div className="p-5">
+              {casesLoading && (
+                <div className="flex justify-center py-8">
+                  <div className="h-6 w-6 animate-spin rounded-full border-3 border-[#00F0FF] border-t-transparent" />
+                </div>
+              )}
+              {!casesLoading && casesList.length === 0 && (
+                <p className="text-sm text-[#94A3B8] text-center py-8">No saved cases yet.</p>
+              )}
+              {!casesLoading && casesList.map(c => (
+                <div
+                  key={c.id}
+                  className={`rounded-lg border p-4 mb-3 cursor-pointer transition-colors ${
+                    currentCaseId === c.id
+                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/5"
+                      : "border-[#334155] bg-[#111827] hover:border-[#475569] hover:bg-[#1E293B]"
+                  }`}
+                  onClick={() => loadCase(c)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-semibold text-[#E2E8F0] truncate">{c.title}</h3>
+                      <p className="text-xs text-[#94A3B8] truncate mt-0.5">{c.address}</p>
+                      <p className="text-[10px] text-[#475569] mt-1">
+                        {new Date(c.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                        {c.postcode && <span className="ml-2">{c.postcode}</span>}
+                      </p>
+                    </div>
+                    <button
+                      onClick={e => { e.stopPropagation(); deleteCase(c.id); }}
+                      className="text-[#94A3B8] hover:text-[#FF3131] text-xs px-1.5 py-0.5 rounded transition-colors shrink-0"
+                      title="Delete case"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   );
 }

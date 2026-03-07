@@ -177,6 +177,7 @@ _ROAD_ABBR = {
 def _normalise_street(s: str) -> str:
     s = s.strip().upper()
     s = re.sub(r"^\d+[\s,]+", "", s)  # strip leading number ("1 HIGH ST" or "98, THE QUAYS" → "THE QUAYS")
+    s = re.sub(r"^[,\s]+", "", s)     # strip leading commas/spaces (e.g. ", CUTTER LANE" → "CUTTER LANE")
     for abbr, full in _ROAD_ABBR.items():
         s = re.sub(abbr, full, s)
     return s
@@ -248,6 +249,9 @@ def parse_user_address_parts(address: str, postcode: str) -> dict[str, str | Non
         paon = None
         street = None
 
+    # Strip leading commas/whitespace from street (e.g. ", CUTTER LANE" → "CUTTER LANE")
+    if street:
+        street = re.sub(r"^[,\s]+", "", street) or None
     return {"saon": saon, "paon": paon, "street": street}
 
 
@@ -304,6 +308,9 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
         paon = m.group(1) if m else a1
         street = a2 or None
 
+    # Strip leading commas/whitespace from street (e.g. ", CUTTER LANE" → "CUTTER LANE")
+    if street:
+        street = re.sub(r"^[,\s]+", "", street) or None
     return {"saon": saon, "paon": paon, "street": street}
 
 
@@ -1796,8 +1803,10 @@ async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_curren
     addresses: list[dict] = []
     for row in rows:
         addr = build_epc_address(row)
-        if addr not in seen:
-            seen.add(addr)
+        # Normalise for dedup: strip commas after house numbers ("41, Gander" → "41 Gander")
+        dedup_key = re.sub(r"(\d),\s+", r"\1 ", addr).upper()
+        if dedup_key not in seen:
+            seen.add(dedup_key)
             addresses.append({"address": addr, "uprn": row.get("uprn") or ""})
 
     def _natural_key(item: dict) -> list:
