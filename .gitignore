@@ -21,3 +21,22 @@ frontend/node_modules/
 
 Keys.xlsx
 ~$*.xlsx
+
+# Local lease database (built from HMLR bulk CSV, not committed)
+backend/leases.db
+LEASES_FULL_*.csv
+
+# Debug / test artifacts
+backend/debug_search.log
+backend/test_epc.pdf
+frontend/tsconfig.tsbuildinfo
+
+# Generated output
+Output Reports/
+
+# Reference docs (not source code)
+Useful material by CL/
+*.docx
+property-cards-resizable.jsx
+prompt-size-adjustment.md
+comparable-selection-architecture*.md

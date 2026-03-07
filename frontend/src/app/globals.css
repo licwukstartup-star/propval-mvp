@@ -1,3 +1,100 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── Drag-and-drop card handles ─────────────────────────────────────────── */
+.drag-handle { cursor: grab; user-select: none; }
+.drag-handle:active { cursor: grabbing; }
+
+/* ── Cyberpunk dark base ─────────────────────────────────────────────────── */
+body {
+  background-color: #0A0E1A;
+  color: #E2E8F0;
+}
+
+/* ── Print / Save as PDF ────────────────────────────────────────────────── */
+
+/* ── Leaflet map popup — dark theme override ─────────────────────────────── */
+.leaflet-popup-content-wrapper {
+  background: #111827 !important;
+  color: #E2E8F0 !important;
+  border: 1px solid #334155 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important;
+}
+.leaflet-popup-tip {
+  background: #111827 !important;
+}
+.leaflet-popup-close-button {
+  color: #94A3B8 !important;
+}
+.leaflet-popup-content {
+  margin: 10px 14px !important;
+  font-family: Inter, -apple-system, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Print / Save as PDF ────────────────────────────────────────────────── */
+
+/* Hide the repeating print header on screen */
+.propval-print-thead { display: none; }
+
+@page {
+  /* No top/side margins — thead stripe fills edge-to-edge naturally.
+     Bottom margin gives breathing room before page edge. */
+  margin: 0 0 15mm;
+}
+
+@media print {
+  .no-print { display: none !important; }
+
+  body {
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  main {
+    padding: 0 !important;
+    min-height: unset !important;
+    background: white !important;
+    display: block !important;
+  }
+
+  /* <thead> natively repeats on every printed page in all browsers */
+  .propval-print-thead {
+    display: table-header-group;
+  }
+
+  /* Hide the screen-only cover bar — the thead header replaces it */
+  .propval-report-cover {
+    display: none !important;
+  }
+
+  .propval-report-body {
+    padding-top: 0 !important;
+    padding-left: 18mm !important;
+    padding-right: 18mm !important;
+  }
+
+  /* Remove border-radius and overflow:hidden — both clip content at page breaks */
+  .propval-report {
+    box-shadow: none !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+
+  .propval-report-section {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+    break-inside: avoid;
+  }
+}
