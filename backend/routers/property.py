@@ -609,8 +609,14 @@ async def _fetch_epc_rows(postcode: str, email: str, api_key: str) -> list[dict]
     return resp.json().get("rows", [])
 
 
+def _sparql_escape(s: str) -> str:
+    """Escape a string for safe inclusion in a SPARQL double-quoted literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+
+
 async def _fetch_sparql_bindings(postcode: str) -> list[dict]:
     pc = normalise_postcode(postcode)
+    pc_safe = _sparql_escape(pc)
     sparql = f"""
 PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
 PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
@@ -622,7 +628,7 @@ WHERE {{
     lrppi:transactionDate ?date ;
     lrppi:propertyAddress ?addr .
 
-  ?addr lrcommon:postcode "{pc}" .
+  ?addr lrcommon:postcode "{pc_safe}" .
 
   OPTIONAL {{ ?addr lrcommon:paon ?paon }}
   OPTIONAL {{ ?addr lrcommon:saon ?saon }}
@@ -1665,9 +1671,9 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 _CT_SERVICE = "https://www.tax.service.gov.uk/check-council-tax-band"
@@ -1773,9 +1779,9 @@ async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get
             media_type="application/pdf",
             headers={"Content-Disposition": f'attachment; filename="epc-{rrn}.pdf"'},
         )
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="PDF generation failed")
 
 
 @router.get("/autocomplete")

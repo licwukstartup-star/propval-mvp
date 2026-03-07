@@ -41,9 +41,18 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+@app.middleware("http")
+async def maintenance_guard(request: Request, call_next):
+    """Block all API requests (except /health) when MAINTENANCE_MODE=true."""
+    if os.getenv("MAINTENANCE_MODE", "").lower() in ("true", "1"):
+        if request.url.path != "/health":
+            return JSONResponse(status_code=503, content={"detail": "Service is under maintenance"})
+    return await call_next(request)
+
 
 app.include_router(property_router.router)
 app.include_router(comparables_router.router)

@@ -45,8 +45,8 @@ async def get_current_user(
             payload = jwt.decode(
                 token, jwt_secret, algorithms=["HS256"], audience="authenticated",
             )
-        else:
-            # ES256 or other asymmetric: verify with JWKS public key
+        elif alg in ("ES256", "RS256"):
+            # Asymmetric: verify with JWKS public key (whitelist allowed algorithms)
             jwks = _get_jwks()
             kid = header.get("kid")
             key = None
@@ -57,8 +57,10 @@ async def get_current_user(
             if not key:
                 raise JWTError("No matching key found in JWKS")
             payload = jwt.decode(
-                token, key, algorithms=[alg], audience="authenticated",
+                token, key, algorithms=["ES256", "RS256"], audience="authenticated",
             )
+        else:
+            raise JWTError(f"Unsupported algorithm: {alg}")
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -66,10 +68,19 @@ async def get_current_user(
         )
 
     user_metadata = payload.get("user_metadata", {})
+    role = user_metadata.get("role", "pending")
+
+    # Block users who haven't been approved by an admin
+    if role not in ("admin", "customer"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is pending approval. Please contact the administrator.",
+        )
+
     return {
         "id": payload.get("sub"),
         "email": payload.get("email"),
-        "role": user_metadata.get("role", "customer"),
+        "role": role,
     }
 
 

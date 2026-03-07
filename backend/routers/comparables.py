@@ -51,6 +51,11 @@ SPARQL_OUTWARD_CAP   = 200    # rows per outward-code query per year-slice
 EPC_CONCURRENT       = 10     # max parallel EPC calls
 EPC_CALL_TIMEOUT     = 4.0    # EPC API is fast; short timeout avoids blocking
 SPARQL_TIMEOUT       = 25.0   # per-query hard timeout (asyncio.wait_for — reliable on Windows)
+
+
+def _sparql_escape(s: str) -> str:
+    """Escape a string for safe inclusion in a SPARQL double-quoted literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
 TOTAL_TIMEOUT        = 90.0   # total orchestrator timeout
 MAX_ADJACENT_CODES   = 2      # keep tier 4 fast
 
@@ -408,6 +413,7 @@ async def _sparql_postcode(postcode: str, months: int, sem: asyncio.Semaphore,
     """
     anchor = val_date or date.today()
     date_from = (anchor - relativedelta(months=months)).isoformat()
+    pc_safe = _sparql_escape(postcode)
     sparql = f"""
 PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
 PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
@@ -418,7 +424,7 @@ WHERE {{
       lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
       lrppi:propertyAddress ?addr .
   ?addr lrcommon:postcode ?postcode .
-  FILTER(STR(?postcode) = "{postcode}")
+  FILTER(STR(?postcode) = "{pc_safe}")
   FILTER(?date >= "{date_from}"^^xsd:date)
   OPTIONAL {{ ?addr lrcommon:paon ?paon }} OPTIONAL {{ ?addr lrcommon:saon ?saon }}
   OPTIONAL {{ ?addr lrcommon:street ?street }}
@@ -462,6 +468,8 @@ async def _sparql_building(
     anchor = val_date or date.today()
     date_from = (anchor - relativedelta(months=months)).isoformat()
     bldg_upper = building_name.strip().upper()
+    bldg_safe = _sparql_escape(bldg_upper)
+    outward_safe = _sparql_escape(outward)
     sparql = f"""
 PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
 PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
@@ -473,8 +481,8 @@ WHERE {{
       lrppi:propertyAddress ?addr .
   ?addr lrcommon:postcode ?postcode ;
         lrcommon:paon ?paon .
-  FILTER(STRSTARTS(STR(?paon), "{bldg_upper}"))
-  FILTER(STRSTARTS(STR(?postcode), "{outward} "))
+  FILTER(STRSTARTS(STR(?paon), "{bldg_safe}"))
+  FILTER(STRSTARTS(STR(?postcode), "{outward_safe} "))
   FILTER(?date >= "{date_from}"^^xsd:date)
   OPTIONAL {{ ?addr lrcommon:saon ?saon }}
   OPTIONAL {{ ?addr lrcommon:street ?street }}
@@ -514,6 +522,9 @@ async def _sparql_paon_street(
     date_from = (anchor - relativedelta(months=months)).isoformat()
     paon_upper   = paon.strip().upper()
     street_upper = street.strip().upper()
+    paon_safe    = _sparql_escape(paon_upper)
+    street_safe  = _sparql_escape(street_upper)
+    outward_safe = _sparql_escape(outward)
     sparql = f"""
 PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
 PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
@@ -524,11 +535,11 @@ WHERE {{
       lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
       lrppi:propertyAddress ?addr .
   ?addr lrcommon:postcode ?postcode ;
-        lrcommon:paon "{paon_upper}" ;
-        lrcommon:street "{street_upper}" .
-  BIND("{paon_upper}"   AS ?paon)
-  BIND("{street_upper}" AS ?street)
-  FILTER(STRSTARTS(STR(?postcode), "{outward} "))
+        lrcommon:paon "{paon_safe}" ;
+        lrcommon:street "{street_safe}" .
+  BIND("{paon_safe}"   AS ?paon)
+  BIND("{street_safe}" AS ?street)
+  FILTER(STRSTARTS(STR(?postcode), "{outward_safe} "))
   FILTER(?date >= "{date_from}"^^xsd:date)
   OPTIONAL {{ ?addr lrcommon:saon ?saon }}
   OPTIONAL {{ ?tx lrppi:estateType ?estateType }} OPTIONAL {{ ?tx lrppi:propertyType ?propertyType }}
@@ -566,7 +577,7 @@ WHERE {{
       lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
       lrppi:propertyAddress ?addr .
   ?addr lrcommon:postcode ?postcode .
-  FILTER(STRSTARTS(STR(?postcode), "{outward} "))
+  FILTER(STRSTARTS(STR(?postcode), "{_sparql_escape(outward)} "))
   FILTER(?date >= "{date_from}"^^xsd:date)
   FILTER(?date <  "{date_to}"^^xsd:date)
   OPTIONAL {{ ?addr lrcommon:paon ?paon }} OPTIONAL {{ ?addr lrcommon:saon ?saon }}
