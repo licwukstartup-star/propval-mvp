@@ -8,6 +8,8 @@ import { HpiIndexChart } from "./components/HpiIndexChart";
 import ComparableSearch, { type ComparableCandidate, CompCard } from "@/components/ComparableSearch";
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 
+const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
 const PropertyMap = dynamic(() => import("./components/PropertyMap"), { ssr: false });
 import type { CrimeCluster } from "./components/PropertyMap";
 
@@ -546,7 +548,7 @@ export default function Home() {
     autocompleteTimer.current = setTimeout(async () => {
       setSuggestionsLoading(true);
       try {
-        const res = await fetch(`http://localhost:8000/api/property/autocomplete?postcode=${encodeURIComponent(pcMatch[0])}`);
+        const res = await fetch(`${API_BASE}/api/property/autocomplete?postcode=${encodeURIComponent(pcMatch[0])}`);
         if (res.ok) {
           const data = await res.json();
           const list: { address: string; uprn: string }[] = data.addresses ?? [];
@@ -586,7 +588,7 @@ export default function Home() {
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     try {
-      const res = await fetch("http://localhost:8000/api/property/search", {
+      const res = await fetch(`${API_BASE}/api/property/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ address }),
@@ -622,7 +624,7 @@ export default function Home() {
 
   function downloadEpc(certUrl: string) {
     window.open(
-      `http://localhost:8000/api/property/epc-pdf?cert_url=${encodeURIComponent(certUrl)}`,
+      `${API_BASE}/api/property/epc-pdf?cert_url=${encodeURIComponent(certUrl)}`,
       "_blank"
     );
   }
