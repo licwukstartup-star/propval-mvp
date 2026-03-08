@@ -480,14 +480,14 @@ export default function Home() {
   const [mapCrimeCache, setMapCrimeCache] = useState<CrimeCluster[] | null>(null);
 
   // ── Saved cases state ──────────────────────────────────────────────────
-  interface SavedCaseSummary { id: string; title: string; address: string; postcode: string | null; uprn: string | null; created_at: string; updated_at: string; }
+  interface SavedCaseSummary { id: string; display_name: string | null; title: string; address: string; postcode: string | null; uprn: string | null; case_type: string; status: string; created_at: string; updated_at: string; }
   const [showCasesPanel, setShowCasesPanel] = useState(false);
   const [casesList, setCasesList] = useState<SavedCaseSummary[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
   const [currentCaseId, setCurrentCaseId] = useState<string | null>(null);
   const [savingCase, setSavingCase] = useState(false);
-  const [saveTitle, setSaveTitle] = useState("");
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
 
   const fetchCases = useCallback(async () => {
     if (!session?.access_token) return;
@@ -505,26 +505,18 @@ export default function Home() {
   }, [session?.access_token]);
 
   async function saveCase() {
-    if (!result || !saveTitle.trim() || !session?.access_token) return;
+    if (!result || !session?.access_token) return;
     setSavingCase(true);
     try {
-      const body = {
-        title: saveTitle.trim(),
-        address: result.address,
-        postcode: result.postcode,
-        uprn: result.uprn,
-        property_data: result,
-        comparables: adoptedComparables,
-        valuation_date: valuationDate || null,
-        hpi_correlation: hpiCorrelation,
-        size_elasticity: sizeElasticity,
-      };
       const method = currentCaseId ? "PATCH" : "POST";
       const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
+      const payload = currentCaseId
+        ? { comparables: adoptedComparables, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity }
+        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify(currentCaseId ? { title: body.title, comparables: body.comparables, valuation_date: body.valuation_date, hpi_correlation: body.hpi_correlation, size_elasticity: body.size_elasticity } : body),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error("Save failed");
       const saved = await res.json();
@@ -543,13 +535,13 @@ export default function Home() {
       });
       if (!res.ok) throw new Error("Load failed");
       const data = await res.json();
-      setResult(data.property_data as PropertyResult);
+      setResult((data.property_snapshot ?? data.property_data) as PropertyResult);
       setAdoptedComparables(data.comparables ?? []);
       setValuationDate(data.valuation_date ?? "");
       setHpiCorrelation(data.hpi_correlation ?? 100);
       setSizeElasticity(data.size_elasticity ?? 0);
       setCurrentCaseId(data.id);
-      setSaveTitle(data.title);
+      setSaveCaseType(data.case_type ?? "research");
       setAddress(data.address);
       setActiveTab("property");
       setShowCasesPanel(false);
@@ -706,7 +698,7 @@ export default function Home() {
       setBuildingSearchDone(false);
       setAdoptedComparables([]);
       setCurrentCaseId(null);
-      setSaveTitle("");
+      setSaveCaseType("research");
       setValuationDate("");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -1041,8 +1033,7 @@ export default function Home() {
               )}
               <button
                 onClick={() => {
-                  setSaveTitle(currentCaseId ? saveTitle : (result?.address ?? ""));
-                  setShowSaveDialog(true);
+                  if (currentCaseId) { saveCase(); } else { setShowSaveDialog(true); }
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#39FF14]/40 text-[#39FF14] hover:bg-[#39FF14]/10 transition-colors"
               >
@@ -3102,19 +3093,26 @@ export default function Home() {
       {showSaveDialog && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => setShowSaveDialog(false)}>
           <div className="bg-[#111827] border border-[#334155] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">
-              {currentCaseId ? "Update Case" : "Save Case"}
-            </h2>
-            <label className="block text-xs text-[#94A3B8] mb-1">Case title</label>
-            <input
-              type="text"
-              value={saveTitle}
-              onChange={e => setSaveTitle(e.target.value)}
-              placeholder="e.g. 10 Cutter Lane - Flat 404"
-              className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-[#00F0FF]"
-              autoFocus
-              onKeyDown={e => { if (e.key === "Enter" && saveTitle.trim()) saveCase(); }}
-            />
+            <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">New Case</h2>
+            <p className="text-sm text-[#E2E8F0] mb-1 truncate">{result?.address}</p>
+            {result?.uprn && <p className="text-xs text-[#94A3B8] mb-4">UPRN: {result.uprn}</p>}
+            {!result?.uprn && <p className="text-xs text-[#FFB800] mb-4">No UPRN found — case will still be saved</p>}
+            <label className="block text-xs text-[#94A3B8] mb-1.5">Case type</label>
+            <div className="flex gap-2 mb-5">
+              {([["research", "Research"], ["full_valuation", "Full Valuation"]] as const).map(([val, label]) => (
+                <button
+                  key={val}
+                  onClick={() => setSaveCaseType(val)}
+                  className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
+                    saveCaseType === val
+                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF] font-semibold"
+                      : "border-[#334155] text-[#94A3B8] hover:border-[#475569] hover:text-[#E2E8F0]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowSaveDialog(false)}
@@ -3124,10 +3122,10 @@ export default function Home() {
               </button>
               <button
                 onClick={saveCase}
-                disabled={!saveTitle.trim() || savingCase}
+                disabled={savingCase}
                 className="px-4 py-2 text-sm font-bold rounded-lg bg-[#39FF14] text-[#0A0E1A] hover:bg-[#32E612] disabled:opacity-50 transition-colors"
               >
-                {savingCase ? "Saving…" : currentCaseId ? "Update" : "Save"}
+                {savingCase ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
@@ -3151,7 +3149,15 @@ export default function Home() {
               {!casesLoading && casesList.length === 0 && (
                 <p className="text-sm text-[#94A3B8] text-center py-8">No saved cases yet.</p>
               )}
-              {!casesLoading && casesList.map(c => (
+              {!casesLoading && casesList.map(c => {
+                const statusColors: Record<string, string> = {
+                  draft: "bg-[#475569] text-[#E2E8F0]",
+                  in_progress: "bg-[#FFB800]/20 text-[#FFB800]",
+                  complete: "bg-[#39FF14]/20 text-[#39FF14]",
+                  archived: "bg-[#334155] text-[#94A3B8]",
+                };
+                const typeLabel = (c.case_type ?? "research").replace("_", " ");
+                return (
                 <div
                   key={c.id}
                   className={`rounded-lg border p-4 mb-3 cursor-pointer transition-colors ${
@@ -3163,8 +3169,12 @@ export default function Home() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-semibold text-[#E2E8F0] truncate">{c.title}</h3>
+                      <h3 className="text-sm font-semibold text-[#E2E8F0] truncate">{c.display_name ?? c.title}</h3>
                       <p className="text-xs text-[#94A3B8] truncate mt-0.5">{c.address}</p>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded capitalize bg-[#7B2FBE]/20 text-[#c084fc]">{typeLabel}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${statusColors[c.status] ?? statusColors.draft}`}>{(c.status ?? "draft").replace("_", " ")}</span>
+                      </div>
                       <p className="text-[10px] text-[#475569] mt-1">
                         {new Date(c.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
                         {c.postcode && <span className="ml-2">{c.postcode}</span>}
@@ -3179,7 +3189,8 @@ export default function Home() {
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

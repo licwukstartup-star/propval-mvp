@@ -36,6 +36,68 @@ def _get_supabase():
             _supabase_client = create_client(url, key)
     return _supabase_client
 
+
+def _upsert_property_library(
+    uprn: str,
+    address: str,
+    postcode: str | None,
+    lat: float | None,
+    lon: float | None,
+    property_type: str | None,
+    built_form: str | None,
+    construction_era: str | None,
+    floor_area_sqm: float | None,
+    habitable_rooms: int | None,
+    admin_district: str | None,
+    lsoa_code: str | None,
+    region: str | None,
+    enrichment: dict[str, dict] | None = None,
+) -> None:
+    """Upsert a property into the properties table and cache enrichment data.
+
+    Called after every search. Silently does nothing if Supabase is not configured.
+    """
+    sb = _get_supabase()
+    if sb is None:
+        return
+    try:
+        # Upsert the master property record
+        sb.table("properties").upsert(
+            {
+                "uprn": uprn,
+                "canonical_address": address,
+                "postcode": postcode,
+                "lat": lat,
+                "lon": lon,
+                "property_type": property_type,
+                "built_form": built_form,
+                "construction_era": construction_era,
+                "floor_area_sqm": float(floor_area_sqm) if floor_area_sqm else None,
+                "habitable_rooms": int(habitable_rooms) if habitable_rooms else None,
+                "admin_district": admin_district,
+                "lsoa_code": lsoa_code,
+                "region": region,
+                "updated_at": "now()",
+            },
+            on_conflict="uprn",
+        ).execute()
+
+        # Upsert enrichment payloads per data source
+        if enrichment:
+            for source, payload in enrichment.items():
+                sb.table("property_enrichment").upsert(
+                    {
+                        "uprn": uprn,
+                        "data_source": source,
+                        "payload": payload,
+                        "fetched_at": "now()",
+                    },
+                    on_conflict="uprn,data_source",
+                ).execute()
+    except Exception as exc:
+        logging.warning("property library upsert failed (non-fatal): %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Green Belt — in-memory Shapely polygons (loaded via FastAPI lifespan)
 # Avoids intermittent false positives from planning.data.gov.uk geometry engine
@@ -1612,6 +1674,50 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                             inferred_building_name = lr_paon.title()
                             break
                 print(f"DEBUG: Phase 2.5 cert-page scrape — uprn={best.get('uprn')} fields={list(best.keys())}")
+
+        # ----- Tier 1: upsert into properties & property_enrichment -----
+        _uprn = best.get("uprn")
+        if _uprn:
+            _upsert_property_library(
+                uprn=_uprn,
+                address=matched_address,
+                postcode=normalise_postcode(postcode),
+                lat=location["lat"],
+                lon=location["lon"],
+                property_type=best.get("property-type"),
+                built_form=best.get("built-form"),
+                construction_era=best.get("construction-age-band"),
+                floor_area_sqm=best.get("total-floor-area"),
+                habitable_rooms=best.get("number-habitable-rooms"),
+                admin_district=location["admin_district"],
+                lsoa_code=location["lsoa"],
+                region=location["region"],
+                enrichment={
+                    "epc": {
+                        "energy_rating": best.get("current-energy-rating"),
+                        "energy_score": best.get("current-energy-efficiency"),
+                        "epc_url": epc_url,
+                        "heating_type": best.get("main-fuel"),
+                        "inspection_date": best.get("inspection-date"),
+                    },
+                    "land_registry": {"sales": sales},
+                    "flood_risk": {
+                        "rivers_sea_risk": flood["rivers_sea_risk"],
+                        "surface_water_risk": flood["surface_water_risk"],
+                        "planning_flood_zone": planning_zone,
+                    },
+                    "listed_buildings": {"buildings": listed_buildings},
+                    "conservation_areas": {"areas": conservation_areas},
+                    "natural_england": natural_england,
+                    "ground_conditions": ground,
+                    "coal_mining": coal,
+                    "radon": {"risk": radon},
+                    "brownfield": {"is_brownfield": brownfield},
+                    "council_tax": {"band": council_tax_band},
+                    "lease": lease_details,
+                    "hpi": hpi,
+                },
+            )
 
         return {
             "uprn": best.get("uprn"),
