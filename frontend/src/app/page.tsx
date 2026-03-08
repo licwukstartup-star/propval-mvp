@@ -5,7 +5,8 @@ import dynamic from "next/dynamic";
 import { EpcBadge } from "./components/EpcBadge";
 import { HpiBarChart } from "./components/HpiBarChart";
 import { HpiIndexChart } from "./components/HpiIndexChart";
-import ComparableSearch, { type ComparableCandidate, CompCard } from "@/components/ComparableSearch";
+import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard } from "@/components/ComparableSearch";
+import BrowseSales from "@/components/BrowseSales";
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -428,12 +429,13 @@ const FULL_POSTCODE_RE = /[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}/i;
 export default function Home() {
   const { session } = useAuth();
   const [address, setAddress] = useState("");
+  const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PropertyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "outward" | "adopted" | "report" | "hpi" | "map";
+  type TabKey = "property" | "comparables" | "outward" | "browse" | "adopted" | "report" | "hpi" | "map";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "outward", "hpi", "adopted", "report"];
+  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "browse", "comparables", "outward", "hpi", "adopted", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
   type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
@@ -444,6 +446,8 @@ export default function Home() {
   const [buildingSearchIds, setBuildingSearchIds] = useState<string[]>([]);
   const [buildingSearchAddressKeys, setBuildingSearchAddressKeys] = useState<string[]>([]);
   const [buildingSearchDone, setBuildingSearchDone] = useState(false);
+  const [buildingSearchResult, setBuildingSearchResult] = useState<SearchResponse | null>(null);
+  const [outwardSearchResult, setOutwardSearchResult] = useState<SearchResponse | null>(null);
   const [adoptedComparables, setAdoptedComparables] = useState<ComparableCandidate[]>([]);
   const [hpiCorrelation, setHpiCorrelation] = useState(100);
   const [sizeElasticity, setSizeElasticity] = useState(0); // β in percent (0–50)
@@ -462,10 +466,14 @@ export default function Home() {
   // Map tab: postcode → centroid coords for adopted comparables
   const [compCoords, setCompCoords] = useState<Record<string, { lat: number; lon: number }>>({});
 
+  // Map: lazy-mount so hooks don't fire until user first opens Map tab
+  const [mapMounted, setMapMounted] = useState(false);
+  useEffect(() => { if (activeTab === "map" && !mapMounted) setMapMounted(true); }, [activeTab, mapMounted]);
+
   // Map layer toggles (lifted here so they persist across tab switches)
   const [mapShowFlood, setMapShowFlood] = useState(false);
   const [mapShowRings, setMapShowRings] = useState(true);
-  const [mapShowLandUse, setMapShowLandUse] = useState(false);
+  const [mapShowLandUse, setMapShowLandUse] = useState(true);
   const [mapShowDeprivation, setMapShowDeprivation] = useState(false);
   const [mapShowRoadNoise, setMapShowRoadNoise] = useState(false);
   const [mapShowRailNoise, setMapShowRailNoise] = useState(false);
@@ -479,6 +487,124 @@ export default function Home() {
   const [mapEducationCache, setMapEducationCache] = useState<GeoJSON.FeatureCollection | null>(null);
   const [mapCrimeCache, setMapCrimeCache] = useState<CrimeCluster[] | null>(null);
 
+  // Pre-fetch Land Use data as soon as coordinates are available (Overpass is slow, start early)
+  const landUseFetchRef = useRef(false);
+  useEffect(() => {
+    if (!result?.lat || !result?.lon || mapLandUseCache || landUseFetchRef.current) return;
+    landUseFetchRef.current = true;
+    const query = `[out:json][timeout:30];(way["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${result.lat},${result.lon});relation["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${result.lat},${result.lon});way["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${result.lat},${result.lon});relation["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${result.lat},${result.lon}););out body;>;out skel qt;`;
+    fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+    })
+      .then(r => { if (!r.ok) throw new Error(`Overpass ${r.status}`); return r.json(); })
+      .then(data => {
+        // Inline osmToGeoJSON — same logic as PropertyMap
+        const nodes = new Map<number, [number, number]>();
+        const ways = new Map<number, { nodes: number[]; tags?: Record<string, string> }>();
+        for (const el of data.elements) {
+          if (el.type === "node" && el.lat != null && el.lon != null) nodes.set(el.id, [el.lon, el.lat]);
+          if (el.type === "way") ways.set(el.id, { nodes: el.nodes ?? [], tags: el.tags });
+        }
+        const features: GeoJSON.Feature[] = [];
+        for (const [, way] of ways) {
+          const tag = way.tags?.landuse ?? way.tags?.leisure;
+          if (!tag) continue;
+          const coords = way.nodes.map((nid: number) => nodes.get(nid)).filter(Boolean) as [number, number][];
+          if (coords.length < 3) continue;
+          features.push({ type: "Feature", properties: { landuse: way.tags?.landuse, leisure: way.tags?.leisure, name: way.tags?.name }, geometry: { type: "Polygon", coordinates: [coords] } });
+        }
+        for (const el of data.elements) {
+          const tag = el.tags?.landuse ?? el.tags?.leisure;
+          if (el.type !== "relation" || !tag || !el.members) continue;
+          for (const member of el.members) {
+            if (member.type === "way" && member.role === "outer") {
+              const way = ways.get(member.ref);
+              if (!way) continue;
+              const coords = way.nodes.map((nid: number) => nodes.get(nid)).filter(Boolean) as [number, number][];
+              if (coords.length < 3) continue;
+              features.push({ type: "Feature", properties: { landuse: el.tags?.landuse, leisure: el.tags?.leisure, name: el.tags?.name }, geometry: { type: "Polygon", coordinates: [coords] } });
+            }
+          }
+        }
+        setMapLandUseCache({ type: "FeatureCollection", features });
+      })
+      .catch(() => { /* silently ignore */ })
+      .finally(() => { landUseFetchRef.current = false; });
+  }, [result?.lat, result?.lon, mapLandUseCache]);
+
+  // Pre-fetch IMD + Income + Education (single ArcGIS query with all fields)
+  const imdFetchRef = useRef(false);
+  useEffect(() => {
+    if (!result?.lat || !result?.lon || imdFetchRef.current) return;
+    // Skip if all three caches already populated
+    if (mapImdCache && mapIncomeCache && mapEducationCache) return;
+    imdFetchRef.current = true;
+
+    const IMD_FULL = "https://services-eu1.arcgis.com/EbKcOS6EXZroSyoi/arcgis/rest/services/Indices_of_Multiple_Deprivation_(IMD)_2019/FeatureServer/0/query";
+
+    const dLat = 0.018, dLon = 0.03;
+    const bbox = `${result.lon - dLon},${result.lat - dLat},${result.lon + dLon},${result.lat + dLat}`;
+
+    (async () => {
+      try {
+        // Single query: fetch all IMD sub-domains + overall decile with geometry
+        const url = new URL(IMD_FULL);
+        url.searchParams.set("geometry", bbox);
+        url.searchParams.set("geometryType", "esriGeometryEnvelope");
+        url.searchParams.set("spatialRel", "esriSpatialRelIntersects");
+        url.searchParams.set("outFields", "lsoa11cd,lsoa11nm,IMDDec0,IncDec,IncScore,IncRank,EduDec,EduScore,EduRank");
+        url.searchParams.set("f", "geojson");
+        url.searchParams.set("inSR", "4326");
+        url.searchParams.set("outSR", "4326");
+
+        const res = await fetch(url.toString());
+        if (res.ok) {
+          const fc = await res.json() as GeoJSON.FeatureCollection;
+          if (fc.features?.length) {
+            // Add ls11cd/ls11nm aliases for popup compatibility
+            for (const f of fc.features) {
+              f.properties = { ...f.properties, ls11cd: f.properties?.lsoa11cd, ls11nm: f.properties?.lsoa11nm };
+            }
+            if (!mapImdCache) setMapImdCache(fc);
+            if (!mapIncomeCache) setMapIncomeCache(fc);
+            if (!mapEducationCache) setMapEducationCache(fc);
+          }
+        }
+      } catch (err) { console.warn("[PreFetch IMD/Income/Education] failed:", err); }
+      finally { imdFetchRef.current = false; }
+    })();
+  }, [result?.lat, result?.lon, mapImdCache, mapIncomeCache, mapEducationCache]);
+
+  // Pre-fetch Crime data
+  const crimeFetchRef = useRef(false);
+  useEffect(() => {
+    if (!result?.lat || !result?.lon || mapCrimeCache || crimeFetchRef.current) return;
+    crimeFetchRef.current = true;
+    (async () => {
+      try {
+        const metaRes = await fetch("https://data.police.uk/api/crime-last-updated");
+        if (!metaRes.ok) return;
+        const meta = await metaRes.json();
+        const month = (meta.date as string).slice(0, 7);
+        const res = await fetch(`https://data.police.uk/api/crimes-street/all-crime?lat=${result.lat}&lng=${result.lon}&date=${month}`);
+        if (!res.ok) return;
+        const crimes: Array<{ category: string; location: { latitude: string; longitude: string; street: { name: string } } }> = await res.json();
+        const clusterMap = new Map<string, { lat: number; lon: number; count: number; categories: Record<string, number>; street: string }>();
+        for (const c of crimes) {
+          const key = `${c.location.latitude},${c.location.longitude}`;
+          let cluster = clusterMap.get(key);
+          if (!cluster) { cluster = { lat: parseFloat(c.location.latitude), lon: parseFloat(c.location.longitude), count: 0, categories: {}, street: c.location.street.name }; clusterMap.set(key, cluster); }
+          cluster.count++;
+          cluster.categories[c.category] = (cluster.categories[c.category] || 0) + 1;
+        }
+        setMapCrimeCache(Array.from(clusterMap.values()));
+      } catch { /* silently ignore */ }
+      finally { crimeFetchRef.current = false; }
+    })();
+  }, [result?.lat, result?.lon, mapCrimeCache]);
+
   // ── Saved cases state ──────────────────────────────────────────────────
   interface SavedCaseSummary { id: string; display_name: string | null; title: string; address: string; postcode: string | null; uprn: string | null; case_type: string; status: string; valuation_date: string | null; created_at: string; updated_at: string; }
   const [showCasesPanel, setShowCasesPanel] = useState(false);
@@ -488,7 +614,11 @@ export default function Home() {
   const [savingCase, setSavingCase] = useState(false);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
-  const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("draft");
+  const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingExitAfterSave, setPendingExitAfterSave] = useState(false);
+  const pendingExitRef = useRef(false);
   const [casesFilter, setCasesFilter] = useState<string>("all");
   const [casesSort, setCasesSort] = useState<string>("updated");
   const [casesSortDir, setCasesSortDir] = useState<"asc" | "desc">("desc");
@@ -508,15 +638,49 @@ export default function Home() {
     finally { setCasesLoading(false); }
   }, [session?.access_token]);
 
-  async function saveCase() {
+  // Reset to clean search-only state (extracted so it can be called after save dialog)
+  const doResetHome = useCallback(() => {
+    setResult(null);
+    setError(null);
+    setAddress("");
+    setActiveTab("property");
+    setAdoptedComparables([]);
+    setBuildingSearchIds([]);
+    setBuildingSearchAddressKeys([]);
+    setBuildingSearchDone(false);
+    setBuildingSearchResult(null);
+    setOutwardSearchResult(null);
+    setCurrentCaseId(null);
+    setSaveCaseType("research");
+    setCurrentCaseStatus("in_progress");
+    setValuationDate("");
+    setHpiCorrelation(100);
+    setSizeElasticity(0);
+    setMapMounted(false);
+    setMapLandUseCache(null);
+    setMapImdCache(null);
+    setMapIncomeCache(null);
+    setMapEducationCache(null);
+    setMapCrimeCache(null);
+    landUseFetchRef.current = false;
+    imdFetchRef.current = false;
+    crimeFetchRef.current = false;
+    setCompCoords({});
+    setPendingExitAfterSave(false);
+    setManualMode(false);
+  }, []);
+
+  async function saveCase(silent = false) {
     if (!result || !session?.access_token) return;
-    setSavingCase(true);
+    if (!silent) setSavingCase(true);
+    if (silent) setAutoSaveStatus("saving");
     try {
       const method = currentCaseId ? "PATCH" : "POST";
       const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
+      const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
       const payload = currentCaseId
-        ? { comparables: adoptedComparables, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity }
-        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
+        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity }
+        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -526,12 +690,64 @@ export default function Home() {
       const saved = await res.json();
       setCurrentCaseId(saved.id);
       setShowSaveDialog(false);
-    } catch { alert("Failed to save case."); }
-    finally { setSavingCase(false); }
+      if (pendingExitRef.current) {
+        doResetHome();
+        return;
+      }
+      if (silent) { setAutoSaveStatus("saved"); setTimeout(() => setAutoSaveStatus("idle"), 2000); }
+    } catch {
+      if (silent) { setAutoSaveStatus("error"); setTimeout(() => setAutoSaveStatus("idle"), 3000); }
+      else alert("Failed to save case.");
+    }
+    finally { if (!silent) setSavingCase(false); }
   }
+
+  // Auto-save: debounce 3s after changes to comparables/valuation params (only for existing cases)
+  const saveCaseRef = useRef(saveCase);
+  saveCaseRef.current = saveCase;
+
+  // Fire-and-forget save using keepalive fetch (reliable during page unload)
+  const fireAndForgetSave = useCallback(() => {
+    if (!currentCaseId || !result || !session?.access_token) return;
+    if (["issued", "archived"].includes(currentCaseStatus)) return;
+    const url = `${API_BASE}/api/cases/${currentCaseId}`;
+    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
+    try {
+      fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(() => { /* best effort — ignore network errors */ });
+    } catch { /* best effort */ }
+  }, [currentCaseId, result, session?.access_token, currentCaseStatus, adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, buildingSearchResult, outwardSearchResult]);
+
+  const fireAndForgetSaveRef = useRef(fireAndForgetSave);
+  fireAndForgetSaveRef.current = fireAndForgetSave;
+
+  // Refs to track current state inside event listeners (closures)
+  const resultRef = useRef(result);
+  resultRef.current = result;
+  const currentCaseIdRef = useRef(currentCaseId);
+  currentCaseIdRef.current = currentCaseId;
+  pendingExitRef.current = pendingExitAfterSave;
+
+  useEffect(() => {
+    if (!currentCaseId || ["issued", "archived"].includes(currentCaseStatus)) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      saveCaseRef.current(true);
+    }, 3000);
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, currentCaseId, currentCaseStatus]);
 
   async function loadCase(c: SavedCaseSummary) {
     if (!session?.access_token) return;
+    // Save current case before loading a different one
+    if (currentCaseId && currentCaseId !== c.id && !["issued", "archived"].includes(currentCaseStatus)) {
+      await saveCaseRef.current(true);
+    }
     setCasesLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/cases/${c.id}`, {
@@ -541,12 +757,32 @@ export default function Home() {
       const data = await res.json();
       setResult((data.property_snapshot ?? data.property_data) as PropertyResult);
       setAdoptedComparables(data.comparables ?? []);
+      // Restore cached search results
+      const sr = data.search_results ?? {};
+      setBuildingSearchResult(sr.building ?? null);
+      setOutwardSearchResult(sr.outward ?? null);
+      // If building results exist, mark building search as done so outward tab unlocks
+      if (sr.building) {
+        const ids = (sr.building.comparables ?? [])
+          .map((c: ComparableCandidate) => c.transaction_id)
+          .filter((id: string | null): id is string => id !== null);
+        const addressKeys = (sr.building.comparables ?? [])
+          .filter((c: ComparableCandidate) => c.saon)
+          .map((c: ComparableCandidate) => `${c.saon!.toUpperCase()}|${c.postcode}`);
+        setBuildingSearchIds(ids);
+        setBuildingSearchAddressKeys(addressKeys);
+        setBuildingSearchDone(true);
+      } else {
+        setBuildingSearchIds([]);
+        setBuildingSearchAddressKeys([]);
+        setBuildingSearchDone(false);
+      }
       setValuationDate(data.valuation_date ?? "");
       setHpiCorrelation(data.hpi_correlation ?? 100);
       setSizeElasticity(data.size_elasticity ?? 0);
       setCurrentCaseId(data.id);
       setSaveCaseType(data.case_type ?? "research");
-      setCurrentCaseStatus(data.status ?? "draft");
+      setCurrentCaseStatus(data.status === "draft" ? "in_progress" : (data.status ?? "in_progress"));
       setAddress(data.address);
       setActiveTab("property");
       setShowCasesPanel(false);
@@ -586,11 +822,38 @@ export default function Home() {
     const onAfter  = () => { document.title = "PropVal"; };
     window.addEventListener("beforeprint", onBefore);
     window.addEventListener("afterprint",  onAfter);
+    const onOpenCases = () => { setShowCasesPanel(true); fetchCases(); };
+    window.addEventListener("open-my-cases", onOpenCases);
+    // Save on exit: fire a keepalive save when user closes tab/browser
+    const onBeforeUnload = () => { fireAndForgetSaveRef.current(); };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    // Navbar navigation intercept: save before navigating away
+    const onBeforeNavigate = () => { fireAndForgetSaveRef.current(); };
+    window.addEventListener("propval-before-navigate", onBeforeNavigate);
+    // Logo / Save & Exit: save + reset to clean search-only state
+    const onResetHome = () => {
+      // If there's an unsaved new case (result exists but never saved), prompt to save first
+      if (resultRef.current && !currentCaseIdRef.current) {
+        if (confirm("You have unsaved work. Save before exiting?")) {
+          setShowSaveDialog(true);
+          setPendingExitAfterSave(true);
+          return; // Don't reset yet — will reset after save completes
+        }
+      } else {
+        fireAndForgetSaveRef.current();
+      }
+      doResetHome();
+    };
+    window.addEventListener("propval-reset-home", onResetHome);
     return () => {
       window.removeEventListener("beforeprint", onBefore);
       window.removeEventListener("afterprint",  onAfter);
+      window.removeEventListener("open-my-cases", onOpenCases);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("propval-before-navigate", onBeforeNavigate);
+      window.removeEventListener("propval-reset-home", onResetHome);
     };
-  }, []);
+  }, [fetchCases]);
 
   useEffect(() => {
     try {
@@ -651,6 +914,7 @@ export default function Home() {
     if (autocompleteTimer.current) clearTimeout(autocompleteTimer.current);
     autocompleteTimer.current = setTimeout(async () => {
       setSuggestionsLoading(true);
+      setShowSuggestions(true);
       try {
         const res = await fetch(`${API_BASE}/api/property/autocomplete?postcode=${encodeURIComponent(pcMatch[0])}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` },
@@ -659,7 +923,7 @@ export default function Home() {
           const data = await res.json();
           const list: { address: string; uprn: string }[] = data.addresses ?? [];
           setSuggestions(list);
-          setShowSuggestions(list.length > 0);
+          setShowSuggestions(true); // always show — even if empty, we show "not listed" link
         }
       } catch { /* silently ignore */ }
       finally { setSuggestionsLoading(false); }
@@ -672,19 +936,31 @@ export default function Home() {
     else if (e.key === "ArrowUp") { e.preventDefault(); setSuggestionIdx(i => Math.max(i - 1, 0)); }
     else if (e.key === "Enter" && suggestionIdx >= 0) {
       e.preventDefault();
-      setAddress(suggestions[suggestionIdx].address);
-      setShowSuggestions(false); setSuggestions([]); setSuggestionIdx(-1);
+      pickSuggestion(suggestions[suggestionIdx]);
     } else if (e.key === "Escape") { setShowSuggestions(false); setSuggestionIdx(-1); }
   }
+
+  const searchFormRef = useRef<HTMLFormElement>(null);
+  const searchFormRef2 = useRef<HTMLFormElement>(null);
 
   function pickSuggestion(s: { address: string; uprn: string }) {
     setAddress(s.address);
     setShowSuggestions(false); setSuggestions([]); setSuggestionIdx(-1);
+    // Auto-submit search immediately after picking an address
+    setTimeout(() => {
+      const form = searchFormRef.current ?? searchFormRef2.current;
+      form?.requestSubmit();
+    }, 0);
   }
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!address.trim()) return;
+
+    // Save current case before starting a new search
+    if (currentCaseId && !["issued", "archived"].includes(currentCaseStatus)) {
+      await saveCaseRef.current(true);
+    }
 
     setLoading(true);
     // Keep previous result visible while loading — cleared only on success or error
@@ -714,10 +990,19 @@ export default function Home() {
       setBuildingSearchIds([]);
       setBuildingSearchAddressKeys([]);
       setBuildingSearchDone(false);
+      setBuildingSearchResult(null);
+      setOutwardSearchResult(null);
+      setMapMounted(false);
+      setMapLandUseCache(null);
+      setMapImdCache(null);
+      setMapIncomeCache(null);
+      setMapEducationCache(null);
+      setMapCrimeCache(null);
+      landUseFetchRef.current = false;
       setAdoptedComparables([]);
       setCurrentCaseId(null);
       setSaveCaseType("research");
-      setCurrentCaseStatus("draft");
+      setCurrentCaseStatus("in_progress");
       setValuationDate("");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -902,32 +1187,51 @@ export default function Home() {
       {!result ? (
         /* ── Initial state: no result yet ─ centred search ────────────────── */
         <div className="w-full max-w-xl py-16">
-          <div className="flex items-center justify-between mb-1">
+          <div className="mb-1">
             <h1 className="text-3xl font-bold font-orbitron text-[#00F0FF] tracking-wider">PropVal</h1>
-            <button
-              onClick={() => { setShowCasesPanel(true); fetchCases(); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
-            >
-              My Cases
-            </button>
           </div>
           <p className="text-sm text-[#94A3B8] mb-8">
-            Enter a UK address to start a valuation
+            {manualMode ? "Type the full address to search" : "Enter a UK postcode and select the address"}
           </p>
 
-          <form onSubmit={handleSearch} className="flex gap-2 mb-8">
+          <form ref={searchFormRef} onSubmit={handleSearch} className="flex gap-2 mb-2">
             <div style={{ position: "relative", flex: 1 }}>
               <input
                 type="text"
                 value={address}
                 onChange={(e) => handleAddressChange(e.target.value)}
-                onKeyDown={handleSuggestionKeyDown}
+                onKeyDown={(e) => {
+                  handleSuggestionKeyDown(e);
+                  // In postcode mode, block Enter unless a suggestion is selected (force pick from list)
+                  if (!manualMode && e.key === "Enter" && suggestionIdx < 0) e.preventDefault();
+                }}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                placeholder="e.g. 41 Gander Green Lane SM1 2EG"
+                onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                placeholder={manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG"}
                 disabled={loading}
                 className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#F5E6C8] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
               />
-              {(showSuggestions || suggestionsLoading) && (
+              {(showSuggestions || suggestionsLoading) && !manualMode && (
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                  {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                  {!suggestionsLoading && suggestions.map((s, i) => (
+                    <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
+                      style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid rgba(51,65,85,0.3)" }}>
+                      {s.address}
+                    </div>
+                  ))}
+                  {!suggestionsLoading && (
+                    <div
+                      onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
+                      style={{ padding: "10px 14px", fontSize: 12, color: "#FFB800", cursor: "pointer", borderTop: "1px solid #334155", background: "rgba(255,184,0,0.05)" }}
+                    >
+                      Address not listed? Click here to type full address manually
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* Manual mode autocomplete (same as before) */}
+              {(showSuggestions || suggestionsLoading) && manualMode && suggestions.length > 0 && (
                 <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                   {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
                   {!suggestionsLoading && suggestions.map((s, i) => (
@@ -939,14 +1243,25 @@ export default function Home() {
                 </div>
               )}
             </div>
-            <button
-              type="submit"
-              disabled={loading || !address.trim()}
-              className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? "Searching…" : "Search"}
-            </button>
+            {manualMode && (
+              <button
+                type="submit"
+                disabled={loading || !address.trim()}
+                className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {loading ? "Searching…" : "Search"}
+              </button>
+            )}
           </form>
+          {manualMode && (
+            <button
+              onClick={() => { setManualMode(false); setAddress(""); setSuggestions([]); setShowSuggestions(false); }}
+              className="text-xs text-[#94A3B8] hover:text-[#00F0FF] transition-colors mb-6 cursor-pointer"
+            >
+              ← Back to postcode lookup
+            </button>
+          )}
+          {!manualMode && <div className="mb-6" />}
 
           {loading && (
             <div className="flex justify-center py-12">
@@ -976,8 +1291,9 @@ export default function Home() {
 
           {/* Tab bar — drag to reorder */}
           <div className="flex items-end border-b border-[#334155] mb-6 no-print">
+            {/* ── Section tabs only ── */}
             {tabOrder.map((tab) => {
-              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Same Building Sales", outward: "Additional Sales", adopted: "Adopted Comparables", report: "Report" };
+              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", outward: "Wider Comparables", browse: "Browse Sales", adopted: "Adopted Comparables", report: "Report" };
               const active = activeTab === tab;
               const badge = tab === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
               return (
@@ -987,7 +1303,6 @@ export default function Home() {
                   onDragStart={(e) => {
                     dragTabRef.current = tab;
                     e.dataTransfer.effectAllowed = "move";
-                    // Make the drag ghost semi-transparent
                     if (e.currentTarget) {
                       e.dataTransfer.setDragImage(e.currentTarget, e.currentTarget.offsetWidth / 2, e.currentTarget.offsetHeight / 2);
                     }
@@ -1029,7 +1344,78 @@ export default function Home() {
                 </button>
               );
             })}
-            <div className="ml-auto pb-1 flex items-center gap-2">
+          </div>
+
+          {/* ── Action bar: case controls + customise ──────────────────────────── */}
+          <div className="flex items-center justify-between mb-4 no-print">
+            {/* Left: save + auto-save indicator + status flow */}
+            <div className="flex items-center gap-2">
+              {!currentCaseId && (
+                <button
+                  onClick={() => setShowSaveDialog(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#39FF14]/40 text-[#39FF14] hover:bg-[#39FF14]/10 transition-colors"
+                >
+                  Create a New Case
+                </button>
+              )}
+              {currentCaseId && (
+                <span className={`text-[10px] px-2 py-1 rounded ${
+                  autoSaveStatus === "saving" ? "text-[#FFB800]"
+                  : autoSaveStatus === "saved" ? "text-[#39FF14]"
+                  : autoSaveStatus === "error" ? "text-[#FF3131]"
+                  : "text-[#475569]"
+                }`}>
+                  {autoSaveStatus === "saving" ? "Saving..."
+                  : autoSaveStatus === "saved" ? "Saved"
+                  : autoSaveStatus === "error" ? "Save failed"
+                  : ["issued", "archived"].includes(currentCaseStatus) ? "Locked" : "Auto-save on"}
+                </span>
+              )}
+              {currentCaseId && (() => {
+                const allStatuses: { key: string; label: string; color: string }[] = [
+                  { key: "in_progress", label: "In Progress", color: "border-[#FFB800]/40 text-[#FFB800] bg-[#FFB800]/10" },
+                  { key: "complete", label: "Complete", color: "border-[#39FF14]/40 text-[#39FF14] bg-[#39FF14]/10" },
+                  { key: "issued", label: "Issued", color: "border-[#00F0FF]/40 text-[#00F0FF] bg-[#00F0FF]/10" },
+                  { key: "archived", label: "Archived", color: "border-[#334155] text-[#94A3B8] bg-[#334155]/20" },
+                ];
+                const statusFlow: Record<string, string[]> = {
+                  in_progress: ["complete"],
+                  complete: ["in_progress", "issued"],
+                  issued: ["archived"],
+                  archived: [],
+                };
+                const allowed = statusFlow[currentCaseStatus] ?? [];
+                return (
+                  <div className="flex items-center gap-1">
+                    {allStatuses.map(s => {
+                      const isCurrent = currentCaseStatus === s.key;
+                      const isAllowed = allowed.includes(s.key);
+                      return (
+                        <button
+                          key={s.key}
+                          onClick={() => {
+                            if (isAllowed && s.key === "issued" && !confirm("Issue this case? It will become locked and cannot be edited.")) return;
+                            if (isAllowed) updateCaseStatus(s.key);
+                          }}
+                          disabled={!isAllowed && !isCurrent}
+                          className={`px-2 py-1 text-[10px] font-medium rounded border transition-colors ${
+                            isCurrent
+                              ? s.color + " ring-1 ring-current"
+                              : isAllowed
+                                ? "border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] cursor-pointer"
+                                : "border-[#1E293B] text-[#334155] cursor-not-allowed opacity-40"
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+            {/* Right: customise + Save & Exit */}
+            <div className="flex items-center gap-2">
               {activeTab === "property" && isCustomising && (
                 <button
                   onClick={resetCardSizes}
@@ -1051,44 +1437,65 @@ export default function Home() {
                 </button>
               )}
               <button
-                onClick={() => {
-                  if (currentCaseId) { saveCase(); } else { setShowSaveDialog(true); }
+                onClick={() => window.dispatchEvent(new CustomEvent('propval-reset-home'))}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border transition-all"
+                style={{
+                  background: 'linear-gradient(135deg, #FF2D78 0%, #7B2FBE 100%)',
+                  color: '#FFFFFF',
+                  borderColor: 'transparent',
+                  boxShadow: '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22',
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#39FF14]/40 text-[#39FF14] hover:bg-[#39FF14]/10 transition-colors"
+                onMouseEnter={e => {
+                  e.currentTarget.style.boxShadow = '0 0 16px #FF2D7888, 0 0 32px #7B2FBE44';
+                  e.currentTarget.style.transform = 'scale(1.03)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.boxShadow = '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22';
+                  e.currentTarget.style.transform = 'scale(1)';
+                }}
               >
-                {currentCaseId ? "Update Case" : "Save Case"}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                  <polyline points="17 21 17 13 7 13 7 21" />
+                  <polyline points="7 3 7 8 15 8" />
+                </svg>
+                Save &amp; Exit
               </button>
-              {currentCaseId && (() => {
-                const flow: { key: string; label: string; color: string }[] = [
-                  { key: "draft", label: "Draft", color: "border-[#475569] text-[#E2E8F0] bg-[#475569]/20" },
-                  { key: "in_progress", label: "In Progress", color: "border-[#FFB800]/40 text-[#FFB800] bg-[#FFB800]/10" },
-                  { key: "complete", label: "Complete", color: "border-[#39FF14]/40 text-[#39FF14] bg-[#39FF14]/10" },
-                  { key: "archived", label: "Archived", color: "border-[#334155] text-[#94A3B8] bg-[#334155]/20" },
-                ];
-                return (
-                  <div className="flex items-center gap-1 ml-1">
-                    {flow.map(s => (
-                      <button
-                        key={s.key}
-                        onClick={() => updateCaseStatus(s.key)}
-                        className={`px-2 py-1 text-[10px] font-medium rounded border transition-colors ${
-                          currentCaseStatus === s.key
-                            ? s.color + " ring-1 ring-current"
-                            : "border-[#334155] text-[#475569] hover:text-[#94A3B8] hover:border-[#475569]"
-                        }`}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                );
-              })()}
-              <button
-                onClick={() => { setShowCasesPanel(true); fetchCases(); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
-              >
-                My Cases
-              </button>
+              {currentCaseId && (
+                <button
+                  onClick={() => {
+                    if (!confirm("Are you sure you want to delete this case?")) return;
+                    if (!confirm("This action cannot be undone. Delete permanently?")) return;
+                    deleteCase(currentCaseId);
+                    doResetHome();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all"
+                  style={{
+                    background: 'transparent',
+                    color: '#FF3131',
+                    borderColor: '#FF313166',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = '#FF313118';
+                    e.currentTarget.style.borderColor = '#FF3131';
+                    e.currentTarget.style.boxShadow = '0 0 12px #FF313144';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.borderColor = '#FF313166';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                    <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+                  </svg>
+                  Delete
+                </button>
+              )}
             </div>
           </div>
 
@@ -1096,20 +1503,43 @@ export default function Home() {
           <div style={{ display: activeTab === "property" ? undefined : "none" }}>
             <div className="space-y-5">
 
-            {/* Search bar */}
-            <form onSubmit={handleSearch} className="flex gap-2">
+            {/* Search bar — disabled while a case is loaded (Save & Exit to unlock) */}
+            <form ref={searchFormRef2} onSubmit={handleSearch} className="flex gap-2">
               <div style={{ position: "relative", flex: 1 }}>
                 <input
                   type="text"
                   value={address}
                   onChange={(e) => handleAddressChange(e.target.value)}
-                  onKeyDown={handleSuggestionKeyDown}
+                  onKeyDown={(e) => {
+                    handleSuggestionKeyDown(e);
+                    if (!manualMode && e.key === "Enter" && suggestionIdx < 0) e.preventDefault();
+                  }}
                   onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                  placeholder="e.g. 41 Gander Green Lane SM1 2EG"
-                  disabled={loading}
+                  onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                  placeholder={currentCaseId ? "Save & Exit to search a new address" : (manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG")}
+                  disabled={loading || !!currentCaseId}
                   className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#F5E6C8] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
                 />
-                {(showSuggestions || suggestionsLoading) && (
+                {(showSuggestions || suggestionsLoading) && !manualMode && !currentCaseId && (
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                    {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                    {!suggestionsLoading && suggestions.map((s, i) => (
+                      <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
+                        style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid rgba(51,65,85,0.3)" }}>
+                        {s.address}
+                      </div>
+                    ))}
+                    {!suggestionsLoading && (
+                      <div
+                        onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
+                        style={{ padding: "10px 14px", fontSize: 12, color: "#FFB800", cursor: "pointer", borderTop: "1px solid #334155", background: "rgba(255,184,0,0.05)" }}
+                      >
+                        Address not listed? Click here to type full address manually
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(showSuggestions || suggestionsLoading) && manualMode && suggestions.length > 0 && !currentCaseId && (
                   <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                     {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
                     {!suggestionsLoading && suggestions.map((s, i) => (
@@ -1121,14 +1551,24 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              <button
-                type="submit"
-                disabled={loading || !address.trim()}
-                className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {loading ? "Searching…" : "Search"}
-              </button>
+              {manualMode && (
+                <button
+                  type="submit"
+                  disabled={loading || !address.trim() || !!currentCaseId}
+                  className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {loading ? "Searching…" : "Search"}
+                </button>
+              )}
             </form>
+            {manualMode && !currentCaseId && (
+              <button
+                onClick={() => { setManualMode(false); setAddress(""); setSuggestions([]); setShowSuggestions(false); }}
+                className="text-xs text-[#94A3B8] hover:text-[#00F0FF] transition-colors mt-1 cursor-pointer"
+              >
+                ← Back to postcode lookup
+              </button>
+            )}
 
             {loading && (
               <div className="flex justify-center py-8">
@@ -1959,8 +2399,10 @@ export default function Home() {
           {/* ── Tab 2: Same Building Sales ───────────────────────────────────── */}
           <div style={{ display: activeTab === "comparables" ? undefined : "none" }}>
             <ComparableSearch
-              key={`building-${result.uprn ?? result.postcode}`}
+              key={`building-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
               mode="building"
+              initialResult={buildingSearchResult}
+              onSearchResult={setBuildingSearchResult}
               onSearchComplete={(ids, addressKeys) => {
                 setBuildingSearchIds(ids);
                 setBuildingSearchAddressKeys(addressKeys);
@@ -2004,8 +2446,10 @@ export default function Home() {
           {/* ── Tab 3: Additional Sales ──────────────────────────────────────── */}
           <div style={{ display: activeTab === "outward" ? undefined : "none" }}>
             <ComparableSearch
-              key={`outward-${result.uprn ?? result.postcode}`}
+              key={`outward-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
               mode="outward"
+              initialResult={outwardSearchResult}
+              onSearchResult={setOutwardSearchResult}
               locked={!buildingSearchDone}
               excludeIds={buildingSearchIds}
               excludeAddressKeys={buildingSearchAddressKeys}
@@ -2041,6 +2485,33 @@ export default function Home() {
               paonNumber={result.paon_number}
               saon={result.saon}
               streetName={result.street_name}
+            />
+          </div>
+
+          {/* ── Tab: Browse Sales ────────────────────────────────────────────── */}
+          <div style={{ display: activeTab === "browse" ? undefined : "none" }}>
+            <BrowseSales
+              outwardCode={result.postcode ? result.postcode.trim().split(/\s+/)[0] : ""}
+              subjectAddress={result.address ?? ""}
+              subjectSaon={result.saon ?? null}
+              subjectPaon={result.paon_number ?? result.building_name ?? null}
+              subjectStreet={result.street_name ?? null}
+              subjectPostcode={result.postcode ?? ""}
+              subjectPropertyType={result.property_type ?? null}
+              subjectTenure={result.tenure ?? null}
+              subjectEpcScore={result.energy_score ?? null}
+              subjectEpcRating={result.energy_rating ?? null}
+              subjectFloorArea={result.floor_area_m2 ?? null}
+              subjectRooms={result.num_rooms ?? null}
+              subjectAgeBand={result.construction_age_band ?? null}
+              subjectLeaseTermYears={result.lease_term_years ?? null}
+              subjectLeaseExpiry={result.lease_expiry_date ?? null}
+              onAdopt={(comp) => setAdoptedComparables(prev => {
+                const k = comp.transaction_id ?? comp.address;
+                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
+                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
+              })}
+              adoptedIds={adoptedIds}
             />
           </div>
 
@@ -2882,43 +3353,52 @@ export default function Home() {
             </div>
           </div>
 
-          {/* ── Map tab ──────────────────────────────────────────────────────── */}
-          {activeTab === "map" && (
-            <div style={{ height: 560, borderRadius: 12, overflow: "hidden" }}>
-              {result.lat != null && result.lon != null ? (
-                <PropertyMap
-                  subjectLat={result.lat}
-                  subjectLon={result.lon}
-                  subjectAddress={result.address}
-                  subjectEpc={result.energy_rating}
-                  subjectFloodRisk={result.rivers_sea_risk}
-                  adoptedComparables={adoptedComparables}
-                  compCoords={compCoords}
-                  onRemoveComparable={(comp) => setAdoptedComparables(prev =>
-                    prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address))
-                  )}
-                  showFlood={mapShowFlood} onShowFloodChange={setMapShowFlood}
-                  showRings={mapShowRings} onShowRingsChange={setMapShowRings}
-                  showLandUse={mapShowLandUse} onShowLandUseChange={setMapShowLandUse}
-                  showDeprivation={mapShowDeprivation} onShowDeprivationChange={setMapShowDeprivation}
-                  showRoadNoise={mapShowRoadNoise} onShowRoadNoiseChange={setMapShowRoadNoise}
-                  showRailNoise={mapShowRailNoise} onShowRailNoiseChange={setMapShowRailNoise}
-                  showCrime={mapShowCrime} onShowCrimeChange={setMapShowCrime}
-                  showIncome={mapShowIncome} onShowIncomeChange={setMapShowIncome}
-                  showEducation={mapShowEducation} onShowEducationChange={setMapShowEducation}
-                  tileLayer={mapTileLayer} onTileLayerChange={setMapTileLayer}
-                  incomeCache={mapIncomeCache} onIncomeCacheChange={setMapIncomeCache}
-                  educationCache={mapEducationCache} onEducationCacheChange={setMapEducationCache}
-                  crimeCache={mapCrimeCache} onCrimeCacheChange={setMapCrimeCache}
-                  landUseCache={mapLandUseCache} onLandUseCacheChange={setMapLandUseCache}
-                  imdCache={mapImdCache} onImdCacheChange={setMapImdCache}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full text-[#94A3B8] text-sm">
-                  No coordinates available for this property.
-                </div>
-              )}
-            </div>
+          {/* ── Map tab — full-bleed: edge-to-edge, fills remaining viewport ── */}
+          {mapMounted && (
+          <div style={{
+            display: activeTab === "map" ? undefined : "none",
+            position: "relative",
+            /* Break out of the max-w-6xl px-4 parent container */
+            marginLeft: "calc(-50vw + 50%)",
+            marginRight: "calc(-50vw + 50%)",
+            width: "100vw",
+            /* Fill from tabs to bottom of viewport */
+            height: "calc(100vh - 140px)",
+          }}>
+            {result.lat != null && result.lon != null ? (
+              <PropertyMap
+                subjectLat={result.lat}
+                subjectLon={result.lon}
+                subjectAddress={result.address}
+                subjectEpc={result.energy_rating}
+                subjectFloodRisk={result.rivers_sea_risk}
+                adoptedComparables={adoptedComparables}
+                compCoords={compCoords}
+                onRemoveComparable={(comp) => setAdoptedComparables(prev =>
+                  prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address))
+                )}
+                showFlood={mapShowFlood} onShowFloodChange={setMapShowFlood}
+                showRings={mapShowRings} onShowRingsChange={setMapShowRings}
+                showLandUse={mapShowLandUse} onShowLandUseChange={setMapShowLandUse}
+                showDeprivation={mapShowDeprivation} onShowDeprivationChange={setMapShowDeprivation}
+                showRoadNoise={mapShowRoadNoise} onShowRoadNoiseChange={setMapShowRoadNoise}
+                showRailNoise={mapShowRailNoise} onShowRailNoiseChange={setMapShowRailNoise}
+                showCrime={mapShowCrime} onShowCrimeChange={setMapShowCrime}
+                showIncome={mapShowIncome} onShowIncomeChange={setMapShowIncome}
+                showEducation={mapShowEducation} onShowEducationChange={setMapShowEducation}
+                tileLayer={mapTileLayer} onTileLayerChange={setMapTileLayer}
+                incomeCache={mapIncomeCache} onIncomeCacheChange={setMapIncomeCache}
+                educationCache={mapEducationCache} onEducationCacheChange={setMapEducationCache}
+                crimeCache={mapCrimeCache} onCrimeCacheChange={setMapCrimeCache}
+                landUseCache={mapLandUseCache} onLandUseCacheChange={setMapLandUseCache}
+                imdCache={mapImdCache} onImdCacheChange={setMapImdCache}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-[#94A3B8] text-sm">
+                No coordinates available for this property.
+              </div>
+            )}
+          </div>
           )}
 
           {/* ── Tab 6: House Price Index ─────────────────────────────────────── */}
@@ -3135,7 +3615,7 @@ export default function Home() {
 
       {/* ── Save Case dialog ────────────────────────────────────────────────── */}
       {showSaveDialog && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => setShowSaveDialog(false)}>
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}>
           <div className="bg-[#111827] border border-[#334155] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
             <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">New Case</h2>
             <p className="text-sm text-[#E2E8F0] mb-1 truncate">{result?.address}</p>
@@ -3159,13 +3639,13 @@ export default function Home() {
             </div>
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => setShowSaveDialog(false)}
+                onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}
                 className="px-4 py-2 text-sm rounded-lg border border-[#334155] text-[#94A3B8] hover:bg-[#1E293B] transition-colors"
               >
-                Cancel
+                {pendingExitAfterSave ? "Don\u2019t Save" : "Cancel"}
               </button>
               <button
-                onClick={saveCase}
+                onClick={() => saveCase()}
                 disabled={savingCase}
                 className="px-4 py-2 text-sm font-bold rounded-lg bg-[#39FF14] text-[#0A0E1A] hover:bg-[#32E612] disabled:opacity-50 transition-colors"
               >
@@ -3180,22 +3660,26 @@ export default function Home() {
       {showCasesPanel && (() => {
         const filters = [
           { key: "all", label: "All" },
-          { key: "draft", label: "Draft" },
           { key: "in_progress", label: "In Progress" },
           { key: "complete", label: "Complete" },
+          { key: "issued", label: "Issued" },
           { key: "research", label: "Research" },
           { key: "full_valuation", label: "Full Valuation" },
         ];
-        const statusFilters = ["draft", "in_progress", "complete"];
+        const statusFilters = ["in_progress", "complete", "issued"];
         const typeFilters = ["research", "full_valuation"];
         const filtered = casesList.filter(c => {
           if (casesFilter === "all") return c.status !== "archived";
-          if (statusFilters.includes(casesFilter)) return c.status === casesFilter;
+          if (statusFilters.includes(casesFilter)) {
+            const effectiveStatus = c.status === "draft" ? "in_progress" : c.status;
+            return effectiveStatus === casesFilter;
+          }
           if (typeFilters.includes(casesFilter)) return c.case_type === casesFilter && c.status !== "archived";
           return true;
         }).sort((a, b) => {
           const dir = casesSortDir === "asc" ? 1 : -1;
           if (casesSort === "updated") return dir * (new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+          if (casesSort === "created") return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
           if (casesSort === "valuation_date") {
             const da = a.valuation_date ? new Date(a.valuation_date).getTime() : 0;
             const db = b.valuation_date ? new Date(b.valuation_date).getTime() : 0;
@@ -3207,14 +3691,15 @@ export default function Home() {
         });
         const sortOptions = [
           { key: "updated", label: "Last Updated" },
+          { key: "created", label: "Case Creation Date" },
           { key: "valuation_date", label: "Valuation Date" },
           { key: "postcode", label: "Postcode" },
           { key: "address", label: "Address" },
         ];
         const statusColors: Record<string, string> = {
-          draft: "bg-[#475569] text-[#E2E8F0]",
           in_progress: "bg-[#FFB800]/20 text-[#FFB800]",
           complete: "bg-[#39FF14]/20 text-[#39FF14]",
+          issued: "bg-[#00F0FF]/20 text-[#00F0FF]",
           archived: "bg-[#334155] text-[#94A3B8]",
         };
         return (
@@ -3286,10 +3771,12 @@ export default function Home() {
                       <p className="text-xs text-[#94A3B8] truncate mt-0.5">{c.address}</p>
                       <div className="flex items-center gap-2 mt-1.5">
                         <span className="text-[10px] px-1.5 py-0.5 rounded capitalize bg-[#7B2FBE]/20 text-[#c084fc]">{typeLabel}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${statusColors[c.status] ?? statusColors.draft}`}>{(c.status ?? "draft").replace("_", " ")}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${statusColors[c.status] ?? statusColors.in_progress}`}>{(c.status === "draft" ? "in_progress" : (c.status ?? "in_progress")).replace("_", " ")}</span>
                       </div>
                       <p className="text-[10px] text-[#475569] mt-1">
-                        {new Date(c.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                        Created: {new Date(c.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        <span className="mx-1.5">·</span>
+                        Updated: {new Date(c.updated_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                         {c.postcode && <span className="ml-2">{c.postcode}</span>}
                       </p>
                     </div>

@@ -6,13 +6,14 @@ import re
 import traceback
 from datetime import datetime
 from pathlib import Path
-from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
 from routers.auth import get_current_user
+from routers import ppd_cache
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel
 from shapely.geometry import Point, shape
@@ -290,6 +291,9 @@ _ROAD_ABBR = {
     r"\bDR\b": "DRIVE", r"\bLN\b": "LANE", r"\bCL\b": "CLOSE",
     r"\bCT\b": "COURT", r"\bPL\b": "PLACE", r"\bGDNS\b": "GARDENS",
     r"\bCRES\b": "CRESCENT", r"\bWK\b": "WALK",
+    r"\bTERR\b": "TERRACE", r"\bGR\b": "GROVE", r"\bSQ\b": "SQUARE",
+    r"\bPK\b": "PARK", r"\bMT\b": "MOUNT", r"\bRI\b": "RISE",
+    r"\bWY\b": "WAY",
 }
 
 
@@ -321,7 +325,7 @@ def _paon_match(epc_paon: str, lr_paon: str) -> bool:
 
 def _saon_num(s: str) -> str | None:
     """Extract the numeric identifier from a SAON ('FLAT 38B' → '38B')."""
-    m = re.search(r"\b(\d+[A-Z]?)\b", s.upper())
+    m = re.search(r"\b(\d+[A-Z]*)\b", s.upper())
     return m.group(1) if m else None
 
 
@@ -423,9 +427,14 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
                 street = a3 or None
     else:
         saon = None
-        m = re.match(r"^(\d+\w*)", a1)
-        paon = m.group(1) if m else a1
-        street = a2 or None
+        m = re.match(r"^(\d+\w*)\s*,?\s*(.*)", a1)
+        if m:
+            paon = m.group(1)
+            remainder = m.group(2).strip()
+            street = remainder or a2 or None
+        else:
+            paon = a1
+            street = a2 or None
 
     # Strip leading commas/whitespace from street (e.g. ", CUTTER LANE" → "CUTTER LANE")
     if street:
@@ -458,7 +467,7 @@ def combined_score(query: str, candidate: str) -> float:
     2. Street name similarity < 0.4 → 0.0 (different road, same number)
     3. Otherwise: 50% overall fuzzy + 50% house-number component
     """
-    fuzzy = SequenceMatcher(None, query.lower(), candidate.lower()).ratio()
+    fuzzy = fuzz.ratio(query.lower(), candidate.lower()) / 100.0
     q_num = house_number(query)
     c_num = house_number(candidate)
 
@@ -474,7 +483,7 @@ def combined_score(query: str, candidate: str) -> float:
     q_street = _street_part(query)
     c_street = _street_part(candidate)
     if q_street and c_street:
-        street_sim = SequenceMatcher(None, q_street, c_street).ratio()
+        street_sim = fuzz.ratio(q_street, c_street) / 100.0
         if street_sim < 0.4:
             return 0.0          # different road — hard reject
 
@@ -493,19 +502,24 @@ def _lr_label(uri: str) -> str:
     return fragment.replace("-", " ").title()
 
 
+_PT_LABEL = {"D": "Detached", "S": "Semi Detached", "T": "Terraced",
+             "F": "Flat Maisonette", "O": "Other"}
+_TENURE_LABEL = {"F": "Freehold", "L": "Leasehold"}
+
+
 def _format_sale(b: dict) -> dict:
-    nb_val = b.get("newBuild", {}).get("value", "").lower()
+    nb = (b.get("new_build") or "").upper()
     return {
-        "date": b.get("date", {}).get("value", "")[:10],
-        "price": int(float(b.get("amount", {}).get("value", 0))),
-        "tenure": _lr_label(b.get("estateType", {}).get("value", "")),
-        "property_type": _lr_label(b.get("propertyType", {}).get("value", "")),
-        "new_build": nb_val in ("true", "y", "yes"),
+        "date": (b.get("deed_date") or "")[:10],
+        "price": int(b.get("price_paid") or 0),
+        "tenure": _TENURE_LABEL.get(b.get("estate_type", ""), b.get("estate_type", "")),
+        "property_type": _PT_LABEL.get(b.get("property_type", ""), b.get("property_type", "")),
+        "new_build": nb in ("Y", "TRUE", "YES"),
     }
 
 
 def _filter_sales(bindings: list[dict], parts: dict[str, str | None]) -> list[dict]:
-    """Filter raw SPARQL bindings to those matching street/SAON/PAON, newest first."""
+    """Filter PPD cache rows to those matching street/SAON/PAON, newest first."""
     saon       = parts.get("saon")    # e.g. "FLAT 38" or None
     paon       = parts.get("paon")    # e.g. "41"
     epc_street = parts.get("street")  # e.g. "HIGH STREET"
@@ -531,9 +545,9 @@ def _filter_sales(bindings: list[dict], parts: dict[str, str | None]) -> list[di
 
     sales = []
     for b in bindings:
-        row_paon   = b.get("paon",   {}).get("value", "").strip().upper()
-        row_saon   = b.get("saon",   {}).get("value", "").strip().upper()
-        row_street = b.get("street", {}).get("value", "").strip().upper()
+        row_paon   = (b.get("paon") or "").strip().upper()
+        row_saon   = (b.get("saon") or "").strip().upper()
+        row_street = (b.get("street") or "").strip().upper()
 
         # Street filter — only apply when both sides are populated
         if epc_street_norm and row_street:
@@ -734,40 +748,13 @@ def _sparql_escape(s: str) -> str:
 
 
 async def _fetch_sparql_bindings(postcode: str) -> list[dict]:
+    """Fetch all Land Registry transactions for a postcode.
+    Uses the on-demand PPD cache (HMLR CSV → Supabase) instead of live SPARQL.
+    Returns data in SPARQL-binding format for compatibility with _filter_sales.
+    """
     pc = normalise_postcode(postcode)
-    pc_safe = _sparql_escape(pc)
-    sparql = f"""
-PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
-PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
-
-SELECT ?date ?amount ?estateType ?propertyType ?newBuild ?paon ?saon ?street
-WHERE {{
-  ?transaction a lrppi:TransactionRecord ;
-    lrppi:pricePaid ?amount ;
-    lrppi:transactionDate ?date ;
-    lrppi:propertyAddress ?addr .
-
-  ?addr lrcommon:postcode "{pc_safe}" .
-
-  OPTIONAL {{ ?addr lrcommon:paon ?paon }}
-  OPTIONAL {{ ?addr lrcommon:saon ?saon }}
-  OPTIONAL {{ ?addr lrcommon:street ?street }}
-  OPTIONAL {{ ?transaction lrppi:estateType ?estateType }}
-  OPTIONAL {{ ?transaction lrppi:propertyType ?propertyType }}
-  OPTIONAL {{ ?transaction lrppi:newBuild ?newBuild }}
-}}
-ORDER BY DESC(?date)
-"""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            SPARQL_ENDPOINT,
-            params={"query": sparql, "output": "json"},
-            headers={"Accept": "application/sparql-results+json"},
-        )
-    print(f"DEBUG: Land Registry SPARQL status={resp.status_code}, postcode={pc}")
-    if resp.status_code != 200:
-        return []
-    return resp.json().get("results", {}).get("bindings", [])
+    print(f"DEBUG: Land Registry PPD cache query, postcode={pc}")
+    return await ppd_cache.query_by_postcode_all_time(pc)
 
 
 
@@ -1518,7 +1505,7 @@ async def _fetch_epc_cert_url(postcode: str, matched_address: str) -> str | None
         best_path, best_score = None, 0.0
         q_num = house_number(matched_address)
         for path, cert_addr in pairs:
-            fuzzy = SequenceMatcher(None, matched_address.lower(), cert_addr.lower()).ratio()
+            fuzzy = fuzz.ratio(matched_address.lower(), cert_addr.lower()) / 100.0
             c_num = house_number(cert_addr)
             number_match = (1.0 if q_num == c_num else 0.0) if (q_num and c_num) else fuzzy
             score = 0.5 * fuzzy + 0.5 * number_match
@@ -1646,8 +1633,8 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
             if (not parts["saon"] and parts["paon"]
                     and re.match(r"^\d+\w*$", str(parts["paon"]).strip())):
                 for b in sparql_bindings:
-                    lr_paon = b.get("paon", {}).get("value", "").strip().upper()
-                    lr_saon = b.get("saon", {}).get("value", "").strip().upper()
+                    lr_paon = (b.get("paon") or "").strip().upper()
+                    lr_saon = (b.get("saon") or "").strip().upper()
                     if ((lr_saon == str(parts["paon"]).upper()
                             or _saon_num(lr_saon) == str(parts["paon"]).upper())
                             and lr_paon and not re.match(r"^\d", lr_paon)):
@@ -1742,8 +1729,8 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                 if (not parts["saon"] and parts["paon"]
                         and re.match(r"^\d+\w*$", str(parts["paon"]).strip())):
                     for b in sparql_bindings:
-                        lr_paon = b.get("paon", {}).get("value", "").strip().upper()
-                        lr_saon = b.get("saon", {}).get("value", "").strip().upper()
+                        lr_paon = (b.get("paon") or "").strip().upper()
+                        lr_saon = (b.get("saon") or "").strip().upper()
                         if ((lr_saon == str(parts["paon"]).upper()
                                 or _saon_num(lr_saon) == str(parts["paon"]).upper())
                                 and lr_paon and not re.match(r"^\d", lr_paon)):
@@ -1900,7 +1887,7 @@ def _scrape_council_tax_band(postcode: str, matched_address: str) -> str | None:
         best_band, best_score = None, 0.0
         q_num = house_number(matched_address)
         for addr_text, band in entries:
-            score = SequenceMatcher(None, matched_address.lower(), addr_text.lower()).ratio()
+            score = fuzz.ratio(matched_address.lower(), addr_text.lower()) / 100.0
             # Boost exact house-number match (same logic as EPC matching)
             if q_num and house_number(addr_text) == q_num:
                 score += 0.3

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/components/AuthProvider";
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -10,6 +10,8 @@ interface Props {
   mode:                  "building" | "outward";
   locked?:               boolean;           // outward mode: block search until building search is done
   onSearchComplete?:     (ids: string[], addressKeys: string[]) => void;  // building mode: notify parent
+  onSearchResult?:       (result: SearchResponse) => void;  // notify parent of search results for persistence
+  initialResult?:        SearchResponse | null;              // pre-loaded results from saved case
   excludeIds?:           string[];          // outward mode: transaction IDs to skip
   excludeAddressKeys?:   string[];          // outward mode: address keys (SAON|POSTCODE) to skip
   onAdopt?:              (comp: ComparableCandidate) => void;
@@ -73,7 +75,7 @@ interface SearchMetadata {
   target_met:               boolean;
 }
 
-interface SearchResponse {
+export interface SearchResponse {
   target_count:    number;
   comparables:     ComparableCandidate[];
   search_metadata: SearchMetadata;
@@ -168,7 +170,8 @@ const TIER_STYLE: Record<number, { pill: string; header: string; icon: string }>
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ComparableSearch({
-  mode, locked = false, onSearchComplete, excludeIds = [], excludeAddressKeys = [],
+  mode, locked = false, onSearchComplete, onSearchResult, initialResult = null,
+  excludeIds = [], excludeAddressKeys = [],
   onAdopt, onAdoptAll, onUnadoptAll, adoptedIds = new Set(),
   valuationDate, onValuationDateChange,
   uprn, postcode, floorArea, rooms, ageBand, epcRating,
@@ -179,13 +182,27 @@ export default function ComparableSearch({
   const [targetCount,    setTargetCount]    = useState(10);
   const [loading,             setLoading]             = useState(false);
   const [error,               setError]               = useState<string | null>(null);
-  const [result,              setResult]              = useState<SearchResponse | null>(null);
+  const [result,              setResult]              = useState<SearchResponse | null>(initialResult);
   const [rejected,            setRejected]            = useState<Set<string>>(new Set());
   const [sortBy,              setSortBy]              = useState<"default" | "date" | "size" | "price" | "psf">("default");
   const [sortDir,             setSortDir]             = useState<"asc" | "desc">("desc");
   const [outwardEnabled,      setOutwardEnabled]      = useState(false); // outward mode only
-  const [buildingMonths,      setBuildingMonths]      = useState(30);    // building mode only
+  const [buildingMonths,      setBuildingMonths]      = useState(36);    // Tier 1 time window (same building / same street)
   const [neighbouringMonths,  setNeighbouringMonths]  = useState(12);    // outward mode only
+
+  // When loading from saved case, fire onSearchComplete so outward tab unlocks
+  useEffect(() => {
+    if (initialResult && isBuilding && onSearchComplete) {
+      const ids = initialResult.comparables
+        .map(c => c.transaction_id)
+        .filter((id): id is string => id !== null);
+      const addressKeys = initialResult.comparables
+        .filter(c => c.saon)
+        .map(c => `${c.saon!.toUpperCase()}|${c.postcode}`);
+      onSearchComplete(ids, addressKeys);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const buildYear  = deriveBuildYear(ageBand);
   const era        = deriveEraFromAgeBand(ageBand) ?? deriveBuildingEra(buildYear);
@@ -243,6 +260,7 @@ export default function ComparableSearch({
       }
       const data: SearchResponse = await r.json();
       setResult(data);
+      if (onSearchResult) onSearchResult(data);
       if (isBuilding && onSearchComplete) {
         const ids = data.comparables
           .map(c => c.transaction_id)

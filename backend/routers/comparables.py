@@ -4,18 +4,17 @@ Comparable Selection Engine — implements the architecture spec:
 
 Architecture:
   - Hard deck filters: tenure (never), property type (±1 house hierarchy),
-    building era for flats (never), bedrooms (±1 when relaxed)
+    building era for flats (never), bedrooms flats only (±1 when relaxed)
   - 4 geographic tiers per property type (flat / house)
   - 3-phase orchestrator: strict → relax type → relax type+beds
   - Cumulative pool with early exit at target_count
-  - Live SPARQL + EPC per request (no DB ingestion needed yet)
+  - On-demand PPD cache: downloads HMLR CSV per outward code into Supabase,
+    then queries via SQL.
 
-SPARQL strategy:
-  Tier 1 (same building / same street):
-    Postcode-level query — no cap, guaranteed completeness for small postcodes.
-    Outward-level query reused (already cached) — filtered by building name.
-  Tiers 3-4 (outward / adjacent codes):
-    Outward-level query, 500/year cap, Python-side filtering.
+Data strategy:
+  On first search for an outward code, download the full PPD CSV from HMLR
+  (~1-5K rows for 36 months, ~400KB) and cache in Supabase. Subsequent
+  queries are instant SQL lookups. Cache refreshed every 30 days.
   EPC cache:
     Lazy — fetched on demand when a new postcode is first encountered.
 """
@@ -29,12 +28,13 @@ import time
 from pathlib import Path
 from datetime import date
 from dateutil.relativedelta import relativedelta
-from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 
 import httpx
 from fastapi import APIRouter, Depends
 
 from routers.auth import get_current_user
+from routers import ppd_cache
 from pydantic import BaseModel, model_validator
 
 router = APIRouter(prefix="/api/comparables", tags=["comparables"])
@@ -43,32 +43,15 @@ router = APIRouter(prefix="/api/comparables", tags=["comparables"])
 # Constants
 # ---------------------------------------------------------------------------
 
-SPARQL_ENDPOINT      = "https://landregistry.data.gov.uk/landregistry/query"
 EPC_API_BASE         = "https://epc.opendatacommunities.org/api/v1/domestic/search"
-
-SPARQL_CONCURRENT    = 3      # max parallel SPARQL (avoid 429 on LR)
-SPARQL_OUTWARD_CAP   = 200    # rows per outward-code query per year-slice
 EPC_CONCURRENT       = 10     # max parallel EPC calls
 EPC_CALL_TIMEOUT     = 4.0    # EPC API is fast; short timeout avoids blocking
-SPARQL_TIMEOUT       = 25.0   # per-query hard timeout (asyncio.wait_for — reliable on Windows)
-
-
-def _sparql_escape(s: str) -> str:
-    """Escape a string for safe inclusion in a SPARQL double-quoted literal."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
 TOTAL_TIMEOUT        = 90.0   # total orchestrator timeout
 MAX_ADJACENT_CODES   = 2      # keep tier 4 fast
 
-# Time windows per tier (months) — as per spec §5
-# Postcode-level queries (flat T1, house T2) support full spec windows since they are fast.
-# Outward-level queries are capped at 12 months (1 SPARQL slice) due to LR endpoint
-# performance on busy London districts. Longer outward windows require a local DB cache.
-FLAT_TIER_MONTHS     = {1: 30, 2: 12, 3: 12, 4: 12}
-HOUSE_TIER_MONTHS    = {1: 12, 2: 18, 3: 12, 4: 12}
-
 FLAT_TIER_LABELS     = {1: "Same building", 2: "Same development",
                          3: "Same outward code", 4: "Adjacent area"}
-HOUSE_TIER_LABELS    = {1: "Same street",    2: "Same postcode",
+HOUSE_TIER_LABELS    = {1: "Same postcode",  2: "Same street",
                          3: "Same outward code", 4: "Adjacent area"}
 
 # ---------------------------------------------------------------------------
@@ -105,6 +88,11 @@ class SubjectPropertyInput(BaseModel):
             self.property_type = "house"
         if self.building_era is None and self.build_year is not None:
             self.building_era = derive_building_era(self.build_year)
+        # Auto-populate development_name from building_name to enable Tier 2
+        # normalise_building strips noise words (HOUSE, TOWER, etc.) so fuzzy
+        # matching "COMPASS HOUSE" vs "COMPASS COURT" works naturally.
+        if self.development_name is None and self.building_name:
+            self.development_name = self.building_name
         return self
 
 
@@ -113,7 +101,7 @@ class ComparableSearchRequest(BaseModel):
     target_count:             int       = 10
     valuation_date:           str | None = None
     max_tier:                 int       = 4    # cap search at this tier (1-4)
-    building_months:          int       = 30   # Tier 1 flat time window, 12–36 months
+    building_months:          int       = 36   # Tier 1 time window (flat: same building, house: same street)
     neighbouring_months:      int       = 12   # Tiers 3-4 time window, 6–24 months
     exclude_transaction_ids:  list[str] = []   # skip these exact transaction URIs
     exclude_address_keys:     list[str] = []   # skip any transaction at these saon|postcode addresses
@@ -179,28 +167,14 @@ def _outward(postcode: str) -> str:
 # Property type helpers
 # ---------------------------------------------------------------------------
 
-_LR_TYPE_MAP = {
-    "detached":        ("house", "detached"),
-    "semi-detached":   ("house", "semi-detached"),
-    "terraced":        ("house", "terraced"),
-    "flat-maisonette": ("flat",  None),
-    "other":           (None,    None),
+# PPD single-letter type codes → (property_type, house_sub_type)
+_PPD_TYPE_MAP = {
+    "D": ("house", "detached"),
+    "S": ("house", "semi-detached"),
+    "T": ("house", "terraced"),
+    "F": ("flat",  None),
+    "O": (None,    None),
 }
-
-_LR_ESTATE_MAP = {"freehold": "freehold", "leasehold": "leasehold"}
-
-
-def _lr_type_to_spec(uri: str | None) -> tuple[str | None, str | None]:
-    if not uri:
-        return None, None
-    frag = uri.rsplit("/", 1)[-1].lower()
-    return _LR_TYPE_MAP.get(frag, (None, None))
-
-
-def _lr_tenure(uri: str | None) -> str | None:
-    if not uri:
-        return None
-    return _LR_ESTATE_MAP.get(uri.rsplit("/", 1)[-1].lower())
 
 
 def _derive_property_type(epc_val: str | None) -> str | None:
@@ -303,23 +277,25 @@ def normalise_street(s: str) -> str:
 def normalise_building(s: str) -> str:
     s = s.upper().strip()
     s = _BUILDING_NOISE.sub("", s)
+    s = re.sub(r"\bSAINT\b", "ST", s)   # normalise SAINT → ST
     s = re.sub(r"[^A-Z0-9 ]", "", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _building_fuzzy(a: str | None, b: str | None) -> bool:
+def _building_fuzzy(a: str | None, b: str | None, threshold: float = 80) -> bool:
+    """Fuzzy-match two building names using rapidfuzz token_sort_ratio.
+
+    token_sort_ratio handles word-order differences:
+      "OLD BREWERY APARTMENTS" vs "APARTMENTS OLD BREWERY" → high score
+      "ST JAMES COURT" vs "SAINT JAMES CT" → caught after normalise_building
+    """
     if not a or not b:
         return False
     na, nb = normalise_building(a), normalise_building(b)
     if not na or not nb:
         return False
-    return na == nb or SequenceMatcher(None, na, nb).ratio() >= 0.80
+    return na == nb or fuzz.token_sort_ratio(na, nb) >= threshold
 
-
-def _binding_matches_building(building_name: str, binding: dict) -> bool:
-    """Check if a raw SPARQL binding's paon fuzzy-matches the given building name."""
-    paon = binding.get("paon", {}).get("value", "").strip()
-    return _building_fuzzy(building_name, paon)
 
 # ---------------------------------------------------------------------------
 # House sub-type hierarchy
@@ -365,12 +341,15 @@ def _passes_hard_deck(
         if era != subject.building_era:
             return False
 
-    # Filter 4: Bedrooms
-    if beds is not None and subject.bedrooms is not None:
-        diff = abs(beds - subject.bedrooms)
-        max_diff = 1 if "bedrooms" in relaxations else 0
-        if diff > max_diff:
-            return False
+    # Filter 4: Bedrooms — flats only.
+    # For houses, EPC "number-habitable-rooms" counts ALL rooms (beds + reception + kitchen),
+    # not just bedrooms, making the comparison meaningless (a 3-bed semi = 6 habitable rooms).
+    if subject.property_type == "flat":
+        if beds is not None and subject.bedrooms is not None:
+            diff = abs(beds - subject.bedrooms)
+            max_diff = 1 if "bedrooms" in relaxations else 0
+            if diff > max_diff:
+                return False
 
     return True
 
@@ -394,236 +373,6 @@ def _months_ago(tx_date_str: str, val_date: date) -> int | None:
     d = relativedelta(val_date, tx)
     return d.years * 12 + d.months
 
-# ---------------------------------------------------------------------------
-# SPARQL fetchers
-# ---------------------------------------------------------------------------
-
-SPARQL_POSTCODE_CAP = 500  # hard upper bound per postcode — no UK postcode exceeds this in 30 months;
-                           # LIMIT allows the SPARQL engine to terminate early instead of full-table scanning
-
-
-async def _sparql_postcode(postcode: str, months: int, sem: asyncio.Semaphore,
-                           val_date: date | None = None) -> list[dict]:
-    """All transactions in exact postcode for last N months.
-
-    LIMIT {SPARQL_POSTCODE_CAP} is intentional: it lets the SPARQL endpoint stop
-    scanning early once the limit is reached, preventing the 25 s timeout that
-    occurs on busy London postcodes when no LIMIT is specified.  No real UK postcode
-    has more than ~200 transactions in a 30-month window, so completeness is preserved.
-    """
-    anchor = val_date or date.today()
-    date_from = (anchor - relativedelta(months=months)).isoformat()
-    pc_safe = _sparql_escape(postcode)
-    sparql = f"""
-PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
-PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
-PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
-SELECT ?tx ?date ?amount ?estateType ?propertyType ?newBuild ?category ?paon ?saon ?street ?postcode
-WHERE {{
-  ?tx a lrppi:TransactionRecord ;
-      lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
-      lrppi:propertyAddress ?addr .
-  ?addr lrcommon:postcode ?postcode .
-  FILTER(STR(?postcode) = "{pc_safe}")
-  FILTER(?date >= "{date_from}"^^xsd:date)
-  OPTIONAL {{ ?addr lrcommon:paon ?paon }} OPTIONAL {{ ?addr lrcommon:saon ?saon }}
-  OPTIONAL {{ ?addr lrcommon:street ?street }}
-  OPTIONAL {{ ?tx lrppi:estateType ?estateType }} OPTIONAL {{ ?tx lrppi:propertyType ?propertyType }}
-  OPTIONAL {{ ?tx lrppi:newBuild ?newBuild }} OPTIONAL {{ ?tx lrppi:transactionCategory ?category }}
-}}
-LIMIT {SPARQL_POSTCODE_CAP}"""
-    async with sem:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=SPARQL_TIMEOUT, write=5.0, pool=5.0)) as c:
-                r = await asyncio.wait_for(
-                    c.get(SPARQL_ENDPOINT, params={"query": sparql, "output": "json"},
-                          headers={"Accept": "application/sparql-results+json"}),
-                    timeout=SPARQL_TIMEOUT,
-                )
-            rows = r.json().get("results", {}).get("bindings", []) if r.status_code == 200 else []
-            logging.warning("SPARQL postcode %s → %d rows", postcode, len(rows))
-            return rows
-        except asyncio.TimeoutError:
-            logging.warning("SPARQL postcode %s timed out after %.0fs", postcode, SPARQL_TIMEOUT)
-            return []
-        except Exception:
-            logging.exception("SPARQL postcode failed %s", postcode)
-            return []
-
-
-async def _sparql_building(
-    outward: str, building_name: str, months: int, sem: asyncio.Semaphore,
-    val_date: date | None = None,
-) -> list[dict]:
-    """
-    All transactions in `outward` code where PAON starts with `building_name`.
-
-    Land Registry sometimes appends the street number to the building name in the
-    PAON field, e.g. "QUEENS WHARF, 2" instead of just "QUEENS WHARF".  Using
-    STRSTARTS catches both the bare name and the name-with-number variants while
-    still being precise enough (filtered by outward code) to avoid false positives.
-
-    No row cap — targeted by building, spans all inward codes the building may have.
-    """
-    anchor = val_date or date.today()
-    date_from = (anchor - relativedelta(months=months)).isoformat()
-    bldg_upper = building_name.strip().upper()
-    bldg_safe = _sparql_escape(bldg_upper)
-    outward_safe = _sparql_escape(outward)
-    sparql = f"""
-PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
-PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
-PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
-SELECT ?tx ?date ?amount ?estateType ?propertyType ?newBuild ?category ?paon ?saon ?street ?postcode
-WHERE {{
-  ?tx a lrppi:TransactionRecord ;
-      lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
-      lrppi:propertyAddress ?addr .
-  ?addr lrcommon:postcode ?postcode ;
-        lrcommon:paon ?paon .
-  FILTER(STRSTARTS(STR(?paon), "{bldg_safe}"))
-  FILTER(STRSTARTS(STR(?postcode), "{outward_safe} "))
-  FILTER(?date >= "{date_from}"^^xsd:date)
-  OPTIONAL {{ ?addr lrcommon:saon ?saon }}
-  OPTIONAL {{ ?addr lrcommon:street ?street }}
-  OPTIONAL {{ ?tx lrppi:estateType ?estateType }} OPTIONAL {{ ?tx lrppi:propertyType ?propertyType }}
-  OPTIONAL {{ ?tx lrppi:newBuild ?newBuild }} OPTIONAL {{ ?tx lrppi:transactionCategory ?category }}
-}}"""
-    async with sem:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=SPARQL_TIMEOUT, write=5.0, pool=5.0)) as c:
-                r = await asyncio.wait_for(
-                    c.get(SPARQL_ENDPOINT, params={"query": sparql, "output": "json"},
-                          headers={"Accept": "application/sparql-results+json"}),
-                    timeout=SPARQL_TIMEOUT,
-                )
-            rows = r.json().get("results", {}).get("bindings", []) if r.status_code == 200 else []
-            logging.warning("SPARQL building %s/%s → %d rows", outward, bldg_upper, len(rows))
-            return rows
-        except asyncio.TimeoutError:
-            logging.warning("SPARQL building %s/%s timed out", outward, bldg_upper)
-            return []
-        except Exception:
-            logging.exception("SPARQL building failed %s/%s", outward, bldg_upper)
-            return []
-
-
-async def _sparql_paon_street(
-    outward: str, paon: str, street: str, months: int, sem: asyncio.Semaphore,
-    val_date: date | None = None,
-) -> list[dict]:
-    """
-    All transactions in `outward` where PAON = `paon` AND STREET = `street`.
-    Used for numeric-PAON buildings (e.g. "10 Marsh Wall") where there is no
-    named building identifier — paon+street together identify the building.
-    No row cap — highly targeted query.
-    """
-    anchor = val_date or date.today()
-    date_from = (anchor - relativedelta(months=months)).isoformat()
-    paon_upper   = paon.strip().upper()
-    street_upper = street.strip().upper()
-    paon_safe    = _sparql_escape(paon_upper)
-    street_safe  = _sparql_escape(street_upper)
-    outward_safe = _sparql_escape(outward)
-    sparql = f"""
-PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
-PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
-PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
-SELECT ?tx ?date ?amount ?estateType ?propertyType ?newBuild ?category ?paon ?saon ?street ?postcode
-WHERE {{
-  ?tx a lrppi:TransactionRecord ;
-      lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
-      lrppi:propertyAddress ?addr .
-  ?addr lrcommon:postcode ?postcode ;
-        lrcommon:paon "{paon_safe}" ;
-        lrcommon:street "{street_safe}" .
-  BIND("{paon_safe}"   AS ?paon)
-  BIND("{street_safe}" AS ?street)
-  FILTER(STRSTARTS(STR(?postcode), "{outward_safe} "))
-  FILTER(?date >= "{date_from}"^^xsd:date)
-  OPTIONAL {{ ?addr lrcommon:saon ?saon }}
-  OPTIONAL {{ ?tx lrppi:estateType ?estateType }} OPTIONAL {{ ?tx lrppi:propertyType ?propertyType }}
-  OPTIONAL {{ ?tx lrppi:newBuild ?newBuild }} OPTIONAL {{ ?tx lrppi:transactionCategory ?category }}
-}}"""
-    async with sem:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=SPARQL_TIMEOUT, write=5.0, pool=5.0)) as c:
-                r = await asyncio.wait_for(
-                    c.get(SPARQL_ENDPOINT, params={"query": sparql, "output": "json"},
-                          headers={"Accept": "application/sparql-results+json"}),
-                    timeout=SPARQL_TIMEOUT,
-                )
-            rows = r.json().get("results", {}).get("bindings", []) if r.status_code == 200 else []
-            logging.warning("SPARQL paon+street %s/%s/%s → %d rows", outward, paon_upper, street_upper, len(rows))
-            return rows
-        except asyncio.TimeoutError:
-            logging.warning("SPARQL paon+street %s/%s/%s timed out", outward, paon_upper, street_upper)
-            return []
-        except Exception:
-            logging.exception("SPARQL paon+street failed %s/%s/%s", outward, paon_upper, street_upper)
-            return []
-
-
-async def _sparql_outward_year(
-    outward: str, date_from: str, date_to: str, sem: asyncio.Semaphore
-) -> list[dict]:
-    sparql = f"""
-PREFIX lrppi:    <http://landregistry.data.gov.uk/def/ppi/>
-PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
-PREFIX xsd:      <http://www.w3.org/2001/XMLSchema#>
-SELECT ?tx ?date ?amount ?estateType ?propertyType ?newBuild ?category ?paon ?saon ?street ?postcode
-WHERE {{
-  ?tx a lrppi:TransactionRecord ;
-      lrppi:pricePaid ?amount ; lrppi:transactionDate ?date ;
-      lrppi:propertyAddress ?addr .
-  ?addr lrcommon:postcode ?postcode .
-  FILTER(STRSTARTS(STR(?postcode), "{_sparql_escape(outward)} "))
-  FILTER(?date >= "{date_from}"^^xsd:date)
-  FILTER(?date <  "{date_to}"^^xsd:date)
-  OPTIONAL {{ ?addr lrcommon:paon ?paon }} OPTIONAL {{ ?addr lrcommon:saon ?saon }}
-  OPTIONAL {{ ?addr lrcommon:street ?street }}
-  OPTIONAL {{ ?tx lrppi:estateType ?estateType }} OPTIONAL {{ ?tx lrppi:propertyType ?propertyType }}
-  OPTIONAL {{ ?tx lrppi:newBuild ?newBuild }} OPTIONAL {{ ?tx lrppi:transactionCategory ?category }}
-}}
-LIMIT {SPARQL_OUTWARD_CAP}"""
-    async with sem:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=SPARQL_TIMEOUT, write=5.0, pool=5.0)) as c:
-                r = await asyncio.wait_for(
-                    c.get(SPARQL_ENDPOINT, params={"query": sparql, "output": "json"},
-                          headers={"Accept": "application/sparql-results+json"}),
-                    timeout=SPARQL_TIMEOUT,
-                )
-            rows = r.json().get("results", {}).get("bindings", []) if r.status_code == 200 else []
-            logging.warning("SPARQL outward %s %s→%s → %d rows", outward, date_from, date_to, len(rows))
-            return rows
-        except asyncio.TimeoutError:
-            logging.warning("SPARQL outward %s timed out after %.0fs", outward, SPARQL_TIMEOUT)
-            return []
-        except Exception:
-            logging.exception("SPARQL outward failed %s %s→%s", outward, date_from, date_to)
-            return []
-
-
-async def _sparql_outward(outward: str, months: int, sem: asyncio.Semaphore,
-                          val_date: date | None = None) -> list[dict]:
-    """Fetch outward code in yearly slices back to `months` ago."""
-    anchor = val_date or date.today()
-    # Upper bound: always fetch up to at least today so we never miss recent data
-    # that the 200-row cap on an older window might exclude.
-    upper = max(anchor, date.today())
-    start = anchor - relativedelta(months=months)
-    tasks, cursor = [], upper
-    while cursor > start:
-        yr_start = max(start, date(cursor.year - 1, cursor.month, cursor.day))
-        tasks.append(_sparql_outward_year(outward, yr_start.isoformat(), cursor.isoformat(), sem))
-        cursor = yr_start
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    merged: list[dict] = []
-    for r in results:
-        if isinstance(r, list):
-            merged.extend(r)
-    return merged
 
 # ---------------------------------------------------------------------------
 # EPC cache (lazy, shared across tiers in one request)
@@ -662,97 +411,101 @@ class EpcCache:
                 return []
 
 # ---------------------------------------------------------------------------
-# SPARQL cache (lazy, per request keyed by outward/postcode + max months)
+# PPD cache (on-demand download from HMLR → Supabase SQL queries)
 # ---------------------------------------------------------------------------
 
-class SparqlCache:
-    def __init__(self, sem: asyncio.Semaphore, val_date: date | None = None):
-        self._sem   = sem
-        self._val   = val_date
+class PpdCache:
+    """On-demand PPD cache. Downloads HMLR CSVs into Supabase on first query,
+    then returns flat DB rows for subsequent lookups within the same request."""
+    def __init__(self, val_date: date | None = None):
+        self._val = val_date
+        # In-memory cache for the current request to avoid repeated DB calls
         self._pc:   dict[str, list[dict]] = {}
         self._oc:   dict[str, list[dict]] = {}
         self._bldg: dict[str, list[dict]] = {}
 
     async def postcode(self, pc: str, months: int) -> list[dict]:
         if pc not in self._pc:
-            oc = _outward(pc)
-            if oc in self._oc:
-                # Outward cache is warm — try filtering it first (instant, no SPARQL call).
-                # The outward query is capped at SPARQL_OUTWARD_CAP rows, so this may miss
-                # postcode transactions not in that sample.  Only use the cache if the
-                # outward result was NOT capped (i.e. returned fewer than SPARQL_OUTWARD_CAP
-                # rows per year-slice, meaning we have complete data).
-                oc_rows = self._oc[oc]
-                if len(oc_rows) < SPARQL_OUTWARD_CAP:
-                    pc_norm = _normalise_pc(pc)
-                    filtered = [
-                        row for row in oc_rows
-                        if _normalise_pc(row.get("postcode", {}).get("value", "")) == pc_norm
-                    ]
-                    if filtered:
-                        logging.warning("SPARQL postcode %s — %d rows from outward cache (uncapped)", pc, len(filtered))
-                        self._pc[pc] = filtered
-                        return self._pc[pc]
-            # Direct postcode query — LIMIT keeps this fast even for busy postcodes
-            self._pc[pc] = await _sparql_postcode(pc, months, self._sem, val_date=self._val)
+            self._pc[pc] = await ppd_cache.query_postcode(pc, months, val_date=self._val)
         return self._pc[pc]
 
     async def outward(self, oc: str, months: int) -> list[dict]:
         if oc not in self._oc:
-            self._oc[oc] = await _sparql_outward(oc, months, self._sem, val_date=self._val)
+            self._oc[oc] = await ppd_cache.query_outward(oc, months, val_date=self._val)
         return self._oc[oc]
 
     async def building(self, outward: str, building_name: str, months: int) -> list[dict]:
         key = f"{outward}|{building_name.upper()}|{months}"
         if key not in self._bldg:
-            self._bldg[key] = await _sparql_building(outward, building_name, months, self._sem, val_date=self._val)
+            self._bldg[key] = await ppd_cache.query_building(outward, building_name, months, val_date=self._val)
+        return self._bldg[key]
+
+    async def building_fuzzy(self, outward: str, building_name: str, months: int) -> list[dict]:
+        key = f"fuzzy|{outward}|{building_name.upper()}|{months}"
+        if key not in self._bldg:
+            self._bldg[key] = await ppd_cache.query_building_fuzzy(outward, building_name, months, val_date=self._val)
         return self._bldg[key]
 
     async def paon_street(self, outward: str, paon: str, street: str, months: int) -> list[dict]:
         key = f"{outward}|{paon.upper()}|{street.upper()}|{months}"
         if key not in self._bldg:
-            self._bldg[key] = await _sparql_paon_street(outward, paon, street, months, self._sem, val_date=self._val)
+            self._bldg[key] = await ppd_cache.query_paon_street(outward, paon, street, months, val_date=self._val)
+        return self._bldg[key]
+
+    async def street(self, outward: str, street: str, months: int) -> list[dict]:
+        key = f"street|{outward}|{street.upper()}|{months}"
+        if key not in self._bldg:
+            self._bldg[key] = await ppd_cache.query_street(outward, street, months, val_date=self._val)
+        return self._bldg[key]
+
+    async def street_multi(self, outward_codes: list[str], street: str, months: int) -> list[dict]:
+        key = f"street_multi|{'|'.join(sorted(oc.upper() for oc in outward_codes))}|{street.upper()}|{months}"
+        if key not in self._bldg:
+            self._bldg[key] = await ppd_cache.query_street_multi(outward_codes, street, months, val_date=self._val)
         return self._bldg[key]
 
 # ---------------------------------------------------------------------------
-# SPARQL row parsing
+# PPD row parsing — flat dict in, flat dict out
 # ---------------------------------------------------------------------------
 
-def _parse_row(b: dict) -> dict | None:
-    ds = b.get("date", {}).get("value", "")[:10]
+def _parse_ppd_row(row: dict) -> dict | None:
+    """Parse a flat PPD cache DB row into the internal format used by the search engine."""
+    deed = (row.get("deed_date") or "")[:10]
     try:
-        date.fromisoformat(ds)
+        date.fromisoformat(deed)
     except Exception:
         return None
+    price = row.get("price_paid") or 0
     try:
-        price = int(float(b.get("amount", {}).get("value", "0")))
-    except Exception:
+        price = int(price)
+    except (ValueError, TypeError):
         return None
     if price <= 0:
         return None
-    pc_raw = b.get("postcode", {}).get("value", "").strip()
+    pc_raw = (row.get("postcode") or "").strip()
     if not pc_raw or len(pc_raw) < 5:
         return None
     postcode = _normalise_pc(pc_raw)
-    prop_type, sub_type = _lr_type_to_spec(b.get("propertyType", {}).get("value"))
-    new_build = b.get("newBuild", {}).get("value", "false").lower() == "true"
-    cat = b.get("category", {}).get("value", "")
-    cat = cat.rsplit("/", 1)[-1].upper()[:1] if cat else None
-    tx_id = b.get("tx", {}).get("value") or None
+    pt_code = (row.get("property_type") or "").strip().upper()
+    prop_type, sub_type = _PPD_TYPE_MAP.get(pt_code, (None, None))
+    et = (row.get("estate_type") or "").strip().upper()
+    tenure = "freehold" if et == "F" else "leasehold" if et == "L" else None
+    nb = (row.get("new_build") or "").strip().upper()
+    cat = (row.get("transaction_category") or "").strip().upper()[:1] or None
     return {
-        "transaction_id": tx_id,
-        "sale_date":      ds,
+        "transaction_id": row.get("transaction_id") or None,
+        "sale_date":      deed,
         "price":          price,
         "postcode":       postcode,
         "outward_code":   _outward(postcode),
-        "tenure":         _lr_tenure(b.get("estateType", {}).get("value")),
+        "tenure":         tenure,
         "property_type":  prop_type,
         "house_sub_type": sub_type,
-        "new_build":      new_build,
+        "new_build":      nb == "Y",
         "category":       cat,
-        "saon":           b.get("saon",   {}).get("value", "").strip().upper(),
-        "paon":           b.get("paon",   {}).get("value", "").strip().upper(),
-        "street":         b.get("street", {}).get("value", "").strip().upper(),
+        "saon":           (row.get("saon") or "").strip().upper(),
+        "paon":           (row.get("paon") or "").strip().upper(),
+        "street":         (row.get("street") or "").strip().upper(),
     }
 
 
@@ -777,8 +530,8 @@ def _enrich(saon: str, paon: str, street: str, postcode: str,
     if not epc_rows:
         return {}
     addr = " ".join(filter(None, [saon, paon, street, postcode])).lower()
-    best = max(epc_rows, key=lambda r: SequenceMatcher(None, addr, _epc_addr(r).lower()).ratio())
-    if SequenceMatcher(None, addr, _epc_addr(best).lower()).ratio() < 0.25:
+    best = max(epc_rows, key=lambda r: fuzz.ratio(addr, _epc_addr(r).lower()))
+    if fuzz.ratio(addr, _epc_addr(best).lower()) < 25:
         return {}
 
     build_year = None
@@ -885,7 +638,7 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
     )
 
 # ---------------------------------------------------------------------------
-# Core: filter SPARQL rows by criteria, EPC-enrich, hard-deck, dedup
+# Core: filter PPD rows by criteria, EPC-enrich, hard-deck, dedup
 # ---------------------------------------------------------------------------
 
 async def _process_rows(
@@ -913,7 +666,7 @@ async def _process_rows(
     # Parse and time-window filter
     candidates: list[dict] = []
     for b in rows:
-        raw = _parse_row(b)
+        raw = _parse_ppd_row(b)
         if raw is None:
             continue
         if not _within_window(raw["sale_date"], val_date, months):
@@ -1045,7 +798,7 @@ async def _adjacent_outcodes(outward: str) -> list[str]:
 async def _run_flat_tier(
     tier:                int,
     subject:             SubjectPropertyInput,
-    sc:                  SparqlCache,
+    sc:                  PpdCache,
     epc:                 EpcCache,
     val_date:            date,
     seen:                set[str],
@@ -1055,19 +808,14 @@ async def _run_flat_tier(
     neighbouring_months: int = 12,
     exclude_addr:        set[str] = frozenset(),
 ) -> list[dict]:
-    if tier == 1:
-        months = building_months
-    elif tier in (3, 4):
-        months = neighbouring_months
-    else:
-        months = FLAT_TIER_MONTHS[tier]
+    months = building_months if tier in (1, 2) else neighbouring_months
     oc = _outward(subject.postcode)
 
     if tier == 1:
         # A building can span multiple postcodes (same outward, different inward codes).
         # Strategy:
         #   1. Always query the exact postcode (fast, complete for that postcode).
-        #   2. If building_name is known, run a dedicated SPARQL query filtering by
+        #   2. If building_name is known, run a dedicated query filtering by
         #      outward code + PAON = building name. This is uncapped and returns all
         #      sales in that building regardless of which inward code they carry.
         #   3. Union both sets (dedup by transaction key) before processing.
@@ -1079,7 +827,32 @@ async def _run_flat_tier(
         #   - Numeric PAON (e.g. "10 Marsh Wall"): filter by outward + PAON number + STREET
         #   - Neither known: fall back to postcode-only
         if bldg:
-            rows_bldg = await sc.building(oc, bldg, months)
+            # Exact prefix/contains match + rapidfuzz fuzzy match (parallel)
+            rows_exact, rows_fuzzy = await asyncio.gather(
+                sc.building(oc, bldg, months),
+                sc.building_fuzzy(oc, bldg, months),
+            )
+            # Union exact + fuzzy results (dedup by transaction_id)
+            bldg_seen: set[str] = set()
+            rows_bldg: list[dict] = []
+            for b in rows_exact + rows_fuzzy:
+                tid = b.get("transaction_id", "")
+                if tid and tid not in bldg_seen:
+                    bldg_seen.add(tid)
+                    rows_bldg.append(b)
+                elif not tid:
+                    rows_bldg.append(b)
+            logging.warning(
+                "Tier 1 building queries: exact=%d, fuzzy=%d, union=%d",
+                len(rows_exact), len(rows_fuzzy), len(rows_bldg),
+            )
+            # Street validation: filter out false positives from similarly-named
+            # buildings on different streets
+            if rows_bldg and subject.street_name:
+                sn_norm = normalise_street(subject.street_name)
+                rows_bldg = [b for b in rows_bldg
+                             if not (b.get("street") or "").strip()
+                             or normalise_street(b["street"]) == sn_norm]
         elif subject.paon_number and subject.street_name:
             rows_bldg = await sc.paon_street(oc, subject.paon_number, subject.street_name, months)
         else:
@@ -1090,7 +863,7 @@ async def _run_flat_tier(
             seen_keys: set[str] = set()
             combined: list[dict] = []
             for b in rows_pc + rows_bldg:
-                raw = _parse_row(b)
+                raw = _parse_ppd_row(b)
                 if raw is None:
                     continue
                 k = _dedup_key(raw)
@@ -1115,8 +888,9 @@ async def _run_flat_tier(
         dev_norm = normalise_building(subject.development_name)
 
         def geo2(raw: dict) -> bool:
-            return (normalise_building(raw["paon"]) == dev_norm or
-                    SequenceMatcher(None, dev_norm, normalise_building(raw["paon"])).ratio() >= 0.80)
+            paon_norm = normalise_building(raw["paon"])
+            return (paon_norm == dev_norm or
+                    fuzz.token_sort_ratio(dev_norm, paon_norm) >= 80)
 
         rows = await sc.outward(oc, months)
         return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
@@ -1143,7 +917,7 @@ async def _run_flat_tier(
 async def _run_house_tier(
     tier:                int,
     subject:             SubjectPropertyInput,
-    sc:                  SparqlCache,
+    sc:                  PpdCache,
     epc:                 EpcCache,
     val_date:            date,
     seen:                set[str],
@@ -1153,27 +927,33 @@ async def _run_house_tier(
     neighbouring_months: int = 12,
     exclude_addr:        set[str] = frozenset(),
 ) -> list[dict]:
-    months = neighbouring_months if tier in (3, 4) else HOUSE_TIER_MONTHS[tier]
+    months = building_months if tier in (1, 2) else neighbouring_months
     oc = _outward(subject.postcode)
 
     if tier == 1:
+        # Tier 1: Same postcode — all house sales in the exact postcode
+        rows = await sc.postcode(subject.postcode, months)
+        return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
+                                    exclude_addr=exclude_addr)
+
+    elif tier == 2:
+        # Tier 2: Same street — across subject's outward code + adjacent codes
+        # Excludes Tier 1 results (already in `seen` set from the orchestrator)
         if not subject.street_name:
             return []
         sn_norm = normalise_street(subject.street_name)
 
-        def geo1(raw: dict) -> bool:
+        def geo_street(raw: dict) -> bool:
             return bool(raw["street"]) and normalise_street(raw["street"]) == sn_norm
 
-        # Use postcode query (uncapped) rather than outward (capped at 200)
-        # to avoid missing same-street transactions in busy outward codes.
-        rows = await sc.postcode(subject.postcode, months)
-        return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    geo_filter=geo1, exclude_addr=exclude_addr)
-
-    elif tier == 2:
-        rows = await sc.postcode(subject.postcode, months)
-        return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+        search_codes = [oc] + adj
+        rows_street = await sc.street_multi(search_codes, subject.street_name, months)
+        logging.warning(
+            "House Tier 2 street search: %s across %d codes → %d rows",
+            subject.street_name, len(search_codes), len(rows_street),
+        )
+        return await _process_rows(rows_street, subject, epc, val_date, seen, relax, tier, months,
+                                    geo_filter=geo_street, exclude_addr=exclude_addr)
 
     elif tier == 3:
         rows = await sc.outward(oc, months)
@@ -1212,8 +992,7 @@ async def _orchestrate(
     3-phase orchestrator per spec §6.
     Returns (raw_pool, total_candidates_scanned).
     """
-    sem    = asyncio.Semaphore(SPARQL_CONCURRENT)
-    sc     = SparqlCache(sem, val_date=val_date)
+    sc     = PpdCache(val_date=val_date)
     epc    = EpcCache(epc_email, epc_key)
     pool:  list[dict] = []
     seen:  set[str]   = set(exclude_ids)   # pre-seed with already-found IDs from building search
@@ -1224,32 +1003,15 @@ async def _orchestrate(
     is_flat  = subject.property_type == "flat"
     oc       = _outward(subject.postcode)
 
-    # ── Step 1: pre-fetch SPARQL data ──────────────────────────────────────
-    # Outward code is fetched FIRST so the postcode cache can derive its results
-    # by filtering the outward rows, avoiding a separate (often slow/timing-out)
-    # postcode-level SPARQL query for busy London postcodes.
+    # ── Step 1: ensure PPD cache is warm for all needed outward codes ─────
     adj = await _adjacent_outcodes(oc) if max_tier >= 4 else []
-
-    pc_months  = building_months if is_flat else HOUSE_TIER_MONTHS[2]
-    oc_months  = neighbouring_months  # outward queries use the user-controlled window
-
-    logging.info("Pre-fetching SPARQL outward=%s first (max_tier=%d)", oc, max_tier)
-
-    # Phase A: outward + adjacent codes in parallel (postcode waits for outward)
-    phase_a = [sc.outward(oc, oc_months)]
-    if max_tier >= 4:
-        phase_a += [sc.outward(code, oc_months) for code in adj]
-    await asyncio.gather(*phase_a, return_exceptions=True)
-
-    # Phase B: postcode (now uses outward cache if available) + building queries
-    phase_b: list = [sc.postcode(subject.postcode, pc_months)]
-    if is_flat and subject.building_name:
-        phase_b.append(sc.building(oc, subject.building_name, pc_months))
-    elif is_flat and subject.paon_number and subject.street_name:
-        phase_b.append(sc.paon_street(oc, subject.paon_number, subject.street_name, pc_months))
-    await asyncio.gather(*phase_b, return_exceptions=True)
-
-    logging.info("SPARQL pre-fetch complete — postcode=%s outward=%s max_tier=%d", subject.postcode, oc, max_tier)
+    # Pre-download HMLR data for outward code + adjacents (if not already cached)
+    codes_to_cache = [oc] + adj
+    await asyncio.gather(
+        *[ppd_cache.ensure_cache(code) for code in codes_to_cache],
+        return_exceptions=True,
+    )
+    logging.info("PPD cache warm — outward=%s adjacents=%s", oc, adj)
 
     tier_fn = _run_flat_tier if is_flat else _run_house_tier
 
@@ -1357,10 +1119,7 @@ async def search_comparables(req: ComparableSearchRequest, _user: dict = Depends
         logging.warning("Comparable search timed out after %.0fs — returning partial results", TOTAL_TIMEOUT)
         pool, total_scanned = [], 0
 
-    # Sort: tier ASC, then most recent first
-    pool.sort(key=lambda r: (r["_tier"], r["sale_date"]), reverse=False)
-    pool.sort(key=lambda r: (r["_tier"], r["sale_date"]))
-    # stable sort: first sort by date DESC, then by tier ASC (stable)
+    # Sort: tier ASC, then most recent first (stable sort)
     pool_sorted = sorted(pool, key=lambda r: r["sale_date"], reverse=True)
     pool_sorted = sorted(pool_sorted, key=lambda r: r["_tier"])
 
@@ -1403,3 +1162,349 @@ async def search_comparables(req: ComparableSearchRequest, _user: dict = Depends
             target_met               = len(comparables) >= req.target_count,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Browse Sales — raw PPD data with server-side filters, no hard deck
+# ---------------------------------------------------------------------------
+
+_PROP_TYPE_LABELS = {"D": "Detached", "S": "Semi-detached", "T": "Terraced",
+                     "F": "Flat", "O": "Other"}
+_TENURE_LABELS    = {"F": "Freehold", "L": "Leasehold"}
+
+
+class BrowseRequest(BaseModel):
+    outward_code:   str
+    property_type:  str | None = None   # D/S/T/F/O
+    estate_type:    str | None = None   # F/L
+    min_date:       str | None = None   # ISO date
+    max_date:       str | None = None
+    min_price:      int | None = None
+    max_price:      int | None = None
+    new_build:      str | None = None   # Y/N
+    exclude_postcode: str | None = None  # exclude subject's own postcode
+    force_refresh:  bool = False         # force re-download from HMLR
+
+
+def _match_ppd_to_epc(ppd_rows: list[dict], epc_rows: list[dict]) -> dict[str, dict]:
+    """Pre-match PPD transactions to EPC records using address fuzzy matching.
+
+    Groups EPC records by postcode, then for each PPD row finds the best
+    EPC match by comparing SAON+PAON+STREET against EPC address fields.
+
+    Returns: {transaction_id → {bedrooms, floor_area_sqm, epc_rating, epc_score,
+              build_year, epc_matched}}
+    """
+    if not epc_rows:
+        return {}
+
+    # Group EPC records by postcode for fast lookup
+    epc_by_pc: dict[str, list[dict]] = {}
+    for e in epc_rows:
+        pc = e.get("postcode", "")
+        if pc not in epc_by_pc:
+            epc_by_pc[pc] = []
+        epc_by_pc[pc].append(e)
+
+    enriched: dict[str, dict] = {}
+    for r in ppd_rows:
+        tid = r.get("transaction_id", "")
+        pc = r.get("postcode", "")
+        candidates = epc_by_pc.get(pc, [])
+        if not candidates:
+            continue
+
+        # Build PPD address string for comparison
+        saon = r.get("saon", "")
+        paon = r.get("paon", "")
+        street = r.get("street", "")
+        ppd_addr = " ".join(filter(None, [saon, paon, street])).upper()
+        if not ppd_addr:
+            continue
+
+        # Find best EPC match
+        best_score = 0
+        best_epc = None
+        for e in candidates:
+            # EPC address: address1 usually has flat/unit, address2 has building/street
+            epc_addr = " ".join(filter(None, [
+                e.get("address1", ""),
+                e.get("address2", ""),
+                e.get("address3", ""),
+            ])).upper()
+            score = fuzz.token_sort_ratio(ppd_addr, epc_addr)
+            if score > best_score:
+                best_score = score
+                best_epc = e
+
+        # Accept match if score >= 60 (reasonably confident)
+        if best_score >= 60 and best_epc:
+            build_year = None
+            try:
+                cy = best_epc.get("construction_year", "")
+                if cy:
+                    build_year = int(cy)
+            except (ValueError, TypeError):
+                pass
+
+            enriched[tid] = {
+                "bedrooms":       best_epc.get("number_rooms"),
+                "floor_area_sqm": best_epc.get("floor_area"),
+                "epc_rating":     best_epc.get("energy_rating") or None,
+                "epc_score":      best_epc.get("energy_score"),
+                "build_year":     build_year,
+                "epc_matched":    True,
+            }
+
+    return enriched
+
+
+@router.post("/browse")
+async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_user)):
+    """Return all PPD transactions for an outward code, with optional filters.
+    Auto-enriches with cached EPC data if available.
+    """
+    t0 = time.monotonic()
+    outward = req.outward_code.strip().upper()
+    if req.force_refresh:
+        await ppd_cache.force_refresh(outward)
+    else:
+        await ppd_cache.ensure_cache_with_epc(outward)
+
+    def _query() -> list[dict]:
+        sb = ppd_cache._get_sb()
+        q = sb.table("price_paid_cache").select("*").eq("outward_code", outward)
+        if req.property_type:
+            q = q.eq("property_type", req.property_type.upper())
+        if req.estate_type:
+            q = q.eq("estate_type", req.estate_type.upper())
+        if req.min_date:
+            q = q.gte("deed_date", req.min_date)
+        if req.max_date:
+            q = q.lte("deed_date", req.max_date)
+        if req.min_price:
+            q = q.gte("price_paid", req.min_price)
+        if req.max_price:
+            q = q.lte("price_paid", req.max_price)
+        if req.new_build:
+            q = q.eq("new_build", req.new_build.upper())
+        q = q.order("deed_date", desc=True)
+
+        # Paginate past Supabase 1000-row default limit
+        all_rows: list[dict] = []
+        offset = 0
+        while True:
+            batch = q.range(offset, offset + 999).execute()
+            rows = batch.data or []
+            all_rows.extend(rows)
+            if len(rows) < 1000:
+                break
+            offset += 1000
+        return all_rows
+
+    rows = await asyncio.to_thread(_query)
+
+    # Optionally exclude subject's postcode
+    if req.exclude_postcode:
+        pc = req.exclude_postcode.strip().upper()
+        rows = [r for r in rows if r.get("postcode") != pc]
+
+    # Try to pre-match with cached EPC data (non-blocking — if cache not ready, skip)
+    epc_match: dict[str, dict] = {}
+    try:
+        epc_rows = await ppd_cache.query_epc_outward(outward)
+        if epc_rows:
+            epc_match = await asyncio.to_thread(_match_ppd_to_epc, rows, epc_rows)
+            logging.warning("Browse EPC pre-match: %d/%d matched", len(epc_match), len(rows))
+    except Exception:
+        logging.exception("EPC pre-match failed for %s (non-fatal)", outward)
+
+    # Format for frontend
+    results = []
+    for r in rows:
+        saon = r.get("saon", "")
+        paon = r.get("paon", "")
+        street = r.get("street", "")
+        address = " ".join(filter(None, [saon, paon, street])).title()
+        tid = r.get("transaction_id", "")
+
+        row_data = {
+            "transaction_id":  tid,
+            "address":         address,
+            "postcode":        r.get("postcode", ""),
+            "price":           r.get("price_paid", 0),
+            "date":            r.get("deed_date", ""),
+            "property_type":   _PROP_TYPE_LABELS.get(r.get("property_type", ""), r.get("property_type", "")),
+            "tenure":          _TENURE_LABELS.get(r.get("estate_type", ""), r.get("estate_type", "")),
+            "new_build":       r.get("new_build", "") == "Y",
+            "category":        r.get("transaction_category", ""),
+            # Raw codes for filtering
+            "_type_code":      r.get("property_type", ""),
+            "_tenure_code":    r.get("estate_type", ""),
+            # Address parts for EPC matching
+            "raw_saon":        saon,
+            "_paon":           paon,
+            "_street":         street,
+            "_locality":       r.get("locality", ""),
+            "_town":           r.get("town", ""),
+            "_district":       r.get("district", ""),
+            "_county":         r.get("county", ""),
+        }
+
+        # Merge pre-matched EPC data if available
+        epc = epc_match.get(tid)
+        if epc:
+            row_data.update(epc)
+
+        results.append(row_data)
+
+    duration = int((time.monotonic() - t0) * 1000)
+    epc_count = sum(1 for r in results if r.get("epc_matched"))
+    logging.warning("Browse %s: %d results (%d EPC-enriched) in %dms",
+                    outward, len(results), epc_count, duration)
+
+    return {
+        "outward_code": outward,
+        "total":        len(results),
+        "epc_matched":  epc_count,
+        "duration_ms":  duration,
+        "results":      results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Enrich — EPC-enrich a batch of transactions
+# ---------------------------------------------------------------------------
+
+class EnrichRequest(BaseModel):
+    transactions: list[dict]   # [{transaction_id, raw_saon, _paon, _street, postcode}, ...]
+
+
+@router.post("/enrich")
+async def enrich_transactions(req: EnrichRequest, _user: dict = Depends(get_current_user)):
+    """EPC-enrich a batch of transactions.
+
+    First tries the local EPC cache (bulk-downloaded alongside PPD).
+    Falls back to live EPC API for any postcodes not in cache.
+    """
+    t0 = time.monotonic()
+
+    # Collect unique postcodes
+    postcodes = list({t.get("postcode", "") for t in req.transactions if t.get("postcode")})
+
+    # Try EPC cache first
+    cached_epc: dict[str, list[dict]] = {}
+    uncached_pcs: list[str] = []
+    for pc in postcodes:
+        try:
+            rows = await ppd_cache.query_epc_cached(pc)
+            if rows:
+                cached_epc[pc] = rows
+            else:
+                uncached_pcs.append(pc)
+        except Exception:
+            uncached_pcs.append(pc)
+
+    # Fall back to live API for uncached postcodes
+    if uncached_pcs:
+        epc_email = os.getenv("EPC_EMAIL", "")
+        epc_key   = os.getenv("EPC_API_KEY", "")
+        epc = EpcCache(epc_email, epc_key)
+        await epc.prefetch(uncached_pcs)
+    else:
+        epc = None
+
+    enriched = {}
+    for t in req.transactions:
+        tid = t.get("transaction_id", "")
+        saon = t.get("raw_saon", "") or t.get("_saon", "")
+        paon = t.get("_paon", "")
+        street = t.get("_street", "")
+        pc = t.get("postcode", "")
+
+        if pc in cached_epc:
+            # Use cached EPC — convert to the format _enrich expects
+            epc_rows = _epc_cache_to_api_format(cached_epc[pc])
+        elif epc and pc:
+            epc_rows = await epc.get(pc)
+        else:
+            epc_rows = []
+
+        data = _enrich(saon, paon, street, pc, epc_rows)
+
+        enriched[tid] = {
+            "bedrooms":       data.get("bedrooms"),
+            "floor_area_sqm": data.get("floor_area_sqm"),
+            "epc_rating":     data.get("epc_rating"),
+            "epc_score":      data.get("epc_score"),
+            "build_year":     data.get("build_year"),
+            "building_era":   data.get("building_era"),
+            "tenure":         data.get("tenure"),
+            "epc_matched":    data.get("epc_matched", False),
+        }
+
+    duration = int((time.monotonic() - t0) * 1000)
+    logging.warning("Enrich: %d transactions, %d cached/%d live postcodes in %dms",
+                    len(req.transactions), len(cached_epc), len(uncached_pcs), duration)
+
+    return {
+        "enriched":    enriched,
+        "duration_ms": duration,
+    }
+
+
+@router.get("/cache-status")
+async def cache_status(_user: dict = Depends(get_current_user)):
+    """Return cache status for all outward codes (PPD + EPC) with storage warning."""
+    def _status() -> dict:
+        sb = ppd_cache._get_sb()
+        ppd_status = sb.table("ppd_cache_status").select("*").execute().data or []
+        try:
+            epc_status = sb.table("epc_cache_status").select("*").execute().data or []
+        except Exception:
+            epc_status = []
+
+        ppd_rows = sum(r.get("row_count", 0) for r in ppd_status)
+        epc_rows = sum(r.get("row_count", 0) for r in epc_status)
+        # Rough size estimate: ~200 bytes per PPD row, ~250 bytes per EPC row
+        est_mb = (ppd_rows * 200 + epc_rows * 250) / (1024 * 1024)
+
+        return {
+            "ppd_outward_codes": len(ppd_status),
+            "ppd_total_rows":   ppd_rows,
+            "epc_outward_codes": len(epc_status),
+            "epc_total_rows":   epc_rows,
+            "estimated_mb":     round(est_mb, 1),
+            "warning":          "Approaching Supabase free tier limit (500MB)" if est_mb > 400 else None,
+            "details":          {
+                "ppd": ppd_status,
+                "epc": epc_status,
+            },
+        }
+
+    return await asyncio.to_thread(_status)
+
+
+def _epc_cache_to_api_format(cache_rows: list[dict]) -> list[dict]:
+    """Convert epc_cache DB rows to the same dict format as the live EPC API returns,
+    so _enrich() works unchanged."""
+    result = []
+    for r in cache_rows:
+        result.append({
+            "address1":                  r.get("address1", ""),
+            "address2":                  r.get("address2", ""),
+            "address3":                  r.get("address3", ""),
+            "address":                   r.get("address", ""),
+            "postcode":                  r.get("postcode", ""),
+            "property-type":             r.get("property_type", ""),
+            "built-form":                r.get("built_form", ""),
+            "total-floor-area":          str(r["floor_area"]) if r.get("floor_area") else "",
+            "number-habitable-rooms":    str(r["number_rooms"]) if r.get("number_rooms") else "",
+            "current-energy-rating":     r.get("energy_rating", ""),
+            "current-energy-efficiency": str(r["energy_score"]) if r.get("energy_score") else "",
+            "construction-year":         r.get("construction_year", ""),
+            "construction-age-band":     r.get("construction_age", ""),
+            "tenure":                    r.get("tenure", ""),
+            "lodgement-date":            r.get("lodgement_date", ""),
+        })
+    return result

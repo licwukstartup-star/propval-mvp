@@ -13,7 +13,6 @@ import {
   WMSTileLayer,
   Circle,
   CircleMarker,
-  ScaleControl,
   GeoJSON,
   useMap,
 } from "react-leaflet";
@@ -177,11 +176,12 @@ function FullscreenControl() {
       title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
       style={{
         position: "absolute", bottom: 80, right: 12, zIndex: 1000,
-        background: "#1E293B", color: "#E2E8F0",
-        border: "1px solid #334155", borderRadius: 6,
+        background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
+        color: "#E2E8F0",
+        border: "1px solid #334155", borderRadius: 8,
         width: 32, height: 32, fontSize: 16,
         cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+        boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
       }}
     >
       {isFullscreen ? "⊡" : "⊞"}
@@ -189,16 +189,100 @@ function FullscreenControl() {
   );
 }
 
+// ── Custom scale bar ──────────────────────────────────────────────────────────
+
+const SCALE_STEPS = [25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+
+function CustomScaleBar() {
+  const map = useMap();
+  const [scaleM, setScaleM] = useState(100);
+  const [barPx, setBarPx] = useState(100);
+
+  useEffect(() => {
+    const update = () => {
+      const center = map.getCenter();
+      // metres per pixel at current zoom
+      const mpp = (40075016.686 * Math.cos((center.lat * Math.PI) / 180)) /
+        Math.pow(2, map.getZoom() + 8);
+      // pick a nice round distance that fits ~120-200px
+      const targetPx = 160;
+      const targetM = mpp * targetPx;
+      let best = SCALE_STEPS[0];
+      for (const s of SCALE_STEPS) {
+        if (s <= targetM * 1.2) best = s;
+      }
+      setScaleM(best);
+      setBarPx(Math.round(best / mpp));
+    };
+    update();
+    map.on("zoomend moveend", update);
+    return () => { map.off("zoomend moveend", update); };
+  }, [map]);
+
+  const labelM = scaleM >= 1000 ? `${scaleM / 1000} km` : `${scaleM} m`;
+  const ft = Math.round(scaleM * 3.28084);
+  const labelFt = ft >= 5280 ? `${(ft / 5280).toFixed(1)} mi` : `${ft} ft`;
+  // number of tick marks (including endpoints)
+  const ticks = 5;
+
+  return (
+    <div style={{
+      position: "absolute", top: 50, left: 12, zIndex: 1000,
+      background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
+      borderRadius: 8, padding: "6px 10px 4px",
+      border: "1px solid #334155", boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
+      fontFamily: "var(--font-mono), monospace", fontSize: 10, color: "#E2E8F0",
+      userSelect: "none", pointerEvents: "none",
+    }}>
+      {/* Metric label */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontWeight: 600, letterSpacing: 0.5 }}>
+        <span style={{ color: "#00F0FF" }}>{labelM}</span>
+        <span style={{ color: "#94A3B8", marginLeft: 12 }}>{labelFt}</span>
+      </div>
+      {/* Scale bar with ticks */}
+      <div style={{ position: "relative", width: barPx, height: 10 }}>
+        {/* Alternating segments */}
+        {Array.from({ length: ticks - 1 }).map((_, i) => {
+          const segW = barPx / (ticks - 1);
+          return (
+            <div key={i} style={{
+              position: "absolute", left: i * segW, top: 2, width: segW, height: 4,
+              background: i % 2 === 0 ? "#00F0FF" : "rgba(0, 240, 255, 0.25)",
+              borderLeft: i === 0 ? "1px solid #00F0FF" : undefined,
+              borderRight: "1px solid #00F0FF",
+            }} />
+          );
+        })}
+        {/* Tick marks */}
+        {Array.from({ length: ticks }).map((_, i) => {
+          const x = (barPx / (ticks - 1)) * i;
+          return (
+            <div key={`t${i}`} style={{
+              position: "absolute", left: x, top: 0, width: 1, height: 8,
+              background: "#00F0FF",
+            }} />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Land use colours (retail, commercial, industrial, etc.) ───────────────────
 
 const LANDUSE_STYLES: Record<string, { fill: string; stroke: string; label: string }> = {
-  retail:     { fill: "#FBBF24", stroke: "#F59E0B", label: "Retail / High Street" },
-  commercial: { fill: "#60A5FA", stroke: "#3B82F6", label: "Commercial" },
-  industrial: { fill: "#A78BFA", stroke: "#7C3AED", label: "Industrial" },
+  retail:              { fill: "#FBBF24", stroke: "#F59E0B", label: "Retail / High Street" },
+  commercial:          { fill: "#60A5FA", stroke: "#3B82F6", label: "Commercial" },
+  industrial:          { fill: "#A78BFA", stroke: "#7C3AED", label: "Industrial" },
+  park:                { fill: "#4ADE80", stroke: "#22C55E", label: "Park" },
+  garden:              { fill: "#86EFAC", stroke: "#4ADE80", label: "Garden" },
+  recreation_ground:   { fill: "#6EE7B7", stroke: "#34D399", label: "Recreation Ground" },
+  playground:          { fill: "#A7F3D0", stroke: "#6EE7B7", label: "Playground" },
+  nature_reserve:      { fill: "#2DD4BF", stroke: "#14B8A6", label: "Nature Reserve" },
 };
 
 function landUseStyle(feature: GeoJSON.Feature | undefined) {
-  const landuse = feature?.properties?.landuse as string | undefined;
+  const landuse = (feature?.properties?.landuse ?? feature?.properties?.leisure) as string | undefined;
   const style = LANDUSE_STYLES[landuse ?? ""] ?? LANDUSE_STYLES.commercial;
   return {
     fillColor: style.fill,
@@ -219,11 +303,12 @@ function useLandUseGeoJSON(
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || cache || loadingRef.current) return;
+    if (cache || loadingRef.current) return;
+    if (!enabled) return;
     loadingRef.current = true;
 
     let cancelled = false;
-    const query = `[out:json][timeout:15];(way["landuse"~"retail|commercial|industrial"](around:2000,${lat},${lon});relation["landuse"~"retail|commercial|industrial"](around:2000,${lat},${lon}););out body;>;out skel qt;`;
+    const query = `[out:json][timeout:30];(way["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${lat},${lon});relation["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${lat},${lon});way["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${lat},${lon});relation["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${lat},${lon}););out body;>;out skel qt;`;
 
     fetch("https://overpass-api.de/api/interpreter", {
       method: "POST",
@@ -248,10 +333,12 @@ function useLandUseGeoJSON(
     return () => { cancelled = true; loadingRef.current = false; };
   }, [lat, lon, enabled, cache, setCache]);
 
-  // Bump key when cache is provided on remount
+  // Bump key whenever cache arrives (pre-fetch or local fetch)
+  const prevCacheRef = useRef(cache);
   useEffect(() => {
-    if (cache) setGeoKey(k => k + 1);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (cache && cache !== prevCacheRef.current) setGeoKey(k => k + 1);
+    prevCacheRef.current = cache;
+  }, [cache]);
 
   return { geojson: cache, geoKey };
 }
@@ -275,19 +362,21 @@ function osmToGeoJSON(osm: { elements: Array<{ type: string; id: number; tags?: 
 
   // Convert ways to polygons
   for (const [, way] of ways) {
-    if (!way.tags?.landuse) continue;
+    const tag = way.tags?.landuse ?? way.tags?.leisure;
+    if (!tag) continue;
     const coords = way.nodes.map(nid => nodes.get(nid)).filter(Boolean) as [number, number][];
     if (coords.length < 3) continue;
     features.push({
       type: "Feature",
-      properties: { landuse: way.tags.landuse, name: way.tags.name },
+      properties: { landuse: way.tags?.landuse, leisure: way.tags?.leisure, name: way.tags?.name },
       geometry: { type: "Polygon", coordinates: [coords] },
     });
   }
 
   // Convert relations (multipolygons) - outer ways only for simplicity
   for (const el of osm.elements) {
-    if (el.type !== "relation" || !el.tags?.landuse || !el.members) continue;
+    const tag = el.tags?.landuse ?? el.tags?.leisure;
+    if (el.type !== "relation" || !tag || !el.members) continue;
     for (const member of el.members) {
       if (member.type === "way" && member.role === "outer") {
         const way = ways.get(member.ref);
@@ -296,7 +385,7 @@ function osmToGeoJSON(osm: { elements: Array<{ type: string; id: number; tags?: 
         if (coords.length < 3) continue;
         features.push({
           type: "Feature",
-          properties: { landuse: el.tags.landuse, name: el.tags.name },
+          properties: { landuse: el.tags?.landuse, leisure: el.tags?.leisure, name: el.tags?.name },
           geometry: { type: "Polygon", coordinates: [coords] },
         });
       }
@@ -324,18 +413,7 @@ function imdStyle(feature: GeoJSON.Feature | undefined) {
   };
 }
 
-// ── Hook: fetch LSOA boundaries + IMD ranks → decile choropleth ──────────
-// 1. ONS Open Geography: LSOA 2011 boundaries (spatial query, public)
-// 2. ONS Open Geography: IMD 2019 lookup (attribute query by LSOA codes)
-// 3. Client-side join: rank → decile, attach to each feature
-
-const LSOA_BOUNDARY_URL = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/LSOA_2011_Boundaries_Super_Generalised_Clipped_BSC_EW_V4/FeatureServer/0/query";
-const IMD_LOOKUP_URL = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Index_of_Multiple_Deprivation_Dec_2019_Lookup_in_England_2022/FeatureServer/0/query";
-const TOTAL_LSOAS_ENGLAND = 32844;
-
-function rankToDecile(rank: number): number {
-  return Math.min(10, Math.ceil((rank / TOTAL_LSOAS_ENGLAND) * 10));
-}
+// ── Hook: fetch IMD overall decile choropleth (single query to IMD Full) ──
 
 function useImdGeoJSON(
   lat: number, lon: number, enabled: boolean,
@@ -345,85 +423,54 @@ function useImdGeoJSON(
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || cache || loadingRef.current) return;
+    if (cache || loadingRef.current) return;
+    if (!enabled) return;
     loadingRef.current = true;
     let cancelled = false;
 
-    (async () => {
-      try {
-        // Step 1: fetch LSOA boundary polygons within ~2km bbox
-        const dLat = 0.018;
-        const dLon = 0.03;
-        const bbox = `${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`;
+    const dLat = 0.018;
+    const dLon = 0.03;
+    const bbox = `${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`;
 
-        const bUrl = new URL(LSOA_BOUNDARY_URL);
-        bUrl.searchParams.set("geometry", bbox);
-        bUrl.searchParams.set("geometryType", "esriGeometryEnvelope");
-        bUrl.searchParams.set("spatialRel", "esriSpatialRelIntersects");
-        bUrl.searchParams.set("outFields", "LSOA11CD,LSOA11NM");
-        bUrl.searchParams.set("f", "geojson");
-        bUrl.searchParams.set("inSR", "4326");
-        bUrl.searchParams.set("outSR", "4326");
+    const url = new URL(IMD_FULL_URL);
+    url.searchParams.set("geometry", bbox);
+    url.searchParams.set("geometryType", "esriGeometryEnvelope");
+    url.searchParams.set("spatialRel", "esriSpatialRelIntersects");
+    url.searchParams.set("outFields", "lsoa11cd,lsoa11nm,IMDDec0");
+    url.searchParams.set("f", "geojson");
+    url.searchParams.set("inSR", "4326");
+    url.searchParams.set("outSR", "4326");
 
-        const bRes = await fetch(bUrl.toString());
-        if (!bRes.ok) throw new Error(`LSOA boundaries ${bRes.status}`);
-        const fc = await bRes.json() as GeoJSON.FeatureCollection;
-        if (!fc.features || fc.features.length === 0) {
-          console.warn("[IMD] no LSOA boundaries found");
-          return;
-        }
-        console.log("[IMD] LSOA boundaries:", fc.features.length);
+    fetch(url.toString())
+      .then(r => {
+        if (!r.ok) throw new Error(`IMD ArcGIS ${r.status}`);
+        return r.json();
+      })
+      .then(data => {
         if (cancelled) return;
-
-        // Step 2: batch-query IMD ranks for those LSOA codes
-        const codes = fc.features.map(f => f.properties?.LSOA11CD as string).filter(Boolean);
-        const where = codes.map(c => `'${c}'`).join(",");
-        const iUrl = new URL(IMD_LOOKUP_URL);
-        iUrl.searchParams.set("where", `LSOA11CD IN (${where})`);
-        iUrl.searchParams.set("outFields", "LSOA11CD,IMD19");
-        iUrl.searchParams.set("f", "json");
-        iUrl.searchParams.set("resultRecordCount", "200");
-
-        const iRes = await fetch(iUrl.toString());
-        if (!iRes.ok) throw new Error(`IMD lookup ${iRes.status}`);
-        const iData = await iRes.json();
-        if (cancelled) return;
-
-        // Build lookup: LSOA code → decile
-        const decileMap = new Map<string, number>();
-        for (const feat of iData.features ?? []) {
-          const code = feat.attributes?.LSOA11CD as string;
-          const rank = feat.attributes?.IMD19 as number;
-          if (code && rank) decileMap.set(code, rankToDecile(rank));
-        }
-        console.log("[IMD] decile scores:", decileMap.size);
-
-        // Step 3: enrich boundary features with IMDDec0
+        const fc = data as GeoJSON.FeatureCollection;
+        if (!fc.features) { console.warn("[IMD] no features in response"); return; }
+        // Add ls11cd/ls11nm aliases for popup compatibility
         for (const f of fc.features) {
-          const code = f.properties?.LSOA11CD as string;
-          f.properties = {
-            ...f.properties,
-            IMDDec0: decileMap.get(code) ?? null,
-            ls11cd: code,
-            ls11nm: f.properties?.LSOA11NM,
-          };
+          f.properties = { ...f.properties, ls11cd: f.properties?.lsoa11cd, ls11nm: f.properties?.lsoa11nm };
         }
-
+        console.log("[IMD] features:", fc.features.length);
         setCache(fc);
         setGeoKey(k => k + 1);
-      } catch (err) {
+      })
+      .catch(err => {
         console.warn("[IMD] fetch failed:", err);
-      } finally {
-        loadingRef.current = false;
-      }
-    })();
+      })
+      .finally(() => { loadingRef.current = false; });
     return () => { cancelled = true; loadingRef.current = false; };
   }, [lat, lon, enabled, cache, setCache]);
 
-  // Bump key when cache is provided on remount
+  // Bump key whenever cache arrives (pre-fetch or local fetch)
+  const prevCacheRef = useRef(cache);
   useEffect(() => {
-    if (cache) setGeoKey(k => k + 1);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (cache && cache !== prevCacheRef.current) setGeoKey(k => k + 1);
+    prevCacheRef.current = cache;
+  }, [cache]);
 
   return { geojson: cache, geoKey };
 }
@@ -451,7 +498,8 @@ function useIncomeGeoJSON(
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || cache || loadingRef.current) return;
+    if (cache || loadingRef.current) return;
+    if (!enabled) return;
     loadingRef.current = true;
     let cancelled = false;
 
@@ -488,9 +536,11 @@ function useIncomeGeoJSON(
     return () => { cancelled = true; loadingRef.current = false; };
   }, [lat, lon, enabled, cache, setCache]);
 
+  const prevCacheRef = useRef(cache);
   useEffect(() => {
-    if (cache) setGeoKey(k => k + 1);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (cache && cache !== prevCacheRef.current) setGeoKey(k => k + 1);
+    prevCacheRef.current = cache;
+  }, [cache]);
 
   return { geojson: cache, geoKey };
 }
@@ -516,7 +566,8 @@ function useEducationGeoJSON(
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || cache || loadingRef.current) return;
+    if (cache || loadingRef.current) return;
+    if (!enabled) return;
     loadingRef.current = true;
     let cancelled = false;
 
@@ -553,9 +604,11 @@ function useEducationGeoJSON(
     return () => { cancelled = true; loadingRef.current = false; };
   }, [lat, lon, enabled, cache, setCache]);
 
+  const prevCacheRef = useRef(cache);
   useEffect(() => {
-    if (cache) setGeoKey(k => k + 1);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (cache && cache !== prevCacheRef.current) setGeoKey(k => k + 1);
+    prevCacheRef.current = cache;
+  }, [cache]);
 
   return { geojson: cache, geoKey };
 }
@@ -606,7 +659,8 @@ function useCrimeData(
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || cache || loadingRef.current) return;
+    if (cache || loadingRef.current) return;
+    if (!enabled) return;
     loadingRef.current = true;
     let cancelled = false;
 
@@ -879,7 +933,7 @@ export default function PropertyMap({
   }, []);
 
   const onEachLandUse = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
-    const landuse = feature.properties?.landuse as string;
+    const landuse = (feature.properties?.landuse ?? feature.properties?.leisure) as string;
     const name = feature.properties?.name as string | undefined;
     const style = LANDUSE_STYLES[landuse] ?? LANDUSE_STYLES.commercial;
     const label = name ? `<b>${name}</b><br/>${style.label}` : style.label;
@@ -919,9 +973,9 @@ export default function PropertyMap({
   const tile = TILE_LAYERS[tileLayer];
 
   return (
-    <div data-map-wrapper style={{ position: "relative", height: "100%", borderRadius: 12, overflow: "hidden" }}>
+    <div data-map-wrapper style={{ position: "relative", height: "100%" }}>
 
-      {/* Inject pulse animation */}
+      {/* Inject pulse animation + hide default Leaflet chrome */}
       <style>{`
         @keyframes pulse-cyan {
           0%, 100% { box-shadow: 0 0 12px #00F0FF, 0 0 28px #00F0FF66; }
@@ -944,48 +998,78 @@ export default function PropertyMap({
         .propval-popup .leaflet-popup-close-button:hover {
           color: #00F0FF !important;
         }
+        /* Hide default Leaflet attribution & zoom controls */
+        .leaflet-control-attribution { display: none !important; }
+        .leaflet-control-zoom { display: none !important; }
       `}</style>
 
-      {/* ── Top-right controls panel ─────────────────────────────────────── */}
+      {/* ── Floating: tile switcher + fullscreen (top-left row) ────────── */}
+      <div style={{
+        position: "absolute", top: 12, left: 12, zIndex: 1000,
+        display: "flex", gap: 6, alignItems: "center",
+      }}>
+      <div style={{
+        display: "flex", gap: 2,
+        background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
+        borderRadius: 8, border: "1px solid #334155",
+        boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
+        overflow: "hidden",
+      }}>
+        {(["dark", "satellite", "street"] as TileLayerKey[]).map(key => (
+          <button
+            key={key}
+            onClick={() => setTileLayer(key)}
+            style={{
+              padding: "5px 10px", fontSize: 10, fontWeight: 600,
+              letterSpacing: "0.05em", textTransform: "uppercase",
+              cursor: "pointer", border: "none",
+              background: tileLayer === key ? "#00F0FF" : "transparent",
+              color: tileLayer === key ? "#0A0E1A" : "#94A3B8",
+              transition: "all 0.2s",
+            }}
+          >
+            {key}
+          </button>
+        ))}
+      </div>
+      {/* Fullscreen button */}
+      <button
+        onClick={() => {
+          const container = document.querySelector("[data-map-wrapper]") as HTMLElement;
+          if (!container) return;
+          if (!document.fullscreenElement) container.requestFullscreen();
+          else document.exitFullscreen();
+        }}
+        title="Fullscreen"
+        style={{
+          background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
+          color: "#E2E8F0",
+          border: "1px solid #334155", borderRadius: 8,
+          width: 32, height: 32, fontSize: 16,
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
+          flexShrink: 0,
+        }}
+      >
+        ⊞
+      </button>
+      </div>
+
+      {/* ── Floating: layer toggle buttons (top-right) ───────────────────── */}
       <div style={{
         position: "absolute", top: 12, right: 12, zIndex: 1000,
-        display: "flex", flexDirection: "column", gap: 6,
+        display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end",
+        maxWidth: 320,
       }}>
-        {/* Layer switcher */}
-        <div style={{
-          display: "flex", gap: 2, background: "#0A0E1A", borderRadius: 6,
-          border: "1px solid #334155", overflow: "hidden",
-        }}>
-          {(["dark", "satellite", "street"] as TileLayerKey[]).map(key => (
-            <button
-              key={key}
-              onClick={() => setTileLayer(key)}
-              style={{
-                padding: "4px 8px", fontSize: 10, fontWeight: 600,
-                letterSpacing: "0.05em", textTransform: "uppercase",
-                cursor: "pointer", border: "none",
-                background: tileLayer === key ? "#00F0FF" : "transparent",
-                color: tileLayer === key ? "#0A0E1A" : "#94A3B8",
-                transition: "all 0.2s",
-              }}
-            >
-              {key}
-            </button>
-          ))}
-        </div>
-
-        {/* Toggle buttons */}
-        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <ToggleBtn label="Flood" active={showFlood} color="#FF2D78" onClick={() => setShowFlood(!showFlood)} />
-          <ToggleBtn label="Land Use" active={showLandUse} color="#FBBF24" onClick={() => setShowLandUse(!showLandUse)} />
-          <ToggleBtn label="Deprivation" active={showDeprivation} color="#F97316" onClick={() => setShowDeprivation(!showDeprivation)} />
-          <ToggleBtn label="Road Noise" active={showRoadNoise} color="#EF4444" onClick={() => setShowRoadNoise(!showRoadNoise)} />
-          <ToggleBtn label="Rail Noise" active={showRailNoise} color="#A855F7" onClick={() => setShowRailNoise(!showRailNoise)} />
-          <ToggleBtn label="Income" active={showIncome} color="#22C55E" onClick={() => setShowIncome(!showIncome)} />
-          <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
-          <ToggleBtn label="Crime" active={showCrime} color="#DC2626" onClick={() => setShowCrime(!showCrime)} />
-          <ToggleBtn label="Rings" active={showRings} color="#7B2FBE" onClick={() => setShowRings(!showRings)} />
-        </div>
+        <ToggleBtn label="Flood" active={showFlood} color="#FF2D78" onClick={() => setShowFlood(!showFlood)} />
+        <ToggleBtn label="Land Use" active={showLandUse} color="#FBBF24" onClick={() => setShowLandUse(!showLandUse)} />
+        <ToggleBtn label="Deprivation" active={showDeprivation} color="#F97316" onClick={() => setShowDeprivation(!showDeprivation)} />
+        <ToggleBtn label="Road Noise" active={showRoadNoise} color="#EF4444" onClick={() => setShowRoadNoise(!showRoadNoise)} />
+        <ToggleBtn label="Rail Noise" active={showRailNoise} color="#A855F7" onClick={() => setShowRailNoise(!showRailNoise)} />
+        <ToggleBtn label="Income" active={showIncome} color="#22C55E" onClick={() => setShowIncome(!showIncome)} />
+        <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
+        <ToggleBtn label="Crime" active={showCrime} color="#DC2626" onClick={() => setShowCrime(!showCrime)} />
+        <ToggleBtn label="Rings" active={showRings} color="#7B2FBE" onClick={() => setShowRings(!showRings)} />
       </div>
 
       <MapContainer
@@ -1001,9 +1085,9 @@ export default function PropertyMap({
           maxZoom={19}
         />
 
-        <ScaleControl position="bottomleft" imperial={false} />
+        <CustomScaleBar />
         <FitBounds subject={[subjectLat, subjectLon]} compCoords={compCoords} />
-        <FullscreenControl />
+        {/* Fullscreen control moved to floating top-left row */}
 
         <DeferredOverlays
           showFlood={showFlood} showRoadNoise={showRoadNoise} showRailNoise={showRailNoise}
@@ -1089,13 +1173,15 @@ export default function PropertyMap({
         })}
       </MapContainer>
 
-      {/* ── Legend ────────────────────────────────────────────────────────── */}
+      {/* ── Floating: Legend (top-left, below scale bar) ──────────────── */}
       <div style={{
-        position: "absolute", bottom: 12, right: 12, zIndex: 1000,
-        background: "#0A0E1Acc", backdropFilter: "blur(8px)",
+        position: "absolute", top: 100, left: 12, zIndex: 1000,
+        background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
         border: "1px solid #334155", borderRadius: 8,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
         padding: "8px 12px", fontSize: 10, color: "#94A3B8",
         display: "flex", flexDirection: "column", gap: 5,
+        maxHeight: "calc(100% - 120px)", overflowY: "auto",
       }}>
         <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", color: "#64748B", marginBottom: 2 }}>Legend</div>
         <LegendItem color="#00F0FF" glow label="Subject property" />
@@ -1161,6 +1247,9 @@ export default function PropertyMap({
             <LegendItem color="#FBBF24" filled label="Retail / High Street" />
             <LegendItem color="#60A5FA" filled label="Commercial" />
             <LegendItem color="#A78BFA" filled label="Industrial" />
+            <LegendItem color="#4ADE80" filled label="Park / Garden" />
+            <LegendItem color="#6EE7B7" filled label="Recreation / Playground" />
+            <LegendItem color="#2DD4BF" filled label="Nature Reserve" />
           </>
         )}
       </div>
@@ -1178,11 +1267,12 @@ function ToggleBtn({ label, active, color, onClick }: {
       onClick={onClick}
       style={{
         padding: "4px 8px", fontSize: 10, fontWeight: 600,
-        letterSpacing: "0.04em", cursor: "pointer", borderRadius: 5,
-        background: active ? color : "#1E293B",
+        letterSpacing: "0.04em", cursor: "pointer", borderRadius: 6,
+        background: active ? color : "rgba(10, 14, 26, 0.85)",
+        backdropFilter: active ? undefined : "blur(8px)",
         color: active ? "#fff" : "#94A3B8",
         border: `1px solid ${active ? color : "#334155"}`,
-        boxShadow: active ? `0 0 8px ${color}66` : "none",
+        boxShadow: active ? `0 0 10px ${color}66, 0 2px 8px rgba(0,0,0,0.4)` : "0 2px 8px rgba(0,0,0,0.3)",
         transition: "all 0.2s",
       }}
     >

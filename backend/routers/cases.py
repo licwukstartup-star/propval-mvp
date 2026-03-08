@@ -3,10 +3,15 @@
 Phase 1 architecture: cases reference a UPRN (property library) and carry
 a system-generated display_name, case_type, and status. Cases stack under
 a UPRN — multiple cases per property are expected.
+
+Status flow (enforced):
+  Research:        draft → in_progress → complete → issued → archived
+  Full Valuation:  draft → in_progress → complete → issued → archived
+  (back to draft allowed from in_progress only — for rework)
 """
 
 import os
-from datetime import date, datetime
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -18,7 +23,16 @@ router = APIRouter(prefix="/api/cases", tags=["cases"])
 
 # Phase 1 allowed values
 CASE_TYPES = ("research", "full_valuation")
-CASE_STATUSES = ("draft", "in_progress", "complete", "archived")
+CASE_STATUSES = ("draft", "in_progress", "complete", "issued", "archived")
+
+# Status flow: maps current status → allowed next statuses
+STATUS_FLOW: dict[str, list[str]] = {
+    "draft":       ["in_progress"],
+    "in_progress": ["draft", "complete"],       # back to draft = rework
+    "complete":    ["in_progress", "issued"],  # back to in_progress = rework
+    "issued":      ["archived"],                # issued is immutable for edits
+    "archived":    [],                          # terminal
+}
 
 # ---------------------------------------------------------------------------
 # Supabase client (lazy, service-role)
@@ -37,11 +51,40 @@ def _sb():
     return _supabase
 
 
-def _generate_display_name(address: str, case_type: str) -> str:
-    """Generate a system display name: 'address — CaseType — YYYY-MM-DD'."""
+def _generate_display_name(
+    address: str,
+    case_type: str,
+    valuation_basis: str | None = None,
+    valuation_date: str | None = None,
+) -> str:
+    """System-generated case name per architecture spec.
+
+    Format: [Address] | [Case Type] | [Valuation Basis] | [Valuation Date]
+    """
     type_label = case_type.replace("_", " ").title()
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    return f"{address} — {type_label} — {today}"
+    parts = [address, type_label]
+    if valuation_basis:
+        parts.append(valuation_basis.replace("_", " ").title())
+    parts.append(valuation_date or datetime.utcnow().strftime("%Y-%m-%d"))
+    return " | ".join(parts)
+
+
+def _next_case_sequence(uprn: str | None) -> int:
+    """Get the next case_sequence number for a UPRN."""
+    if not uprn:
+        return 1
+    resp = (
+        _sb()
+        .table("cases")
+        .select("case_sequence")
+        .eq("uprn", uprn)
+        .order("case_sequence", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if resp.data and resp.data[0].get("case_sequence"):
+        return resp.data[0]["case_sequence"] + 1
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -52,21 +95,27 @@ class SaveCaseRequest(BaseModel):
     postcode: str | None = None
     uprn: str | None = None
     case_type: str = "research"
+    valuation_basis: str | None = None
     property_data: dict | None = None
     comparables: list = []
+    search_results: dict | None = None
     valuation_date: str | None = None
     hpi_correlation: float = 100
     size_elasticity: float = 0
     notes: str | None = None
+    firm_reference: str | None = None
 
 
 class UpdateCaseRequest(BaseModel):
     status: str | None = None
     comparables: list | None = None
+    search_results: dict | None = None
     valuation_date: str | None = None
+    valuation_basis: str | None = None
     hpi_correlation: float | None = None
     size_elasticity: float | None = None
     notes: str | None = None
+    firm_reference: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -78,20 +127,27 @@ async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user
     if body.case_type not in CASE_TYPES:
         raise HTTPException(400, f"Invalid case_type. Allowed: {CASE_TYPES}")
 
-    display_name = _generate_display_name(body.address, body.case_type)
+    case_seq = _next_case_sequence(body.uprn)
+    display_name = _generate_display_name(
+        body.address, body.case_type, body.valuation_basis, body.valuation_date,
+    )
 
     row = {
         "surveyor_id": user["id"],
         "title": display_name,  # legacy column, kept for backward compat
         "display_name": display_name,
         "case_type": body.case_type,
-        "status": "draft",
+        "status": "in_progress",
+        "case_sequence": case_seq,
         "address": body.address,
         "postcode": body.postcode,
         "uprn": body.uprn,
+        "valuation_basis": body.valuation_basis,
+        "firm_reference": body.firm_reference,
         "property_data": body.property_data,
         "property_snapshot": body.property_data,
         "comparables": body.comparables,
+        "search_results": body.search_results or {},
         "valuation_date": body.valuation_date,
         "hpi_correlation": body.hpi_correlation,
         "size_elasticity": body.size_elasticity,
@@ -109,7 +165,8 @@ async def list_cases(user: dict = Depends(get_current_user)):
         .table("cases")
         .select(
             "id, display_name, title, address, postcode, uprn, "
-            "case_type, status, valuation_date, created_at, updated_at"
+            "case_type, status, valuation_date, case_sequence, "
+            "valuation_basis, firm_reference, created_at, updated_at"
         )
         .eq("surveyor_id", user["id"])
         .order("updated_at", desc=True)
@@ -138,15 +195,78 @@ async def get_case(case_id: str, user: dict = Depends(get_current_user)):
 async def update_case(
     case_id: str, body: UpdateCaseRequest, user: dict = Depends(get_current_user)
 ):
-    """Update a saved case (status, comparables, valuation params, notes)."""
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not updates:
-        raise HTTPException(400, "Nothing to update")
+    """Update a saved case. Enforces status flow and issued immutability."""
+    # Fetch current case first
+    current = (
+        _sb()
+        .table("cases")
+        .select("status, case_type")
+        .eq("id", case_id)
+        .eq("surveyor_id", user["id"])
+        .execute()
+    )
+    if not current.data:
+        raise HTTPException(404, "Case not found")
 
-    if "status" in updates and updates["status"] not in CASE_STATUSES:
-        raise HTTPException(400, f"Invalid status. Allowed: {CASE_STATUSES}")
+    current_status = current.data[0]["status"]
 
-    updates["updated_at"] = "now()"
+    # Block all edits on issued/archived cases (except status change to archive)
+    if current_status in ("issued", "archived"):
+        if body.status and body.status != current_status:
+            allowed = STATUS_FLOW.get(current_status, [])
+            if body.status not in allowed:
+                raise HTTPException(
+                    400,
+                    f"Cannot change status from '{current_status}' to '{body.status}'. "
+                    f"Allowed: {allowed or 'none (terminal)'}",
+                )
+            # Only allow status transition, no other edits
+            updates = {"status": body.status, "updated_at": "now()"}
+            if body.status == "archived":
+                pass  # archived is allowed from issued
+        else:
+            raise HTTPException(
+                403,
+                "This case has been issued and is locked. "
+                "No modifications are allowed on issued cases.",
+            )
+    else:
+        updates = {k: v for k, v in body.model_dump().items() if v is not None}
+        if not updates:
+            raise HTTPException(400, "Nothing to update")
+
+        # Validate status transition
+        if "status" in updates:
+            new_status = updates["status"]
+            if new_status not in CASE_STATUSES:
+                raise HTTPException(400, f"Invalid status. Allowed: {CASE_STATUSES}")
+            allowed = STATUS_FLOW.get(current_status, [])
+            if new_status not in allowed:
+                raise HTTPException(
+                    400,
+                    f"Cannot change status from '{current_status}' to '{new_status}'. "
+                    f"Allowed transitions: {allowed}",
+                )
+            # Set finalised_at when issuing
+            if new_status == "issued":
+                updates["finalised_at"] = datetime.utcnow().isoformat()
+
+        updates["updated_at"] = "now()"
+
+    # Regenerate display_name if valuation fields changed
+    if any(k in updates for k in ("valuation_basis", "valuation_date")):
+        # Fetch full case to get address/case_type
+        full = _sb().table("cases").select("address, case_type, valuation_basis, valuation_date").eq("id", case_id).execute()
+        if full.data:
+            c = full.data[0]
+            updates["display_name"] = _generate_display_name(
+                c["address"],
+                c["case_type"],
+                updates.get("valuation_basis", c.get("valuation_basis")),
+                updates.get("valuation_date", c.get("valuation_date")),
+            )
+            updates["title"] = updates["display_name"]
+
     resp = (
         _sb()
         .table("cases")
@@ -162,7 +282,25 @@ async def update_case(
 
 @router.delete("/{case_id}")
 async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
-    """Delete a saved case."""
+    """Delete a saved case. Cannot delete issued cases."""
+    # Check status first
+    current = (
+        _sb()
+        .table("cases")
+        .select("status")
+        .eq("id", case_id)
+        .eq("surveyor_id", user["id"])
+        .execute()
+    )
+    if not current.data:
+        raise HTTPException(404, "Case not found")
+
+    if current.data[0]["status"] == "issued":
+        raise HTTPException(
+            403,
+            "Issued cases cannot be deleted. Archive them instead.",
+        )
+
     resp = (
         _sb()
         .table("cases")
