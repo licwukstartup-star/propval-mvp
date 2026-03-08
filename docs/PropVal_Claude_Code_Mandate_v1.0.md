@@ -399,8 +399,9 @@ PropVal must be recoverable from any single point of failure. All backup mechani
 
 #### 9.5.1 Database Backups (Supabase)
 
-- **Automatic backups**: Supabase Pro plan provides daily point-in-time recovery (PITR) with 7-day retention. Free plan provides weekly backups with 7-day retention.
-- **Manual export schedule**: Export critical tables (`cases`, `case_comparables`, `property_enrichment`) as CSV/JSON monthly via Supabase dashboard or `pg_dump`. Store exports in a secure, offline location (encrypted local drive or private cloud storage).
+- **Automatic backups**: Supabase Pro plan provides daily point-in-time recovery (PITR) with 7-day retention. **Free plan does NOT include project backups** — manual exports are the only protection.
+- **Manual export schedule (CRITICAL on Free plan)**: Export critical tables (`cases`, `case_comparables`, `property_enrichment`) as CSV/JSON **every 2 days** via Supabase dashboard (Table Editor → Export) or `pg_dump`. Store exports in a secure, offline location (encrypted local drive or private cloud storage). This is the sole database backup mechanism on the Free plan — maximum acceptable data loss is 48 hours.
+- **Upgrade trigger**: When PropVal holds real client data (post-MVP launch), upgrade to Supabase Pro for automated daily PITR. Until then, manual weekly exports are mandatory.
 - **Migration replay**: All schema is version-controlled in `supabase/migrations/`. A fresh database can be rebuilt by replaying migrations sequentially.
 - **Pre-migration backup**: Before applying any migration to production, take a manual backup via Supabase dashboard. Never apply migrations without a rollback plan.
 
