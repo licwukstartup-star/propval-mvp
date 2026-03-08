@@ -1,10 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { updateSession } from '@/lib/supabase/middleware'
 
-const MAINTENANCE_MODE = true; // ← set to false to re-open the site
-
 export async function middleware(request: NextRequest) {
-  if (MAINTENANCE_MODE) {
+  if (process.env.MAINTENANCE_MODE === 'true') {
     return new NextResponse(
       `<!DOCTYPE html>
 <html><head><title>PropVal — Maintenance</title>
