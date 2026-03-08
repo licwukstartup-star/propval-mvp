@@ -34,7 +34,7 @@ def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
-            timeout=15.0,
+            timeout=3.0,
             headers={"User-Agent": _USER_AGENT},
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
@@ -1942,11 +1942,11 @@ def _scrape_council_tax_band(postcode: str, matched_address: str) -> str | None:
 
 
 async def _fetch_council_tax_band(postcode: str, matched_address: str) -> str | None:
-    """Async wrapper: run Playwright scraper in a thread with a hard 25 s timeout."""
+    """Async wrapper: run Playwright scraper in a thread with a hard 5 s timeout."""
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_scrape_council_tax_band, postcode, matched_address),
-            timeout=25.0,
+            timeout=5.0,
         )
     except asyncio.TimeoutError:
         logging.warning("Council tax scraper timed out for postcode %s", postcode)

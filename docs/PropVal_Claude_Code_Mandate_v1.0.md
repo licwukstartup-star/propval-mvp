@@ -221,6 +221,7 @@ flood = await fetch_flood_risk(lat, lon)  # waits for EPC to finish
 - **Comments**: Comment the WHY, not the WHAT. Code should be self-documenting for the what. Exceptions: complex regex patterns, non-obvious business rules, workarounds for API quirks.
 - **TODO/FIXME**: Use `# TODO(terry):` or `// TODO(terry):` format with a name and brief explanation. These are searchable and trackable.
 - **No dead code.** Remove commented-out code. Git preserves history.
+- **Elegant and compact.** Favour concise, readable code over verbose implementations. Fewer lines means fewer bugs, faster reviews, and easier maintenance. If a 20-line block can be expressed clearly in 5 lines, use 5. Avoid boilerplate, unnecessary intermediary variables, and redundant checks — but never sacrifice clarity for cleverness.
 
 ---
 

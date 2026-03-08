@@ -5,7 +5,7 @@ Usage:
     resp = await resilient_request(client, "GET", url, params={...})
 
 Behaviour:
-- 1 retry on 5xx or timeout (1s then 2s backoff)
+- 1 retry on 5xx or timeout (0.15s then 0.2s backoff with jitter)
 - Never retries 4xx (client error)
 - Circuit opens after 3 consecutive failures per host, skips for 60s
 - Returns None when circuit is open (caller handles gracefully)
@@ -13,6 +13,7 @@ Behaviour:
 
 import asyncio
 import logging
+import random
 import time
 from urllib.parse import urlparse
 
@@ -67,9 +68,9 @@ async def resilient_request(
             last_exc = exc
             logging.warning("API %s timeout/connect error (attempt %d): %s", host, attempt + 1, exc)
 
-        # Backoff before retry
+        # Fast backoff with jitter before retry (150-200ms)
         if attempt < max_retries:
-            await asyncio.sleep(1 * (attempt + 1))
+            await asyncio.sleep(0.15 + random.random() * 0.05)
 
     # All attempts failed — update circuit breaker
     failures = _circuit_failures.get(host, 0) + 1

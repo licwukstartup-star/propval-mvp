@@ -326,21 +326,20 @@ def _query_building_fuzzy_sync(outward: str, bldg: str, date_from: str,
     if not matching_paons:
         return []
 
-    # Fetch transactions for all matching PAONs
+    # Fetch transactions for all matching PAONs in a single batch query
     rows: list[dict] = []
     seen: set[str] = set()
-    for paon in matching_paons:
-        resp2 = sb.table("price_paid_cache") \
-            .select("*") \
-            .eq("outward_code", outward) \
-            .eq("paon", paon) \
-            .gte("deed_date", date_from) \
-            .execute()
-        for r in (resp2.data or []):
-            tid = r.get("transaction_id", "")
-            if tid and tid not in seen:
-                seen.add(tid)
-                rows.append(r)
+    resp2 = sb.table("price_paid_cache") \
+        .select("*") \
+        .eq("outward_code", outward) \
+        .in_("paon", matching_paons) \
+        .gte("deed_date", date_from) \
+        .execute()
+    for r in (resp2.data or []):
+        tid = r.get("transaction_id", "")
+        if tid and tid not in seen:
+            seen.add(tid)
+            rows.append(r)
     return rows
 
 
