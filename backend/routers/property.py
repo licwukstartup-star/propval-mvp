@@ -82,9 +82,32 @@ def _upsert_property_library(
             on_conflict="uprn",
         ).execute()
 
-        # Upsert enrichment payloads per data source
+        # Upsert enrichment payloads per data source.
+        # For trackable sources (EPC, land_registry), archive the old version
+        # if the payload has changed, building a history over time.
+        _TRACK_HISTORY = {"epc", "land_registry"}
         if enrichment:
             for source, payload in enrichment.items():
+                if source in _TRACK_HISTORY:
+                    # Check if existing data differs
+                    existing = (
+                        sb.table("property_enrichment")
+                        .select("payload, fetched_at")
+                        .eq("uprn", uprn)
+                        .eq("data_source", source)
+                        .execute()
+                    )
+                    if existing.data:
+                        old = existing.data[0]
+                        if old["payload"] != payload:
+                            # Archive the old version
+                            sb.table("property_enrichment_history").insert({
+                                "uprn": uprn,
+                                "data_source": source,
+                                "payload": old["payload"],
+                                "fetched_at": old["fetched_at"],
+                            }).execute()
+
                 sb.table("property_enrichment").upsert(
                     {
                         "uprn": uprn,
@@ -96,6 +119,40 @@ def _upsert_property_library(
                 ).execute()
     except Exception as exc:
         logging.warning("property library upsert failed (non-fatal): %s", exc)
+
+
+# Default cache TTL: 24 hours (in seconds)
+ENRICHMENT_CACHE_TTL = int(os.getenv("ENRICHMENT_CACHE_TTL", "86400"))
+
+
+def _load_cached_enrichment(uprn: str) -> dict[str, dict]:
+    """Load cached enrichment payloads for a UPRN.
+
+    Returns a dict of {data_source: payload} for sources fetched within the TTL.
+    Returns empty dict if Supabase is unavailable or UPRN not found.
+    """
+    sb = _get_supabase()
+    if sb is None or not uprn:
+        return {}
+    try:
+        resp = (
+            sb.table("property_enrichment")
+            .select("data_source, payload, fetched_at")
+            .eq("uprn", uprn)
+            .execute()
+        )
+        cached = {}
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        for row in resp.data:
+            fetched = datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
+            age_seconds = (now - fetched).total_seconds()
+            if age_seconds < ENRICHMENT_CACHE_TTL:
+                cached[row["data_source"]] = row["payload"]
+        return cached
+    except Exception as exc:
+        logging.warning("enrichment cache load failed (non-fatal): %s", exc)
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -1600,22 +1657,41 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
         sales = _filter_sales(sparql_bindings, parts)
         print(f"DEBUG: matched='{matched_address}' uprn={best.get('uprn')} saon={parts['saon']} paon={parts['paon']} street={parts['street']} sales={len(sales)} inferred_building={inferred_building_name} epc_matched={epc_matched}")
 
+        # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
+        _cached = _load_cached_enrichment(best.get("uprn", ""))
+        _fresh_sources = [k for k in _cached if k not in {"flood_risk", "listed_buildings", "conservation_areas", "natural_england", "ground_conditions", "coal_mining", "radon", "brownfield", "council_tax"}]
+        _cached_sources = [k for k in _cached if k not in _fresh_sources]
+        if _cached_sources:
+            print(f"DEBUG: enrichment cache hits={_cached_sources}, always-fresh={_fresh_sources or 'none in cache'}")
+
         # Phase 2: spatial queries + EPC cert URL — all concurrent.
         # return_exceptions=True ensures one failing task never crashes the whole request.
+        # Sources with a fresh cache hit use a simple coroutine returning the cached value.
+
+        async def _use_cache(val):
+            return val
+
+        # Sources safe to cache (spatial/environmental — rarely change):
+        _CACHEABLE = {"flood_risk", "listed_buildings", "conservation_areas",
+                      "natural_england", "ground_conditions", "coal_mining",
+                      "radon", "brownfield", "council_tax"}
+        # Always fetch fresh: epc, land_registry, hpi, lease (transactional data)
+        _sc = {k: v for k, v in _cached.items() if k in _CACHEABLE}
+
         _p2 = await asyncio.gather(
-            _fetch_flood_risk(location["lat"], location["lon"]),
-            _fetch_planning_flood_zone(location["lat"], location["lon"]),
-            _fetch_listed_buildings(location["lat"], location["lon"]),
-            _fetch_conservation_areas(location["lat"], location["lon"]),
-            _fetch_natural_england(location["lat"], location["lon"]),
-            _fetch_epc_cert_url(postcode, matched_address),
-            _fetch_council_tax_band(postcode, matched_address),
-            _fetch_brownfield(location["lat"], location["lon"]),
-            _fetch_coal_mining_risk(location["lat"], location["lon"]),
-            _fetch_radon_risk(location["lat"], location["lon"]),
-            _fetch_ground_conditions(location["lat"], location["lon"]),
-            _fetch_lease_details(best.get("uprn")),
-            _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form")),
+            _use_cache(_sc["flood_risk"]) if "flood_risk" in _sc else _fetch_flood_risk(location["lat"], location["lon"]),
+            _use_cache(_sc.get("flood_risk", {}).get("planning_flood_zone")) if "flood_risk" in _sc else _fetch_planning_flood_zone(location["lat"], location["lon"]),
+            _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"]),
+            _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"]),
+            _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"]),
+            _fetch_epc_cert_url(postcode, matched_address),           # always fresh
+            _fetch_council_tax_band(postcode, matched_address) if "council_tax" not in _sc else _use_cache(_sc["council_tax"].get("band")),
+            _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"]),
+            _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"]),
+            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"]),
+            _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"]),
+            _fetch_lease_details(best.get("uprn")),                   # always fresh
+            _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form")),  # always fresh
             return_exceptions=True,
         )
 

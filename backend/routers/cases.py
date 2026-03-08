@@ -109,7 +109,7 @@ async def list_cases(user: dict = Depends(get_current_user)):
         .table("cases")
         .select(
             "id, display_name, title, address, postcode, uprn, "
-            "case_type, status, created_at, updated_at"
+            "case_type, status, valuation_date, created_at, updated_at"
         )
         .eq("surveyor_id", user["id"])
         .order("updated_at", desc=True)

@@ -480,7 +480,7 @@ export default function Home() {
   const [mapCrimeCache, setMapCrimeCache] = useState<CrimeCluster[] | null>(null);
 
   // ── Saved cases state ──────────────────────────────────────────────────
-  interface SavedCaseSummary { id: string; display_name: string | null; title: string; address: string; postcode: string | null; uprn: string | null; case_type: string; status: string; created_at: string; updated_at: string; }
+  interface SavedCaseSummary { id: string; display_name: string | null; title: string; address: string; postcode: string | null; uprn: string | null; case_type: string; status: string; valuation_date: string | null; created_at: string; updated_at: string; }
   const [showCasesPanel, setShowCasesPanel] = useState(false);
   const [casesList, setCasesList] = useState<SavedCaseSummary[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
@@ -488,6 +488,10 @@ export default function Home() {
   const [savingCase, setSavingCase] = useState(false);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
+  const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("draft");
+  const [casesFilter, setCasesFilter] = useState<string>("all");
+  const [casesSort, setCasesSort] = useState<string>("updated");
+  const [casesSortDir, setCasesSortDir] = useState<"asc" | "desc">("desc");
 
   const fetchCases = useCallback(async () => {
     if (!session?.access_token) return;
@@ -542,6 +546,7 @@ export default function Home() {
       setSizeElasticity(data.size_elasticity ?? 0);
       setCurrentCaseId(data.id);
       setSaveCaseType(data.case_type ?? "research");
+      setCurrentCaseStatus(data.status ?? "draft");
       setAddress(data.address);
       setActiveTab("property");
       setShowCasesPanel(false);
@@ -561,6 +566,19 @@ export default function Home() {
       setCasesList(prev => prev.filter(c => c.id !== id));
       if (currentCaseId === id) setCurrentCaseId(null);
     } catch { alert("Failed to delete case."); }
+  }
+
+  async function updateCaseStatus(newStatus: string) {
+    if (!currentCaseId || !session?.access_token) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/cases/${currentCaseId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) throw new Error("Update failed");
+      setCurrentCaseStatus(newStatus);
+    } catch { alert("Failed to update status."); }
   }
 
   useEffect(() => {
@@ -699,6 +717,7 @@ export default function Home() {
       setAdoptedComparables([]);
       setCurrentCaseId(null);
       setSaveCaseType("research");
+      setCurrentCaseStatus("draft");
       setValuationDate("");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -1039,6 +1058,31 @@ export default function Home() {
               >
                 {currentCaseId ? "Update Case" : "Save Case"}
               </button>
+              {currentCaseId && (() => {
+                const flow: { key: string; label: string; color: string }[] = [
+                  { key: "draft", label: "Draft", color: "border-[#475569] text-[#E2E8F0] bg-[#475569]/20" },
+                  { key: "in_progress", label: "In Progress", color: "border-[#FFB800]/40 text-[#FFB800] bg-[#FFB800]/10" },
+                  { key: "complete", label: "Complete", color: "border-[#39FF14]/40 text-[#39FF14] bg-[#39FF14]/10" },
+                  { key: "archived", label: "Archived", color: "border-[#334155] text-[#94A3B8] bg-[#334155]/20" },
+                ];
+                return (
+                  <div className="flex items-center gap-1 ml-1">
+                    {flow.map(s => (
+                      <button
+                        key={s.key}
+                        onClick={() => updateCaseStatus(s.key)}
+                        className={`px-2 py-1 text-[10px] font-medium rounded border transition-colors ${
+                          currentCaseStatus === s.key
+                            ? s.color + " ring-1 ring-current"
+                            : "border-[#334155] text-[#475569] hover:text-[#94A3B8] hover:border-[#475569]"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
               <button
                 onClick={() => { setShowCasesPanel(true); fetchCases(); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
@@ -3133,29 +3177,98 @@ export default function Home() {
       )}
 
       {/* ── My Cases slide-out panel ────────────────────────────────────────── */}
-      {showCasesPanel && (
+      {showCasesPanel && (() => {
+        const filters = [
+          { key: "all", label: "All" },
+          { key: "draft", label: "Draft" },
+          { key: "in_progress", label: "In Progress" },
+          { key: "complete", label: "Complete" },
+          { key: "research", label: "Research" },
+          { key: "full_valuation", label: "Full Valuation" },
+        ];
+        const statusFilters = ["draft", "in_progress", "complete"];
+        const typeFilters = ["research", "full_valuation"];
+        const filtered = casesList.filter(c => {
+          if (casesFilter === "all") return c.status !== "archived";
+          if (statusFilters.includes(casesFilter)) return c.status === casesFilter;
+          if (typeFilters.includes(casesFilter)) return c.case_type === casesFilter && c.status !== "archived";
+          return true;
+        }).sort((a, b) => {
+          const dir = casesSortDir === "asc" ? 1 : -1;
+          if (casesSort === "updated") return dir * (new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+          if (casesSort === "valuation_date") {
+            const da = a.valuation_date ? new Date(a.valuation_date).getTime() : 0;
+            const db = b.valuation_date ? new Date(b.valuation_date).getTime() : 0;
+            return dir * (da - db);
+          }
+          if (casesSort === "postcode") return dir * (a.postcode ?? "").localeCompare(b.postcode ?? "");
+          if (casesSort === "address") return dir * (a.address ?? "").localeCompare(b.address ?? "");
+          return 0;
+        });
+        const sortOptions = [
+          { key: "updated", label: "Last Updated" },
+          { key: "valuation_date", label: "Valuation Date" },
+          { key: "postcode", label: "Postcode" },
+          { key: "address", label: "Address" },
+        ];
+        const statusColors: Record<string, string> = {
+          draft: "bg-[#475569] text-[#E2E8F0]",
+          in_progress: "bg-[#FFB800]/20 text-[#FFB800]",
+          complete: "bg-[#39FF14]/20 text-[#39FF14]",
+          archived: "bg-[#334155] text-[#94A3B8]",
+        };
+        return (
         <div className="fixed inset-0 z-[60] flex justify-end" onClick={() => setShowCasesPanel(false)}>
           <div className="bg-[#0A0E1A] border-l border-[#334155] w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-5 border-b border-[#334155]">
-              <h2 className="text-lg font-orbitron font-bold text-[#00F0FF]">My Cases</h2>
+              <div>
+                <h2 className="text-lg font-orbitron font-bold text-[#00F0FF]">My Cases</h2>
+                <p className="text-[10px] text-[#94A3B8] mt-0.5">{filtered.length} case{filtered.length !== 1 ? "s" : ""}{casesFilter !== "all" ? ` (filtered)` : ""} · {casesList.length} total</p>
+              </div>
               <button onClick={() => setShowCasesPanel(false)} className="text-[#94A3B8] hover:text-[#E2E8F0] text-lg">✕</button>
             </div>
-            <div className="p-5">
+            <div className="flex flex-wrap gap-1.5 px-5 pt-4 pb-2">
+              {filters.map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setCasesFilter(f.key)}
+                  className={`px-2.5 py-1 text-[10px] font-medium rounded-full border transition-colors ${
+                    casesFilter === f.key
+                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF]"
+                      : "border-[#334155] text-[#94A3B8] hover:border-[#475569] hover:text-[#E2E8F0]"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 px-5 pb-2">
+              <span className="text-[10px] text-[#475569]">Sort:</span>
+              <select
+                value={casesSort}
+                onChange={e => setCasesSort(e.target.value)}
+                className="text-[10px] bg-[#1E293B] border border-[#334155] text-[#E2E8F0] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#00F0FF]"
+              >
+                {sortOptions.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+              <button
+                onClick={() => setCasesSortDir(d => d === "asc" ? "desc" : "asc")}
+                className="text-[10px] px-1.5 py-1 border border-[#334155] rounded text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] transition-colors"
+                title={casesSortDir === "asc" ? "Ascending" : "Descending"}
+              >
+                {casesSortDir === "asc" ? "A→Z" : "Z→A"}
+              </button>
+            </div>
+            <div className="p-5 pt-2">
               {casesLoading && (
                 <div className="flex justify-center py-8">
                   <div className="h-6 w-6 animate-spin rounded-full border-3 border-[#00F0FF] border-t-transparent" />
                 </div>
               )}
-              {!casesLoading && casesList.length === 0 && (
-                <p className="text-sm text-[#94A3B8] text-center py-8">No saved cases yet.</p>
+              {!casesLoading && filtered.length === 0 && (
+                <p className="text-sm text-[#94A3B8] text-center py-8">{casesList.length === 0 ? "No saved cases yet." : "No cases match this filter."}</p>
               )}
-              {!casesLoading && casesList.map(c => {
-                const statusColors: Record<string, string> = {
-                  draft: "bg-[#475569] text-[#E2E8F0]",
-                  in_progress: "bg-[#FFB800]/20 text-[#FFB800]",
-                  complete: "bg-[#39FF14]/20 text-[#39FF14]",
-                  archived: "bg-[#334155] text-[#94A3B8]",
-                };
+              {!casesLoading && filtered.map(c => {
                 const typeLabel = (c.case_type ?? "research").replace("_", " ");
                 return (
                 <div
@@ -3194,7 +3307,8 @@ export default function Home() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
     </main>
   );
