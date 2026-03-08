@@ -427,10 +427,20 @@ function PropCard({ id, isCustomising, cardSizes, onSizeChange, children }: Prop
 const FULL_POSTCODE_RE = /[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}/i;
 
 export default function Home() {
-  const { session } = useAuth();
+  const { session, isAdmin } = useAuth();
   const [address, setAddress] = useState("");
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Admin stopwatch
+  const [searchElapsed, setSearchElapsed] = useState<number | null>(null);
+  const searchStartRef = useRef<number>(0);
+  useEffect(() => {
+    if (!loading) return;
+    searchStartRef.current = performance.now();
+    setSearchElapsed(0);
+    const iv = setInterval(() => setSearchElapsed(performance.now() - searchStartRef.current), 100);
+    return () => { clearInterval(iv); setSearchElapsed(prev => prev !== null ? performance.now() - searchStartRef.current : prev); };
+  }, [loading]);
   const [result, setResult] = useState<PropertyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   type TabKey = "property" | "comparables" | "outward" | "browse" | "adopted" | "report" | "hpi" | "map";
@@ -987,6 +997,20 @@ export default function Home() {
       setResult(data);
       setError(null);
       setActiveTab("property");
+      // Fire slow enrichment (council tax + planning flood) in background
+      fetch(`${API_BASE}/api/property/enrich-slow`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon }),
+      }).then(r => r.ok ? r.json() : null).then(slow => {
+        if (slow) setResult(prev => prev ? {
+          ...prev,
+          council_tax_band: slow.council_tax_band ?? prev.council_tax_band,
+          planning_flood_zone: slow.planning_flood_zone ?? prev.planning_flood_zone,
+          rivers_sea_risk: slow.rivers_sea_risk ?? prev.rivers_sea_risk,
+          surface_water_risk: slow.surface_water_risk ?? prev.surface_water_risk,
+        } : prev);
+      }).catch(() => {});
       setBuildingSearchIds([]);
       setBuildingSearchAddressKeys([]);
       setBuildingSearchDone(false);
@@ -1194,7 +1218,7 @@ export default function Home() {
             {manualMode ? "Type the full address to search" : "Enter a UK postcode and select the address"}
           </p>
 
-          <form ref={searchFormRef} onSubmit={handleSearch} className="flex gap-2 mb-2">
+          <form ref={searchFormRef} onSubmit={handleSearch} className="flex gap-2 mb-2 items-center">
             <div style={{ position: "relative", flex: 1 }}>
               <input
                 type="text"
@@ -1251,6 +1275,9 @@ export default function Home() {
               >
                 {loading ? "Searching…" : "Search"}
               </button>
+            )}
+            {isAdmin && searchElapsed !== null && (
+              <span className="text-xs font-mono text-[#94A3B8] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
             )}
           </form>
           {manualMode && (
@@ -1504,7 +1531,7 @@ export default function Home() {
             <div className="space-y-5">
 
             {/* Search bar — disabled while a case is loaded (Save & Exit to unlock) */}
-            <form ref={searchFormRef2} onSubmit={handleSearch} className="flex gap-2">
+            <form ref={searchFormRef2} onSubmit={handleSearch} className="flex gap-2 items-center">
               <div style={{ position: "relative", flex: 1 }}>
                 <input
                   type="text"
@@ -1559,6 +1586,9 @@ export default function Home() {
                 >
                   {loading ? "Searching…" : "Search"}
                 </button>
+              )}
+              {isAdmin && searchElapsed !== null && (
+                <span className="text-xs font-mono text-[#94A3B8] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
               )}
             </form>
             {manualMode && !currentCaseId && (
@@ -1641,6 +1671,12 @@ export default function Home() {
                     </div>
                   );
                 })}
+                {!result.council_tax_band && (
+                  <div className="bg-[#111827] px-4 py-3">
+                    <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Council tax band</dt>
+                    <dd className="text-xs text-[#94A3B8] animate-pulse">Loading…</dd>
+                  </div>
+                )}
                 {result.council_tax_band && (() => {
                   const CT_COLORS: Record<string, { bg: string; dark: boolean }> = {
                     A: { bg: "#008054", dark: false },
@@ -1823,7 +1859,6 @@ export default function Home() {
             </PropCard>
 
             {/* Flood Risk card */}
-            {(result.rivers_sea_risk || result.surface_water_risk || result.planning_flood_zone) && (
             <PropCard id="flood" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
               <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
                 <div className="px-6 py-4 border-b border-[#334155]/60">
@@ -1866,6 +1901,12 @@ export default function Home() {
                 </div>
 
                 {/* Row 2: Statutory planning flood zone (without defences) */}
+                {!result.planning_flood_zone && (
+                  <div className="px-4 py-3">
+                    <dt className="text-xs text-[#94A3B8]/70 mb-1">NPPF Flood Zone</dt>
+                    <dd className="text-xs text-[#94A3B8] animate-pulse">Loading…</dd>
+                  </div>
+                )}
                 {result.planning_flood_zone && (
                   <div>
                     <div className="px-6 py-2 bg-[#1E293B]">
@@ -1909,7 +1950,6 @@ export default function Home() {
                 </div>
               </div>
             </PropCard>
-            )}
 
 
             {/* Conservation Areas + Natural England card */}

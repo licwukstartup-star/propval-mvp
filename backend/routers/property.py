@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -1622,15 +1623,13 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         logging.debug(f"postcode={postcode}, epc_email_set={bool(epc_email)}, key_len={len(epc_api_key)}")
 
         # Phase 1: EPC, Land Registry and coordinates — all concurrent.
-        # NOTE: Land Registry linked data does not populate lrcommon:uprn on price-paid
-        # records, so we cannot query by UPRN there. We always use postcode + SAON/PAON
-        # filtering. The UPRN from EPC is surfaced in the response and will be used by
-        # future UPRN-native APIs (Ofcom broadband, HMLR AVM, etc.).
+        import time as _t; _t0 = _t.monotonic()
         epc_rows, sparql_bindings, location = await asyncio.gather(
             _fetch_epc_rows(postcode, epc_email, epc_api_key),
             _fetch_sparql_bindings(postcode),
             _fetch_location(body.address, postcode),
         )
+        logging.warning("⏱ Phase 1 (EPC+LR+location): %.0fms", (_t.monotonic() - _t0) * 1000)
 
         # ── Try EPC match ──────────────────────────────────────────────────────
         epc_matched = False
@@ -1699,23 +1698,33 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         # Always fetch fresh: epc, land_registry, hpi, lease (transactional data)
         _sc = {k: v for k, v in _cached.items() if k in _CACHEABLE}
 
+        _t1 = _t.monotonic()
+
+        async def _timed(name: str, coro):
+            t = _t.monotonic()
+            try:
+                r = await coro
+            except Exception as e:
+                logging.warning("⏱   %s: %.0fms (FAILED)", name, (_t.monotonic() - t) * 1000)
+                return e
+            logging.warning("⏱   %s: %.0fms", name, (_t.monotonic() - t) * 1000)
+            return r
+
+        # Fast APIs only — flood, council_tax, planning_flood deferred to /enrich-slow
         _p2 = await asyncio.gather(
-            _use_cache(_sc["flood_risk"]) if "flood_risk" in _sc else _fetch_flood_risk(location["lat"], location["lon"]),
-            _use_cache(_sc.get("flood_risk", {}).get("planning_flood_zone")) if "flood_risk" in _sc else _fetch_planning_flood_zone(location["lat"], location["lon"]),
-            _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"]),
-            _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"]),
-            _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"]),
-            _fetch_epc_cert_url(postcode, matched_address),           # always fresh
-            _fetch_council_tax_band(postcode, matched_address) if "council_tax" not in _sc else _use_cache(_sc["council_tax"].get("band")),
-            _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"]),
-            _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"]),
-            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"]),
-            _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"]),
-            _fetch_lease_details(best.get("uprn")),                   # always fresh
-            _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form")),  # always fresh
-            return_exceptions=True,
+            _timed("listed_bldgs",     _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"])),
+            _timed("conservation",     _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"])),
+            _timed("natural_eng",      _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"])),
+            _timed("epc_cert_url",     _fetch_epc_cert_url(postcode, matched_address)),
+            _timed("brownfield",       _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"])),
+            _timed("coal_mining",      _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"])),
+            _timed("radon",            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"])),
+            _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
+            _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
+            _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
         )
 
+        logging.warning("⏱ Phase 2 (10 fast APIs): %.0fms", (_t.monotonic() - _t1) * 1000)
         _degraded: list[str] = []
 
         def _safe(val, default, source: str = "unknown"):
@@ -1725,24 +1734,27 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                 return default
             return val
 
-        flood            = _safe(_p2[0],  {"rivers_sea_risk": None, "surface_water_risk": None}, "flood_risk")
-        planning_zone    = _safe(_p2[1],  None, "planning_flood_zone")
-        listed_buildings = _safe(_p2[2],  [], "listed_buildings")
-        conservation_areas = _safe(_p2[3], [], "conservation_areas")
-        natural_england  = _safe(_p2[4],  {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False}, "natural_england")
-        epc_url          = _safe(_p2[5],  None, "epc_cert")
-        council_tax_band = _safe(_p2[6],  None, "council_tax")
-        brownfield       = _safe(_p2[7],  [], "brownfield")
-        coal             = _safe(_p2[8],  {"high_risk": False, "in_coalfield": False}, "coal_mining")
-        radon            = _safe(_p2[9],  None, "radon")
-        ground           = _safe(_p2[10], {
+        # Flood deferred to /enrich-slow
+        flood            = {"rivers_sea_risk": None, "surface_water_risk": None}
+        listed_buildings = _safe(_p2[0],  [], "listed_buildings")
+        conservation_areas = _safe(_p2[1], [], "conservation_areas")
+        natural_england  = _safe(_p2[2],  {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False}, "natural_england")
+        epc_url          = _safe(_p2[3],  None, "epc_cert")
+        brownfield       = _safe(_p2[4],  [], "brownfield")
+        coal             = _safe(_p2[5],  {"high_risk": False, "in_coalfield": False}, "coal_mining")
+        radon            = _safe(_p2[6],  None, "radon")
+        ground           = _safe(_p2[7], {
             "shrink_swell": None, "landslides": None, "compressible": None,
             "collapsible": None, "running_sand": None, "soluble_rocks": None,
         }, "ground_conditions")
-        lease_details    = _safe(_p2[11], {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None}, "lease")
-        hpi              = _safe(_p2[12], None, "hpi")
+        lease_details    = _safe(_p2[8], {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None}, "lease")
+        hpi              = _safe(_p2[9], None, "hpi")
+        # Deferred — will be null in initial response, filled by /enrich-slow
+        planning_zone    = None
+        council_tax_band = None
 
         # ── Phase 2.5: cert-page EPC scrape ───────────────────────────────────
+        _t2 = _t.monotonic()
         # If the postcode search didn't return this property's EPC row but the
         # GOV.UK find-energy-certificate scraper DID find a cert URL, scrape the
         # certificate page directly to recover the EPC data fields.
@@ -1775,6 +1787,8 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                             break
                 logging.debug(f"Phase 2.5 cert-page scrape — uprn={best.get('uprn')} fields={list(best.keys())}")
 
+        logging.warning("⏱ Phase 2.5 (cert scrape): %.0fms", (_t.monotonic() - _t2) * 1000)
+        _t3 = _t.monotonic()
         # ----- Tier 1: upsert into properties & property_enrichment -----
         _uprn = best.get("uprn")
         if _uprn:
@@ -1876,11 +1890,45 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "hpi": hpi,
             "degraded_sources": _degraded if _degraded else None,
         }
+        logging.warning("⏱ Upsert+response: %.0fms | TOTAL: %.0fms", (_t.monotonic() - _t3) * 1000, (_t.monotonic() - _t0) * 1000)
     except HTTPException:
         raise
     except Exception:
         logging.exception("Property search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# Slow enrichment — council tax + planning flood zone (deferred from main search)
+# ---------------------------------------------------------------------------
+
+class SlowEnrichRequest(BaseModel):
+    postcode: str
+    address: str
+    lat: float | None = None
+    lon: float | None = None
+
+@router.post("/enrich-slow")
+@limiter.limit("20/minute")
+async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = Depends(get_current_user)):
+    t0 = time.monotonic()
+    has_coords = body.lat is not None and body.lon is not None
+    ct_coro = _fetch_council_tax_band(body.postcode, body.address)
+    pf_coro = _fetch_planning_flood_zone(body.lat, body.lon) if has_coords else asyncio.sleep(0)
+    fl_coro = _fetch_flood_risk(body.lat, body.lon) if has_coords else asyncio.sleep(0)
+
+    ct_r, pf_r, fl_r = await asyncio.gather(ct_coro, pf_coro, fl_coro, return_exceptions=True)
+
+    ct = ct_r if isinstance(ct_r, str) else None
+    pf = pf_r if isinstance(pf_r, str) else None
+    flood = fl_r if isinstance(fl_r, dict) else {"rivers_sea_risk": None, "surface_water_risk": None}
+    logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s in %.0fms", ct, pf, flood.get("rivers_sea_risk"), (time.monotonic() - t0) * 1000)
+    return {
+        "council_tax_band": ct,
+        "planning_flood_zone": pf,
+        "rivers_sea_risk": flood.get("rivers_sea_risk"),
+        "surface_water_risk": flood.get("surface_water_risk"),
+    }
 
 
 _CT_SERVICE = "https://www.tax.service.gov.uk/check-council-tax-band"

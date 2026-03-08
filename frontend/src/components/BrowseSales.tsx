@@ -216,9 +216,13 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
     }
   }, [session?.access_token, outwardCode, filterType, filterTenure, filterMinDate, filterMaxDate, filterMinPrice, filterMaxPrice, filterNewBuild]);
 
-  // Auto-fetch on mount
+  // Auto-fetch on mount (once only — ref guards against StrictMode double-mount)
+  const didFetch = useRef(false);
   useEffect(() => {
-    if (!fetched) fetchData();
+    if (!didFetch.current && !fetched) {
+      didFetch.current = true;
+      fetchData();
+    }
   }, [fetched, fetchData]);
 
   // ── Sort logic ─────────────────────────────────────────────────────────

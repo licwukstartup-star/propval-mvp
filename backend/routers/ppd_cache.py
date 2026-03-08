@@ -830,13 +830,14 @@ async def query_epc_cached(postcode: str) -> list[dict]:
 
 
 def _query_epc_by_outward_sync(outward: str) -> list[dict]:
-    """Get all cached EPC records for an outward code (paginated past 1000 limit)."""
+    """Get cached EPC records for an outward code (only columns needed for matching)."""
     sb = _get_sb()
+    _EPC_COLS = "postcode,address1,address2,address3,number_rooms,floor_area,energy_rating,energy_score,construction_year"
     all_rows: list[dict] = []
     offset = 0
     while True:
         resp = sb.table("epc_cache") \
-            .select("*") \
+            .select(_EPC_COLS) \
             .eq("outward_code", outward) \
             .range(offset, offset + 999) \
             .execute()
