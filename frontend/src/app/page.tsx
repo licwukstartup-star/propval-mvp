@@ -3095,7 +3095,7 @@ export default function Home() {
                                                              "Natural England"],
                       ] as [string, string, string][]).map(([factor, finding, source], i) => (
                         <tr key={factor} style={rptStripe(i)}>
-                          <td style={rptTdL} dangerouslySetInnerHTML={{ __html: factor }} />
+                          <td style={rptTdL}>{factor}</td>
                           <td style={rptTdV}>{finding}</td>
                           <td style={rptTdS}>{source}</td>
                         </tr>

@@ -9,16 +9,36 @@ from pathlib import Path
 from rapidfuzz import fuzz
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from routers.auth import get_current_user
+from routers.rate_limit import limiter
+from routers.resilience import resilient_request
 from routers import ppd_cache
 from playwright.sync_api import sync_playwright
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from shapely.geometry import Point, shape
 
 router = APIRouter(prefix="/api/property", tags=["property"])
+
+# ---------------------------------------------------------------------------
+# Global httpx client — reused across all requests (Mandate S4.1)
+# ---------------------------------------------------------------------------
+_USER_AGENT = "PropVal/1.0 (property-intelligence; contact@propval.co.uk)"
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Return a module-level reusable httpx.AsyncClient."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=15.0,
+            headers={"User-Agent": _USER_AGENT},
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _http_client
 
 # ---------------------------------------------------------------------------
 # Supabase client (lazy — only initialised when env vars are present)
@@ -122,8 +142,20 @@ def _upsert_property_library(
         logging.warning("property library upsert failed (non-fatal): %s", exc)
 
 
-# Default cache TTL: 24 hours (in seconds)
-ENRICHMENT_CACHE_TTL = int(os.getenv("ENRICHMENT_CACHE_TTL", "86400"))
+# Per-source cache TTLs in seconds (Mandate S3.3)
+_SOURCE_TTL: dict[str, int] = {
+    "epc":                 90 * 86400,   # 90 days
+    "flood_risk":         365 * 86400,   # 365 days
+    "listed_buildings":    90 * 86400,   # 90 days
+    "conservation_areas":  30 * 86400,   # 30 days (planning)
+    "natural_england":    365 * 86400,   # 365 days
+    "ground_conditions":  365 * 86400,   # 365 days
+    "coal_mining":        365 * 86400,   # 365 days
+    "radon":              365 * 86400,   # 365 days
+    "brownfield":          30 * 86400,   # 30 days (planning)
+    "council_tax":        365 * 86400,   # 365 days
+}
+_DEFAULT_TTL = 86400  # 24 hours fallback
 
 
 def _load_cached_enrichment(uprn: str) -> dict[str, dict]:
@@ -148,7 +180,8 @@ def _load_cached_enrichment(uprn: str) -> dict[str, dict]:
         for row in resp.data:
             fetched = datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
             age_seconds = (now - fetched).total_seconds()
-            if age_seconds < ENRICHMENT_CACHE_TTL:
+            ttl = _SOURCE_TTL.get(row["data_source"], _DEFAULT_TTL)
+            if age_seconds < ttl:
                 cached[row["data_source"]] = row["payload"]
         return cached
     except Exception as exc:
@@ -187,7 +220,7 @@ def _load_green_belt_polygons() -> None:
             except Exception as exc:
                 logging.warning("Green Belt: could not parse feature: %s", exc)
         _green_belt_polygons = polys
-        print(f"Green Belt: loaded {len(polys)} polygons from planning.data.gov.uk")
+        logging.info("Green Belt: loaded %d polygons from planning.data.gov.uk", len(polys))
     except Exception as exc:
         logging.warning(f"Green Belt GeoJSON download failed: {exc}. Green belt check disabled.")
         _green_belt_polygons = []
@@ -236,7 +269,7 @@ NE_AW_URL   = f"{_NE_BASE}/Ancient_Woodland_England/FeatureServer/0/query"
 
 
 class SearchRequest(BaseModel):
-    address: str
+    address: str = Field(..., max_length=256)
 
 
 # ---------------------------------------------------------------------------
@@ -600,14 +633,14 @@ async def _fetch_epc_from_cert_page(cert_url: str) -> dict | None:
     Missing fields are absent; callers use .get() so they receive None.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                cert_url,
-                headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
-                follow_redirects=True,
-            )
+        client = _get_http_client()
+        resp = await client.get(
+            cert_url,
+            headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
+            follow_redirects=True,
+        )
         if resp.status_code != 200:
-            print(f"DEBUG: cert page scrape status {resp.status_code}")
+            logging.debug(f"cert page scrape status {resp.status_code}")
             return None
 
         html = resp.text
@@ -716,9 +749,9 @@ async def _fetch_epc_from_cert_page(cert_url: str) -> dict | None:
                     break
 
         if result:
-            print(f"DEBUG: cert page scrape OK — fields={list(result.keys())}")
+            logging.debug(f"cert page scrape OK — fields={list(result.keys())}")
         else:
-            print("DEBUG: cert page scrape — no fields extracted")
+            logging.debug("cert page scrape — no fields extracted")
         return result or None
 
     except Exception:
@@ -727,14 +760,14 @@ async def _fetch_epc_from_cert_page(cert_url: str) -> dict | None:
 
 
 async def _fetch_epc_rows(postcode: str, email: str, api_key: str) -> list[dict]:
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            EPC_API_BASE,
-            params={"postcode": postcode, "size": 5000},
-            auth=(email, api_key),
-            headers={"Accept": "application/json"},
-        )
-    print(f"DEBUG: EPC status={resp.status_code}")
+    client = _get_http_client()
+    resp = await client.get(
+        EPC_API_BASE,
+        params={"postcode": postcode, "size": 5000},
+        auth=(email, api_key),
+        headers={"Accept": "application/json"},
+    )
+    logging.debug(f"EPC status={resp.status_code}")
     if resp.status_code == 401:
         raise HTTPException(status_code=502, detail="EPC API authentication failed.")
     if resp.status_code != 200:
@@ -753,7 +786,7 @@ async def _fetch_sparql_bindings(postcode: str) -> list[dict]:
     Returns data in SPARQL-binding format for compatibility with _filter_sales.
     """
     pc = normalise_postcode(postcode)
-    print(f"DEBUG: Land Registry PPD cache query, postcode={pc}")
+    logging.debug(f"Land Registry PPD cache query, postcode={pc}")
     return await ppd_cache.query_by_postcode_all_time(pc)
 
 
@@ -801,8 +834,8 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
         url = f"{_HPI_REST_BASE}/{slug}/month/{year}-{month:02d}.json"
         try:
             async with sem:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(url, headers={"Accept": "application/json"})
+                client = _get_http_client()
+                resp = await client.get(url, headers={"Accept": "application/json"})
             if resp.status_code != 200:
                 return None
             topic = resp.json().get("result", {}).get("primaryTopic", {})
@@ -844,7 +877,7 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
     trend = [r for r in results if r is not None and r.get("avg_price") is not None]
 
     if not trend:
-        print(f"DEBUG: HPI — no data for slug='{slug}'")
+        logging.debug(f"HPI — no data for slug='{slug}'")
         return None
 
     latest = trend[-1]
@@ -858,8 +891,8 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
         None
     )
 
-    print(f"DEBUG: HPI — {admin_district} {latest['month']} avg=£{latest['avg_price']:,.0f} "
-          f"annual={latest['annual_change_pct']}% points={len(trend)}")
+    logging.debug(f"HPI — {admin_district} {latest['month']} avg=£{latest['avg_price']:,.0f} "
+                  f"annual={latest['annual_change_pct']}% points={len(trend)}")
 
     return {
         "local_authority":   admin_district,
@@ -884,12 +917,12 @@ async def _fetch_location(address: str, postcode: str) -> dict:
 
     async def _nominatim() -> tuple[float, float] | None:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    NOMINATIM_URL,
-                    params={"q": pc, "format": "json", "limit": 1, "countrycodes": "gb"},
-                    headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
-                )
+            client = _get_http_client()
+            resp = await client.get(
+                NOMINATIM_URL,
+                params={"q": pc, "format": "json", "limit": 1, "countrycodes": "gb"},
+                headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
+            )
             if resp.status_code == 200 and resp.json():
                 hit = resp.json()[0]
                 return float(hit["lat"]), float(hit["lon"])
@@ -899,8 +932,8 @@ async def _fetch_location(address: str, postcode: str) -> dict:
 
     async def _postcodes_io() -> dict:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{POSTCODES_IO_URL}/{pc.replace(' ', '')}")
+            client = _get_http_client()
+            resp = await client.get(f"{POSTCODES_IO_URL}/{pc.replace(' ', '')}")
             if resp.status_code == 200:
                 return resp.json().get("result") or {}
         except Exception:
@@ -909,7 +942,7 @@ async def _fetch_location(address: str, postcode: str) -> dict:
 
     nom_result, pc_result = await asyncio.gather(_nominatim(), _postcodes_io())
 
-    print(f"DEBUG: Nominatim={'ok' if nom_result else 'miss'}, postcodes.io={'ok' if pc_result else 'miss'}")
+    logging.debug(f"Nominatim={'ok' if nom_result else 'miss'}, postcodes.io={'ok' if pc_result else 'miss'}")
 
     if nom_result:
         lat, lon = nom_result
@@ -995,9 +1028,9 @@ async def _fetch_flood_risk(lat: float | None, lon: float | None) -> dict:
             "INFO_FORMAT": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(NAFRA2_RS_WMS, params=params)
-            if resp.status_code != 200:
+            client = _get_http_client()
+            resp = await resilient_request(client, "GET", NAFRA2_RS_WMS, params=params)
+            if resp is None or resp.status_code != 200:
                 return None
             features = resp.json().get("features", [])
             if not features:
@@ -1018,9 +1051,9 @@ async def _fetch_flood_risk(lat: float | None, lon: float | None) -> dict:
             "f": "json",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params)
-            if resp.status_code != 200:
+            client = _get_http_client()
+            resp = await resilient_request(client, "GET", url, params=params)
+            if resp is None or resp.status_code != 200:
                 return False
             return len(resp.json().get("features", [])) > 0
         except Exception:
@@ -1042,7 +1075,7 @@ async def _fetch_flood_risk(lat: float | None, lon: float | None) -> dict:
     else:
         sw_risk = "Very Low"
 
-    print(f"DEBUG: flood risk — rivers_sea={rs_risk}, surface_water={sw_risk}")
+    logging.debug(f"flood risk — rivers_sea={rs_risk}, surface_water={sw_risk}")
     return {"rivers_sea_risk": rs_risk, "surface_water_risk": sw_risk}
 
 
@@ -1066,8 +1099,8 @@ async def _fetch_listed_buildings(lat: float | None, lon: float | None) -> list[
         "f": "json",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(NHLE_URL, params=params)
+        client = _get_http_client()
+        resp = await client.get(NHLE_URL, params=params)
         if resp.status_code != 200:
             return []
         features = resp.json().get("features", [])
@@ -1082,7 +1115,7 @@ async def _fetch_listed_buildings(lat: float | None, lon: float | None) -> list[
                 "grade": a.get("Grade", ""),
                 "url": a.get("hyperlink", ""),
             })
-        print(f"DEBUG: listed buildings within 75m = {len(results)}")
+        logging.debug(f"listed buildings within 75m = {len(results)}")
         return results
     except Exception:
         logging.exception("_fetch_listed_buildings failed for lat=%s lon=%s", lat, lon)
@@ -1111,8 +1144,8 @@ async def _fetch_planning_flood_zone(lat: float | None, lon: float | None) -> st
         "limit": "20",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(PLANNING_DATA_URL, params=params)
+        client = _get_http_client()
+        resp = await client.get(PLANNING_DATA_URL, params=params)
         if resp.status_code != 200:
             return None
         entities = resp.json().get("entities", [])
@@ -1158,8 +1191,8 @@ async def _fetch_natural_england(lat: float | None, lon: float | None) -> dict:
             "f": "json",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, data=data)
+            client = _get_http_client()
+            resp = await client.post(url, data=data)
             if resp.status_code != 200:
                 return []
             return resp.json().get("features", [])
@@ -1209,7 +1242,7 @@ async def _fetch_natural_england(lat: float | None, lon: float | None) -> dict:
             aw_by_name[name] = status
     aw_list = [{"name": name, "type": status} for name, status in aw_by_name.items()]
 
-    print(f"DEBUG: NE — sssi={len(sssi_names)}, aonb={aonb_name}, aw={len(aw_list)}, green_belt={in_green_belt}")
+    logging.debug(f"NE — sssi={len(sssi_names)}, aonb={aonb_name}, aw={len(aw_list)}, green_belt={in_green_belt}")
     return {
         "sssi": sssi_names,
         "aonb": aonb_name,
@@ -1233,8 +1266,8 @@ async def _fetch_conservation_areas(lat: float | None, lon: float | None) -> lis
         "fields": "name,reference,designation-date,documentation-url",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(PLANNING_DATA_URL, params=params)
+        client = _get_http_client()
+        resp = await client.get(PLANNING_DATA_URL, params=params)
         if resp.status_code != 200:
             return []
         entities = resp.json().get("entities", [])
@@ -1249,7 +1282,7 @@ async def _fetch_conservation_areas(lat: float | None, lon: float | None) -> lis
                 "designation_date": e.get("designation-date", ""),
                 "documentation_url": e.get("documentation-url", ""),
             })
-        print(f"DEBUG: conservation areas = {len(results)}")
+        logging.debug(f"conservation areas = {len(results)}")
         return results
     except Exception:
         logging.exception("_fetch_conservation_areas failed for lat=%s lon=%s", lat, lon)
@@ -1281,8 +1314,8 @@ async def _fetch_brownfield(lat: float | None, lon: float | None) -> list[dict]:
         "fields": "name,reference,site-address,hectares,ownership-status,planning-permission-status,planning-permission-type,planning-permission-date,hazardous-substances,notes",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(PLANNING_DATA_URL, params=params)
+        client = _get_http_client()
+        resp = await client.get(PLANNING_DATA_URL, params=params)
         if resp.status_code != 200:
             return []
         entities = resp.json().get("entities", [])
@@ -1300,7 +1333,7 @@ async def _fetch_brownfield(lat: float | None, lon: float | None) -> list[dict]:
                 "planning_date": e.get("planning-permission-date"),
                 "hazardous_substances": e.get("hazardous-substances") == "yes",
             })
-        print(f"DEBUG: brownfield sites within 100m = {len(results)}")
+        logging.debug(f"brownfield sites within 100m = {len(results)}")
         return results
     except Exception:
         logging.exception("_fetch_brownfield failed for lat=%s lon=%s", lat, lon)
@@ -1340,8 +1373,8 @@ async def _fetch_coal_mining_risk(lat: float | None, lon: float | None) -> dict:
             "INFO_FORMAT": "text/html",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(COAL_AUTHORITY_WMS, params=params)
+            client = _get_http_client()
+            resp = await client.get(COAL_AUTHORITY_WMS, params=params)
             if resp.status_code != 200:
                 return False
             text = resp.text
@@ -1359,7 +1392,7 @@ async def _fetch_coal_mining_risk(lat: float | None, lon: float | None) -> dict:
         _wms_query("Coal.Mining.Reporting.Area"),
     )
 
-    print(f"DEBUG: coal mining — high_risk={high_risk}, in_coalfield={in_coalfield}")
+    logging.debug(f"coal mining — high_risk={high_risk}, in_coalfield={in_coalfield}")
     return {"high_risk": high_risk, "in_coalfield": in_coalfield}
 
 
@@ -1391,8 +1424,8 @@ async def _fetch_radon_risk(lat: float | None, lon: float | None) -> str | None:
         "INFO_FORMAT": "text/html",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(BGS_RADON_WMS, params=params)
+        client = _get_http_client()
+        resp = await client.get(BGS_RADON_WMS, params=params)
         if resp.status_code != 200:
             return None
         text = resp.text
@@ -1410,7 +1443,7 @@ async def _fetch_radon_risk(lat: float | None, lon: float | None) -> str | None:
             col = headers.index("CLASS_MAX")
             if col < len(values):
                 category = CLASS_MAP.get(values[col].strip())
-                print(f"DEBUG: radon risk={category}")
+                logging.debug(f"radon risk={category}")
                 return category
         return None
     except Exception:
@@ -1442,8 +1475,8 @@ async def _fetch_ground_conditions(lat: float | None, lon: float | None) -> dict
 
     async def _query(url: str) -> str | None:
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params_base)
+            client = _get_http_client()
+            resp = await client.get(url, params=params_base)
             if resp.status_code != 200:
                 return None
             features = resp.json().get("features", [])
@@ -1486,12 +1519,12 @@ async def _fetch_epc_cert_url(postcode: str, matched_address: str) -> str | None
     """
     pc = normalise_postcode(postcode).replace(" ", "")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                GOV_EPC_SEARCH,
-                params={"postcode": pc},
-                headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
-            )
+        client = _get_http_client()
+        resp = await client.get(
+            GOV_EPC_SEARCH,
+            params={"postcode": pc},
+            headers={"User-Agent": "PropVal/1.0 (propval.co.uk)"},
+        )
         if resp.status_code != 200:
             return None
 
@@ -1513,7 +1546,7 @@ async def _fetch_epc_cert_url(postcode: str, matched_address: str) -> str | None
                 best_score, best_path = score, path
 
         if best_score >= 0.8 and best_path:
-            print(f"DEBUG: EPC cert URL score={best_score:.3f} path={best_path}")
+            logging.debug(f"EPC cert URL score={best_score:.3f} path={best_path}")
             return f"https://find-energy-certificate.service.gov.uk{best_path}"
     except Exception:
         logging.exception("_fetch_epc_cert_url failed for postcode=%s", postcode)
@@ -1569,7 +1602,8 @@ async def _fetch_lease_details(uprn: str | None) -> dict:
 # ---------------------------------------------------------------------------
 
 @router.post("/search")
-async def search_property(body: SearchRequest, _user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def search_property(request: Request, body: SearchRequest, _user: dict = Depends(get_current_user)):
     try:
         postcode = extract_postcode(body.address)
         if not postcode:
@@ -1585,7 +1619,7 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                 status_code=500, detail="EPC API credentials are not configured."
             )
 
-        print(f"DEBUG: postcode={postcode}, epc_email_set={bool(epc_email)}, key_len={len(epc_api_key)}")
+        logging.debug(f"postcode={postcode}, epc_email_set={bool(epc_email)}, key_len={len(epc_api_key)}")
 
         # Phase 1: EPC, Land Registry and coordinates — all concurrent.
         # NOTE: Land Registry linked data does not populate lrcommon:uprn on price-paid
@@ -1614,14 +1648,14 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                 q_num = house_number(body.address)
                 c_num = house_number(build_epc_address(best))
                 if q_num and c_num and q_num != c_num:
-                    print(f"DEBUG: Post-match house-number mismatch ({q_num} vs {c_num}) — forcing fallback")
+                    logging.debug(f"Post-match house-number mismatch ({q_num} vs {c_num}) — forcing fallback")
                     epc_matched = False
 
         if not epc_matched:
             # ── No-EPC fallback ────────────────────────────────────────────────
             # Parse address parts directly from user input; run all spatial APIs
             # with Nominatim coordinates.  EPC-specific fields return null.
-            print(f"DEBUG: No EPC match (score={best_match_score:.3f}) — no-EPC fallback for '{body.address}'")
+            logging.debug(f"No EPC match (score={best_match_score:.3f}) — no-EPC fallback for '{body.address}'")
             best = {}  # reset so all best.get() calls return None
             parts = parse_user_address_parts(body.address, postcode)
             matched_address = body.address.strip()
@@ -1642,14 +1676,14 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                         break
 
         sales = _filter_sales(sparql_bindings, parts)
-        print(f"DEBUG: matched='{matched_address}' uprn={best.get('uprn')} saon={parts['saon']} paon={parts['paon']} street={parts['street']} sales={len(sales)} inferred_building={inferred_building_name} epc_matched={epc_matched}")
+        logging.debug(f"matched='{matched_address}' uprn={best.get('uprn')} saon={parts['saon']} paon={parts['paon']} street={parts['street']} sales={len(sales)} inferred_building={inferred_building_name} epc_matched={epc_matched}")
 
         # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
         _cached = _load_cached_enrichment(best.get("uprn", ""))
         _fresh_sources = [k for k in _cached if k not in {"flood_risk", "listed_buildings", "conservation_areas", "natural_england", "ground_conditions", "coal_mining", "radon", "brownfield", "council_tax"}]
         _cached_sources = [k for k in _cached if k not in _fresh_sources]
         if _cached_sources:
-            print(f"DEBUG: enrichment cache hits={_cached_sources}, always-fresh={_fresh_sources or 'none in cache'}")
+            logging.debug(f"enrichment cache hits={_cached_sources}, always-fresh={_fresh_sources or 'none in cache'}")
 
         # Phase 2: spatial queries + EPC cert URL — all concurrent.
         # return_exceptions=True ensures one failing task never crashes the whole request.
@@ -1682,28 +1716,31 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
             return_exceptions=True,
         )
 
-        def _safe(val, default):
+        _degraded: list[str] = []
+
+        def _safe(val, default, source: str = "unknown"):
             if isinstance(val, BaseException):
-                logging.exception("Phase 2 task failed", exc_info=val)
+                logging.exception("Phase 2 task failed: %s", source, exc_info=val)
+                _degraded.append(source)
                 return default
             return val
 
-        flood            = _safe(_p2[0],  {"rivers_sea_risk": None, "surface_water_risk": None})
-        planning_zone    = _safe(_p2[1],  None)
-        listed_buildings = _safe(_p2[2],  [])
-        conservation_areas = _safe(_p2[3], [])
-        natural_england  = _safe(_p2[4],  {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False})
-        epc_url          = _safe(_p2[5],  None)
-        council_tax_band = _safe(_p2[6],  None)
-        brownfield       = _safe(_p2[7],  [])
-        coal             = _safe(_p2[8],  {"high_risk": False, "in_coalfield": False})
-        radon            = _safe(_p2[9],  None)
+        flood            = _safe(_p2[0],  {"rivers_sea_risk": None, "surface_water_risk": None}, "flood_risk")
+        planning_zone    = _safe(_p2[1],  None, "planning_flood_zone")
+        listed_buildings = _safe(_p2[2],  [], "listed_buildings")
+        conservation_areas = _safe(_p2[3], [], "conservation_areas")
+        natural_england  = _safe(_p2[4],  {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False}, "natural_england")
+        epc_url          = _safe(_p2[5],  None, "epc_cert")
+        council_tax_band = _safe(_p2[6],  None, "council_tax")
+        brownfield       = _safe(_p2[7],  [], "brownfield")
+        coal             = _safe(_p2[8],  {"high_risk": False, "in_coalfield": False}, "coal_mining")
+        radon            = _safe(_p2[9],  None, "radon")
         ground           = _safe(_p2[10], {
             "shrink_swell": None, "landslides": None, "compressible": None,
             "collapsible": None, "running_sand": None, "soluble_rocks": None,
-        })
-        lease_details    = _safe(_p2[11], {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None})
-        hpi              = _safe(_p2[12], None)
+        }, "ground_conditions")
+        lease_details    = _safe(_p2[11], {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None}, "lease")
+        hpi              = _safe(_p2[12], None, "hpi")
 
         # ── Phase 2.5: cert-page EPC scrape ───────────────────────────────────
         # If the postcode search didn't return this property's EPC row but the
@@ -1736,7 +1773,7 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
                                 and lr_paon and not re.match(r"^\d", lr_paon)):
                             inferred_building_name = lr_paon.title()
                             break
-                print(f"DEBUG: Phase 2.5 cert-page scrape — uprn={best.get('uprn')} fields={list(best.keys())}")
+                logging.debug(f"Phase 2.5 cert-page scrape — uprn={best.get('uprn')} fields={list(best.keys())}")
 
         # ----- Tier 1: upsert into properties & property_enrichment -----
         _uprn = best.get("uprn")
@@ -1837,11 +1874,12 @@ async def search_property(body: SearchRequest, _user: dict = Depends(get_current
             "sales": sales,
             "epc_matched": epc_matched,
             "hpi": hpi,
+            "degraded_sources": _degraded if _degraded else None,
         }
     except HTTPException:
         raise
     except Exception:
-        traceback.print_exc()
+        logging.exception("Property search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -1895,11 +1933,11 @@ def _scrape_council_tax_band(postcode: str, matched_address: str) -> str | None:
                 best_score = score
                 best_band = band.upper()
 
-        print(f"DEBUG council_tax_band: best_score={best_score:.2f} band={best_band}")
+        logging.debug(f"council_tax_band: best_score={best_score:.2f} band={best_band}")
         return best_band if best_score > 0.4 else None
 
     except Exception as exc:
-        print(f"DEBUG council_tax_band: failed — {exc}")
+        logging.debug(f"council_tax_band: failed — {exc}")
         return None
 
 
@@ -1938,7 +1976,10 @@ def _render_epc_pdf(print_url: str) -> bytes:
 
 @router.get("/epc-pdf")
 async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get_current_user)):
-    if not cert_url.startswith(_EPC_CERT_BASE):
+    from urllib.parse import urlparse
+    parsed = urlparse(cert_url)
+    expected = urlparse(_EPC_CERT_BASE)
+    if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc or not parsed.path.startswith(expected.path):
         raise HTTPException(status_code=400, detail="Invalid EPC certificate URL.")
     try:
         pdf_bytes = await asyncio.to_thread(_render_epc_pdf, cert_url + "?print=true")

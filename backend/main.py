@@ -8,12 +8,15 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from routers import admin as admin_router
 from routers import cases as cases_router
 from routers import comparables as comparables_router
 from routers import property as property_router
 from routers.property import _load_green_belt_polygons
+from routers.rate_limit import limiter
 
 # Load .env from project root (one level above /backend)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -27,6 +30,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PropVal API", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.exception_handler(RequestValidationError)
@@ -34,7 +39,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     body = await request.body()
     logging.error("422 Validation error on %s\nBody: %s\nErrors: %s",
                   request.url.path, body.decode()[:2000], exc.errors())
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": "Invalid request data"})
 
 
 app.add_middleware(

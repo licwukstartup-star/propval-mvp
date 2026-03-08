@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>propval-mvp — System Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg-deep: #0a0e17;
+    --bg-card: #111827;
+    --bg-card-hover: #1a2332;
+    --border: #1e293b;
+    --border-glow: #00f0ff30;
+    --cyan: #00f0ff;
+    --magenta: #ff00aa;
+    --green: #00ff88;
+    --amber: #ffb800;
+    --purple: #a855f7;
+    --red: #ff4466;
+    --text-primary: #e2e8f0;
+    --text-muted: #64748b;
+    --text-dim: #475569;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Background grid */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      linear-gradient(rgba(0,240,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,240,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px 30px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Header */
+  .header {
+    text-align: center;
+    margin-bottom: 50px;
+  }
+
+  .header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2.4rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--cyan), var(--magenta));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -1px;
+    margin-bottom: 8px;
+  }
+
+  .header .subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+    padding: 16px 24px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  /* Flow sections */
+  .flow-section {
+    margin-bottom: 48px;
+  }
+
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    padding-left: 4px;
+  }
+
+  /* Node grid */
+  .node-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 8px;
+  }
+
+  .node {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 24px;
+    min-width: 200px;
+    max-width: 280px;
+    flex: 1;
+    position: relative;
+    transition: all 0.3s ease;
+    overflow: hidden;
+  }
+
+  .node:hover {
+    background: var(--bg-card-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+
+  .node::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    border-radius: 14px 14px 0 0;
+  }
+
+  .node.cyan::before { background: var(--cyan); }
+  .node.magenta::before { background: var(--magenta); }
+  .node.green::before { background: var(--green); }
+  .node.amber::before { background: var(--amber); }
+  .node.purple::before { background: var(--purple); }
+  .node.red::before { background: var(--red); }
+
+  .node-icon {
+    font-size: 1.6rem;
+    margin-bottom: 10px;
+  }
+
+  .node-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 6px;
+  }
+
+  .node.cyan .node-title { color: var(--cyan); }
+  .node.magenta .node-title { color: var(--magenta); }
+  .node.green .node-title { color: var(--green); }
+  .node.amber .node-title { color: var(--amber); }
+  .node.purple .node-title { color: var(--purple); }
+  .node.red .node-title { color: var(--red); }
+
+  .node-desc {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .node-tag {
+    display: inline-block;
+    margin-top: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  /* Connector arrows */
+  .connector {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 12px 0;
+    position: relative;
+  }
+
+  .connector-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+
+  .connector-line .arrow {
+    font-size: 1.2rem;
+  }
+
+  .connector-line.cyan .arrow { color: var(--cyan); }
+  .connector-line.magenta .arrow { color: var(--magenta); }
+  .connector-line.green .arrow { color: var(--green); }
+  .connector-line.amber .arrow { color: var(--amber); }
+
+  /* Feedback loop panel */
+  .feedback-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px;
+    margin-top: 12px;
+  }
+
+  .feedback-panel h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 18px;
+    color: var(--purple);
+  }
+
+  .loop-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+  }
+
+  .loop-item {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 14px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: background 0.2s;
+  }
+
+  .loop-item:hover {
+    background: rgba(255,255,255,0.04);
+  }
+
+  .loop-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--purple);
+    background: rgba(168,85,247,0.12);
+    border: 1px solid rgba(168,85,247,0.25);
+    padding: 3px 8px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .loop-text {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .loop-text strong {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  /* Big flow diagram */
+  .flow-diagram {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 36px 28px;
+    margin-bottom: 40px;
+    overflow-x: auto;
+  }
+
+  .flow-diagram h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 24px;
+    text-align: center;
+    color: var(--cyan);
+  }
+
+  .flow-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+    padding: 10px 0;
+  }
+
+  .flow-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 16px;
+    min-width: 110px;
+  }
+
+  .flow-step-box {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 10px 14px;
+    border-radius: 8px;
+    text-align: center;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+
+  .flow-step-box.dev { background: rgba(0,240,255,0.08); border-color: rgba(0,240,255,0.3); color: var(--cyan); }
+  .flow-step-box.git { background: rgba(255,0,170,0.08); border-color: rgba(255,0,170,0.3); color: var(--magenta); }
+  .flow-step-box.fe { background: rgba(0,255,136,0.08); border-color: rgba(0,255,136,0.3); color: var(--green); }
+  .flow-step-box.db { background: rgba(255,184,0,0.08); border-color: rgba(255,184,0,0.3); color: var(--amber); }
+  .flow-step-box.be { background: rgba(255,68,102,0.08); border-color: rgba(255,68,102,0.3); color: var(--red); }
+  .flow-step-box.api { background: rgba(168,85,247,0.08); border-color: rgba(168,85,247,0.3); color: var(--purple); }
+
+  .flow-step-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .flow-arrow {
+    font-size: 1.4rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    padding: 0 2px;
+  }
+
+  /* Valuation workflow */
+  .workflow-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .wf-step {
+    text-align: center;
+    padding: 16px 12px;
+    background: rgba(0,240,255,0.04);
+    border: 1px solid rgba(0,240,255,0.15);
+    border-radius: 10px;
+    position: relative;
+  }
+
+  .wf-step-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--cyan);
+    opacity: 0.25;
+    position: absolute;
+    top: 6px;
+    right: 10px;
+  }
+
+  .wf-step-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+
+  .wf-step-detail {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding-top: 30px;
+    border-top: 1px solid var(--border);
+    margin-top: 20px;
+  }
+
+  .footer p {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .header h1 { font-size: 1.6rem; }
+    .node { min-width: 100%; }
+    .flow-steps { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); }
+    .legend { gap: 12px; }
+  }
+
+  @media print {
+    body { background: #fff; color: #111; }
+    body::before { display: none; }
+    .node, .flow-diagram, .feedback-panel { border-color: #ccc; background: #fafafa; }
+    .node-title, .node-desc, .loop-text, .flow-step-box { color: #222 !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>propval-mvp</h1>
+    <div class="subtitle">System Architecture &amp; Data Flow</div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> Development</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--magenta)"></div> Version Control</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> Frontend</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div> Database &amp; Auth</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div> Backend</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div> External APIs</div>
+  </div>
+
+  <!-- Primary deployment flow -->
+  <div class="flow-diagram">
+    <h3>⟩ Deployment Pipeline</h3>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="flow-step-box dev">VS Code + Claude Code</div>
+        <div class="flow-step-label">write code</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box dev">Node.js / npm</div>
+        <div class="flow-step-label">local dev &amp; test</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box git">git push</div>
+        <div class="flow-step-label">commit changes</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box git">GitHub</div>
+        <div class="flow-step-label">source of truth</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box fe">Vercel</div>
+        <div class="flow-step-label">auto-deploy frontend</div>
+      </div>
+      <div class="flow-arrow">&amp;</div>
+      <div class="flow-step">
+        <div class="flow-step-box be">Render</div>
+        <div class="flow-step-label">auto-deploy backend</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Runtime data flow -->
+  <div class="flow-diagram">
+    <h3>⟩ Runtime Data Flow (Live User Session)</h3>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="flow-step-box fe">Browser</div>
+        <div class="flow-step-label">surveyor opens app</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box fe">Vercel / Next.js</div>
+        <div class="flow-step-label">serves UI + routes</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box db">Supabase Auth</div>
+        <div class="flow-step-label">login / session</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box db">Supabase DB</div>
+        <div class="flow-step-label">read/write case data</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box be">Render API</div>
+        <div class="flow-step-label">heavy processing</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-step-box api">External APIs</div>
+        <div class="flow-step-label">HMLR, EPC, EA …</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Component detail cards -->
+  <div class="flow-section">
+    <div class="section-label">01 — Development Environment</div>
+    <div class="node-row">
+      <div class="node cyan">
+        <div class="node-icon">⌨️</div>
+        <div class="node-title">VS Code + Terminal</div>
+        <div class="node-desc">Your code editor and command line. Where all code is written, tested, and debugged locally before deployment.</div>
+        <div class="node-tag">local machine</div>
+      </div>
+      <div class="node cyan">
+        <div class="node-icon">🤖</div>
+        <div class="node-title">Claude Code</div>
+        <div class="node-desc">AI coding agent running locally. Writes, edits, and refactors code across the codebase. Can run parallel instances.</div>
+        <div class="node-tag">local machine</div>
+      </div>
+      <div class="node cyan">
+        <div class="node-icon">⚙️</div>
+        <div class="node-title">Node.js / npm</div>
+        <div class="node-desc">JavaScript runtime + package manager. Runs your dev server, installs dependencies, and executes build scripts.</div>
+        <div class="node-tag">runtime engine</div>
+      </div>
+      <div class="node cyan">
+        <div class="node-icon">🧱</div>
+        <div class="node-title">Next.js Framework</div>
+        <div class="node-desc">React meta-framework providing routing, server-side rendering, API routes, and project structure. The architectural blueprint.</div>
+        <div class="node-tag">framework</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line cyan"><span class="arrow">↓</span> git add · git commit · git push <span class="arrow">↓</span></div></div>
+
+  <div class="flow-section">
+    <div class="section-label">02 — Version Control</div>
+    <div class="node-row">
+      <div class="node magenta" style="max-width:400px">
+        <div class="node-icon">📦</div>
+        <div class="node-title">GitHub</div>
+        <div class="node-desc">Central repository storing all code with full change history. Every commit is tracked. Triggers automatic deployments to Vercel and Render when code is pushed. Enables rollback to any previous state.</div>
+        <div class="node-tag">source of truth · webhooks</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line magenta"><span class="arrow">↓</span> webhook triggers auto-deploy <span class="arrow">↓</span></div></div>
+
+  <div class="flow-section">
+    <div class="section-label">03 — Hosting &amp; Infrastructure</div>
+    <div class="node-row">
+      <div class="node green">
+        <div class="node-icon">🌐</div>
+        <div class="node-title">Vercel</div>
+        <div class="node-desc">Frontend hosting platform. Deploys your Next.js app globally. Handles CDN, SSL, preview deployments per branch, and will serve your custom domain.</div>
+        <div class="node-tag">frontend host · CDN · edge</div>
+      </div>
+      <div class="node amber">
+        <div class="node-icon">🗄️</div>
+        <div class="node-title">Supabase</div>
+        <div class="node-desc">Postgres database + auth + real-time subscriptions + storage. Stores cases, comparables, EPC data, user accounts. RLS policies enforce multi-tenant data isolation.</div>
+        <div class="node-tag">database · auth · RLS · API</div>
+      </div>
+      <div class="node red">
+        <div class="node-icon">🔧</div>
+        <div class="node-title">Render</div>
+        <div class="node-desc">Backend server hosting. Runs the comparable selection engine, external API orchestration, data enrichment pipelines, and any long-running processing tasks.</div>
+        <div class="node-tag">backend host · API server</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line amber"><span class="arrow">↕</span> REST / real-time connections <span class="arrow">↕</span></div></div>
+
+  <div class="flow-section">
+    <div class="section-label">04 — External Data Sources</div>
+    <div class="node-row">
+      <div class="node purple">
+        <div class="node-icon">🏛️</div>
+        <div class="node-title">HMLR Price Paid</div>
+        <div class="node-desc">Land Registry transaction data. Sale prices, dates, property types. Core input for comparable analysis.</div>
+        <div class="node-tag">free tier + Business Gateway</div>
+      </div>
+      <div class="node purple">
+        <div class="node-icon">⚡</div>
+        <div class="node-title">EPC Register</div>
+        <div class="node-desc">Energy Performance Certificate data. Floor area, construction age, energy ratings, wall types. Key enrichment source.</div>
+        <div class="node-tag">DLUHC open data</div>
+      </div>
+      <div class="node purple">
+        <div class="node-icon">🌊</div>
+        <div class="node-title">Environment Agency</div>
+        <div class="node-desc">Flood risk zones, flood monitoring, and historical flood event data. Critical for risk-adjusted valuations.</div>
+        <div class="node-tag">flood risk API</div>
+      </div>
+      <div class="node purple">
+        <div class="node-icon">📡</div>
+        <div class="node-title">Ofcom + Others</div>
+        <div class="node-desc">Broadband speeds, noise mapping (DEFRA), IMD deprivation indices, planning data. Supplementary enrichment layers.</div>
+        <div class="node-tag">broadband · noise · IMD</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line green"><span class="arrow">↓</span> served via domain &amp; DNS to <span class="arrow">↓</span></div></div>
+
+  <div class="flow-section">
+    <div class="section-label">05 — End User</div>
+    <div class="node-row">
+      <div class="node green" style="max-width:400px">
+        <div class="node-icon">👤</div>
+        <div class="node-title">Surveyor's Browser</div>
+        <div class="node-desc">Where the app actually runs for the end user. Next.js/React code is downloaded from Vercel and executed in the browser. The surveyor interacts with the valuation workbench, makes decisions, and generates reports.</div>
+        <div class="node-tag">Chrome / Edge / Safari · custom domain</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7-stage valuation workflow -->
+  <div class="flow-section" style="margin-top:48px">
+    <div class="section-label">06 — Valuation Workflow (7 Stages)</div>
+    <div class="workflow-grid">
+      <div class="wf-step">
+        <div class="wf-step-num">1</div>
+        <div class="wf-step-name">Case Intake</div>
+        <div class="wf-step-detail">Create case, input subject property address &amp; instruction details</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">2</div>
+        <div class="wf-step-name">Data Enrichment</div>
+        <div class="wf-step-detail">Auto-pull EPC, flood, broadband, title data from external APIs</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">3</div>
+        <div class="wf-step-name">Subject Description</div>
+        <div class="wf-step-detail">AI-assisted property description with surveyor sign-off</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">4</div>
+        <div class="wf-step-name">Comparables</div>
+        <div class="wf-step-detail">Automated search, 4-tier geo filter, hard deck filters, surveyor selects</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">5</div>
+        <div class="wf-step-name">Advisory Analysis</div>
+        <div class="wf-step-detail">AI suggests adjustments &amp; MV opinion — surveyor makes final call</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">6</div>
+        <div class="wf-step-name">Report Generation</div>
+        <div class="wf-step-detail">RICS-compliant report auto-generated with cyberpunk styling</div>
+      </div>
+      <div class="wf-step">
+        <div class="wf-step-num">7</div>
+        <div class="wf-step-name">QA &amp; Sign-off</div>
+        <div class="wf-step-detail">Final review, compliance check, PI trail, report export</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feedback loops -->
+  <div class="flow-section" style="margin-top:48px">
+    <div class="section-label">07 — Feedback Loops &amp; Key Connections</div>
+    <div class="feedback-panel">
+      <h3>↻ System Feedback Loops</h3>
+      <div class="loop-list">
+        <div class="loop-item">
+          <div class="loop-num">L1</div>
+          <div class="loop-text"><strong>Deploy loop:</strong> Code → GitHub → Vercel/Render → live site. Push triggers auto-deploy; broken build? Rollback via Git history.</div>
+        </div>
+        <div class="loop-item">
+          <div class="loop-num">L2</div>
+          <div class="loop-text"><strong>Auth loop:</strong> Browser → Supabase Auth → JWT issued → all subsequent API calls carry token → RLS enforces data isolation per surveyor.</div>
+        </div>
+        <div class="loop-item">
+          <div class="loop-num">L3</div>
+          <div class="loop-text"><strong>Comparable engine loop:</strong> Frontend requests comps → Render orchestrates 4-tier geo search → queries Supabase + HMLR → applies hard deck filters → returns ranked results → surveyor selects → writes back to Supabase.</div>
+        </div>
+        <div class="loop-item">
+          <div class="loop-num">L4</div>
+          <div class="loop-text"><strong>Data enrichment loop:</strong> New case created → Render calls EPC, flood, broadband APIs → results cached in Supabase → frontend displays enriched data → surveyor validates.</div>
+        </div>
+        <div class="loop-item">
+          <div class="loop-num">L5</div>
+          <div class="loop-text"><strong>AI advisory loop:</strong> AI analyses comps + subject data → suggests adjustments &amp; MV → surveyor reviews, overrides, confirms → final decision always with surveyor (RICS compliance).</div>
+        </div>
+        <div class="loop-item">
+          <div class="loop-num">L6</div>
+          <div class="loop-text"><strong>Dev iteration loop:</strong> Claude Code writes code locally → test in browser → fix issues → commit → deploy → user feedback → next iteration. Parallel Claude Code instances across different features.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Core principle -->
+  <div class="flow-diagram" style="text-align:center; margin-top:8px;">
+    <h3>⟩ Core Design Principle</h3>
+    <p style="font-size:0.9rem; color:var(--text-muted); max-width:700px; margin:0 auto; line-height:1.7;">
+      <span style="color:var(--cyan); font-weight:600;">AI advises</span> — the platform automates data gathering, enrichment, and analysis.
+      <br>
+      <span style="color:var(--green); font-weight:600;">Surveyor decides</span> — every material judgement remains with the MRICS professional.
+    </p>
+  </div>
+
+  <div class="footer">
+    <p>propval-mvp · architecture reference · 2026</p>
+  </div>
+
+</div>
+
+</body>
+</html>

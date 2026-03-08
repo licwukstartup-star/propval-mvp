@@ -35,7 +35,10 @@ from fastapi import APIRouter, Depends
 
 from routers.auth import get_current_user
 from routers import ppd_cache
-from pydantic import BaseModel, model_validator
+from fastapi import Request
+from pydantic import BaseModel, Field, model_validator
+from routers.rate_limit import limiter
+from routers.property import _get_http_client
 
 router = APIRouter(prefix="/api/comparables", tags=["comparables"])
 
@@ -59,8 +62,8 @@ HOUSE_TIER_LABELS    = {1: "Same postcode",  2: "Same street",
 # ---------------------------------------------------------------------------
 
 class SubjectPropertyInput(BaseModel):
-    address:          str
-    postcode:         str
+    address:          str = Field(..., max_length=256)
+    postcode:         str = Field(..., max_length=10)
     uprn:             str | None = None
     tenure:           str                   # "freehold" | "leasehold"
     property_type:    str                   # "flat" | "house"
@@ -401,11 +404,11 @@ class EpcCache:
     async def _fetch(self, postcode: str) -> list[dict]:
         async with self._sem:
             try:
-                async with httpx.AsyncClient(timeout=EPC_CALL_TIMEOUT) as c:
-                    r = await c.get(EPC_API_BASE,
-                                    params={"postcode": postcode, "size": 5000},
-                                    auth=(self._email, self._key),
-                                    headers={"Accept": "application/json"})
+                c = _get_http_client()
+                r = await c.get(EPC_API_BASE,
+                                params={"postcode": postcode, "size": 5000},
+                                auth=(self._email, self._key),
+                                headers={"Accept": "application/json"})
                 return r.json().get("rows", []) if r.status_code == 200 else []
             except Exception:
                 return []
@@ -774,9 +777,9 @@ async def _process_rows(
 
 async def _adjacent_outcodes(outward: str) -> list[str]:
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"https://api.postcodes.io/outcodes/{outward}/nearest",
-                            params={"limit": 20})
+        c = _get_http_client()
+        r = await c.get(f"https://api.postcodes.io/outcodes/{outward}/nearest",
+                        params={"limit": 20})
         if r.status_code != 200:
             return []
         codes = []
@@ -1093,7 +1096,8 @@ async def _batch_lease_remaining(uprns: list[str], as_of: date) -> dict[str, str
 # ---------------------------------------------------------------------------
 
 @router.post("/search", response_model=ComparableSearchResponse)
-async def search_comparables(req: ComparableSearchRequest, _user: dict = Depends(get_current_user)) -> ComparableSearchResponse:
+@limiter.limit("10/minute")
+async def search_comparables(request: Request, req: ComparableSearchRequest, _user: dict = Depends(get_current_user)) -> ComparableSearchResponse:
     t0 = time.monotonic()
 
     epc_email = os.getenv("EPC_EMAIL", "")
@@ -1174,7 +1178,7 @@ _TENURE_LABELS    = {"F": "Freehold", "L": "Leasehold"}
 
 
 class BrowseRequest(BaseModel):
-    outward_code:   str
+    outward_code:   str = Field(..., max_length=5)
     property_type:  str | None = None   # D/S/T/F/O
     estate_type:    str | None = None   # F/L
     min_date:       str | None = None   # ISO date

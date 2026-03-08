@@ -18,25 +18,33 @@ backend/.venv/
 frontend/.next/
 frontend/out/
 frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
 
+# Sensitive files
 Keys.xlsx
 ~$*.xlsx
 
-# Local lease database (built from HMLR bulk CSV, not committed)
-backend/leases.db
+# Large data files (download on demand, never commit)
 LEASES_FULL_*.csv
+*.csv
+*.db
+backend/leases.db
 
 # Debug / test artifacts
 backend/debug_search.log
 backend/test_epc.pdf
-frontend/tsconfig.tsbuildinfo
+tmp_*.json
+
+# IDE
+.vscode/
 
 # Generated output
 Output Reports/
 
-# Reference docs (not source code)
+# Reference docs (personal notes, not source code)
 Useful material by CL/
-*.docx
+Business Valuation and Cap table/
+
+# Stale prototypes / old prompts
 property-cards-resizable.jsx
-prompt-size-adjustment.md
-comparable-selection-architecture*.md
+prompt-*.md

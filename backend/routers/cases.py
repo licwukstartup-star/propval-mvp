@@ -169,6 +169,7 @@ async def list_cases(user: dict = Depends(get_current_user)):
             "valuation_basis, firm_reference, created_at, updated_at"
         )
         .eq("surveyor_id", user["id"])
+        .eq("is_deleted", False)
         .order("updated_at", desc=True)
         .execute()
     )
@@ -304,7 +305,7 @@ async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
     resp = (
         _sb()
         .table("cases")
-        .delete()
+        .update({"is_deleted": True, "updated_at": "now()"})
         .eq("id", case_id)
         .eq("surveyor_id", user["id"])
         .execute()

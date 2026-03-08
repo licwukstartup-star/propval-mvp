@@ -1,4 +1,5 @@
 import os
+import time
 
 import httpx
 from fastapi import Depends, HTTPException, status
@@ -7,19 +8,22 @@ from jose import JWTError, jwt
 
 security = HTTPBearer()
 
-# Cache for JWKS keys
+# Cache for JWKS keys — refresh every 24 hours
 _jwks_cache: dict | None = None
+_jwks_fetched_at: float = 0
+_JWKS_TTL = 86400  # 24 hours
 
 
 def _get_jwks() -> dict:
-    """Fetch and cache the JWKS from Supabase."""
-    global _jwks_cache
-    if _jwks_cache is not None:
+    """Fetch and cache the JWKS from Supabase (TTL: 24h)."""
+    global _jwks_cache, _jwks_fetched_at
+    if _jwks_cache is not None and (time.monotonic() - _jwks_fetched_at) < _JWKS_TTL:
         return _jwks_cache
     supabase_url = os.getenv("SUPABASE_URL", "")
     resp = httpx.get(f"{supabase_url}/auth/v1/.well-known/jwks.json", timeout=10)
     resp.raise_for_status()
     _jwks_cache = resp.json()
+    _jwks_fetched_at = time.monotonic()
     return _jwks_cache
 
 
