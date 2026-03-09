@@ -343,10 +343,16 @@ def _normalise_street(s: str) -> str:
 def _paon_match(epc_paon: str, lr_paon: str) -> bool:
     """Match EPC-derived PAON against Land Registry PAON.
 
-    LR sometimes bundles building name + number with a comma:
-    'WESTMARK TOWER, 1' — so we check each comma-separated part.
+    Handles:
+    - Exact match: "41" == "41"
+    - Whitespace-normalised: "101-103" == "101 - 103"
+    - Comma-separated: "WESTMARK TOWER, 1" contains "1"
+    - Hyphen ranges: "101" matches "101 - 103" or "101-103"
     """
     if epc_paon == lr_paon:
+        return True
+    # Normalise whitespace around hyphens: "101-103" == "101 - 103"
+    if re.sub(r"\s*-\s*", " - ", epc_paon) == re.sub(r"\s*-\s*", " - ", lr_paon):
         return True
     for part in lr_paon.split(","):
         if epc_paon == part.strip():
@@ -354,11 +360,22 @@ def _paon_match(epc_paon: str, lr_paon: str) -> bool:
     for part in epc_paon.split(","):
         if lr_paon == part.strip():
             return True
+    # Range match: LR "101 - 103" should match EPC "101" or "103"
+    range_m = re.match(r"^(\d+\w*)\s*-\s*(\d+\w*)$", lr_paon)
+    if range_m and epc_paon in (range_m.group(1), range_m.group(2)):
+        return True
+    range_m2 = re.match(r"^(\d+\w*)\s*-\s*(\d+\w*)$", epc_paon)
+    if range_m2 and lr_paon in (range_m2.group(1), range_m2.group(2)):
+        return True
     return False
 
 
 def _saon_num(s: str) -> str | None:
-    """Extract the numeric identifier from a SAON ('FLAT 38B' → '38B')."""
+    """Extract the unit identifier from a SAON ('FLAT 38B' → '38B', 'APARTMENT A13' → 'A13')."""
+    # Try alphanumeric first (A13, B2), then pure numeric (38, 38B)
+    m = re.search(r"\b([A-Z]\d+\w*)\b", s.upper())
+    if m:
+        return m.group(1)
     m = re.search(r"\b(\d+[A-Z]*)\b", s.upper())
     return m.group(1) if m else None
 
@@ -425,9 +442,10 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
     a3 = epc_row.get("address3", "").strip().upper()
 
     if is_saon(a1):
-        # Extract "FLAT NNN" (or APARTMENT/APT/UNIT/etc.) as SAON
+        # Extract "FLAT NNN" / "APARTMENT A13" / "UNIT 4B" as SAON
+        # Handles numeric (38, 38B), alphanumeric (A13, B2), and letter-prefixed IDs
         m_saon = re.match(
-            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+\d+\w*)",
+            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+[A-Z]?\d+\w*)",
             a1,
             re.IGNORECASE,
         )
@@ -441,10 +459,15 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
                 street = a2 or None
             else:
                 # Building name/number is in address2; street is in address3.
-                # When a3 is absent, the street name is the remainder of a2
-                # after the leading number (e.g. "3 RIVERLIGHT QUAY" → paon=3, street=RIVERLIGHT QUAY)
+                # Handle range PAONs (e.g. "101 - 103 CLEVELAND STREET")
+                # and simple PAONs (e.g. "3 RIVERLIGHT QUAY")
+                m_range = re.match(r"^(\d+\w*\s*-\s*\d+\w*)\s+(.*)", a2)
                 m = re.match(r"^(\d+\w*)\s*(.*)", a2)
-                if m:
+                if m_range:
+                    paon = m_range.group(1)
+                    # Range PAON: remainder is the street (a3 is typically the town)
+                    street = m_range.group(2).strip() or a3 or None
+                elif m:
                     paon = m.group(1)
                     street = a3 or m.group(2).strip() or None
                 else:
@@ -452,8 +475,12 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
                     street = a3 or None
         else:
             saon = a1
+            m_range = re.match(r"^(\d+\w*\s*-\s*\d+\w*)\s+(.*)", a2)
             m = re.match(r"^(\d+\w*)\s*(.*)", a2)
-            if m:
+            if m_range:
+                paon = m_range.group(1)
+                street = m_range.group(2).strip() or a3 or None
+            elif m:
                 paon = m.group(1)
                 street = a3 or m.group(2).strip() or None
             else:
@@ -461,8 +488,13 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
                 street = a3 or None
     else:
         saon = None
+        m_range = re.match(r"^(\d+\w*\s*-\s*\d+\w*)\s*,?\s*(.*)", a1)
         m = re.match(r"^(\d+\w*)\s*,?\s*(.*)", a1)
-        if m:
+        if m_range:
+            paon = m_range.group(1)
+            remainder = m_range.group(2).strip()
+            street = remainder or a2 or None
+        elif m:
             paon = m.group(1)
             remainder = m.group(2).strip()
             street = remainder or a2 or None
@@ -1675,7 +1707,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                         break
 
         sales = _filter_sales(sparql_bindings, parts)
-        logging.debug(f"matched='{matched_address}' uprn={best.get('uprn')} saon={parts['saon']} paon={parts['paon']} street={parts['street']} sales={len(sales)} inferred_building={inferred_building_name} epc_matched={epc_matched}")
+        logging.debug("_filter_sales: parts=%s → %d sales from %d bindings", parts, len(sales), len(sparql_bindings))
 
         # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
         _cached = _load_cached_enrichment(best.get("uprn", ""))
