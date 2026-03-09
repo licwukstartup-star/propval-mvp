@@ -32,6 +32,12 @@ CACHE_MAX_AGE_DAYS = 30          # re-download after this many days
 DOWNLOAD_TIMEOUT   = 60.0        # seconds for HMLR CSV download
 BATCH_SIZE         = 500         # rows per Supabase upsert call
 
+# Storage budget — Supabase free tier is 500MB
+STORAGE_LIMIT_MB        = 500
+STORAGE_EVICT_THRESHOLD = 0.90   # evict when estimated usage exceeds 90%
+BYTES_PER_PPD_ROW       = 300    # estimated average row size in price_paid_cache
+BYTES_PER_EPC_ROW       = 400    # estimated average row size in epc_cache
+
 # CSV columns (with header=true)
 CSV_COLS = [
     "unique_id", "price_paid", "deed_date", "postcode", "property_type",
@@ -186,12 +192,76 @@ def _ingest(outward: str, rows: list[dict]) -> None:
     logging.warning("PPD cache: ingested %d rows for %s", len(db_rows), outward)
 
 
+def _evict_oldest_sync(keep_outward: str | None = None) -> None:
+    """Evict oldest cached outward codes until estimated storage drops below 90%.
+    Deletes PPD + EPC rows for the evicted outward code, oldest-fetched first.
+    Skips `keep_outward` (the code we're about to download).
+    """
+    sb = _get_sb()
+    limit_bytes = STORAGE_LIMIT_MB * 1024 * 1024
+    threshold_bytes = int(limit_bytes * STORAGE_EVICT_THRESHOLD)
+
+    # Gather PPD row counts
+    ppd_status = sb.table("ppd_cache_status") \
+        .select("outward_code,row_count,last_fetched") \
+        .order("last_fetched", desc=False) \
+        .execute()
+    ppd_rows = {r["outward_code"]: r["row_count"] for r in (ppd_status.data or [])}
+    ppd_order = [r["outward_code"] for r in (ppd_status.data or [])]
+
+    # Gather EPC row counts
+    epc_rows: dict[str, int] = {}
+    try:
+        epc_status = sb.table("epc_cache_status") \
+            .select("outward_code,row_count") \
+            .execute()
+        epc_rows = {r["outward_code"]: r["row_count"] for r in (epc_status.data or [])}
+    except Exception:
+        pass
+
+    # Estimate total size
+    total_bytes = (sum(ppd_rows.values()) * BYTES_PER_PPD_ROW +
+                   sum(epc_rows.values()) * BYTES_PER_EPC_ROW)
+
+    if total_bytes < threshold_bytes:
+        return
+
+    est_mb = total_bytes / (1024 * 1024)
+    logging.warning("PPD cache eviction: estimated %.0fMB (threshold %.0fMB), evicting oldest codes",
+                    est_mb, threshold_bytes / (1024 * 1024))
+
+    # Evict oldest-fetched first until under threshold
+    for oc in ppd_order:
+        if total_bytes < threshold_bytes:
+            break
+        if oc == keep_outward:
+            continue
+
+        freed = ppd_rows.get(oc, 0) * BYTES_PER_PPD_ROW + epc_rows.get(oc, 0) * BYTES_PER_EPC_ROW
+        try:
+            sb.table("price_paid_cache").delete().eq("outward_code", oc).execute()
+            sb.table("ppd_cache_status").delete().eq("outward_code", oc).execute()
+        except Exception:
+            logging.exception("PPD eviction failed for %s", oc)
+            continue
+        try:
+            sb.table("epc_cache").delete().eq("outward_code", oc).execute()
+            sb.table("epc_cache_status").delete().eq("outward_code", oc).execute()
+        except Exception:
+            pass  # EPC table may not exist for this code
+
+        total_bytes -= freed
+        logging.warning("PPD cache eviction: dropped %s (freed ~%.1fMB, remaining ~%.0fMB)",
+                        oc, freed / (1024 * 1024), total_bytes / (1024 * 1024))
+
+
 async def ensure_cache(outward: str) -> None:
     """Ensure PPD cache is populated and fresh. PPD only — fast.
     Used by comparable search (which has its own EPC enrichment)."""
     outward = outward.strip().upper()
     fresh = await asyncio.to_thread(_is_cache_fresh_sync, outward)
     if not fresh:
+        await asyncio.to_thread(_evict_oldest_sync, outward)
         rows = await _download_csv(outward)
         if rows:
             await asyncio.to_thread(_ingest, outward, rows)
