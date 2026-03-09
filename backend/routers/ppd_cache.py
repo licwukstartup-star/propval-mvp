@@ -343,16 +343,39 @@ def _query_building_fuzzy_sync(outward: str, bldg: str, date_from: str,
     return rows
 
 
+def _normalise_paon_hyphen(paon: str) -> list[str]:
+    """Return variant PAON strings to handle whitespace around hyphens.
+    PPD stores "101 - 103" (spaced) but EPC often gives "101-103" (compact).
+    Returns a deduplicated list of variants to try.
+    """
+    import re
+    variants = {paon}
+    # Spaced form: "101 - 103"
+    variants.add(re.sub(r"\s*-\s*", " - ", paon))
+    # Compact form: "101-103"
+    variants.add(re.sub(r"\s*-\s*", "-", paon))
+    return list(variants)
+
+
 def _query_paon_street_sync(outward: str, paon: str, street: str, date_from: str) -> list[dict]:
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
-        .select("*") \
-        .eq("outward_code", outward) \
-        .eq("paon", paon) \
-        .eq("street", street) \
-        .gte("deed_date", date_from) \
-        .execute()
-    return resp.data or []
+    paon_variants = _normalise_paon_hyphen(paon)
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for pv in paon_variants:
+        resp = sb.table("price_paid_cache") \
+            .select("*") \
+            .eq("outward_code", outward) \
+            .eq("paon", pv) \
+            .eq("street", street) \
+            .gte("deed_date", date_from) \
+            .execute()
+        for r in (resp.data or []):
+            tid = r.get("transaction_id", "")
+            if tid and tid not in seen:
+                seen.add(tid)
+                rows.append(r)
+    return rows
 
 
 def _query_street_sync(outward: str, street: str, date_from: str) -> list[dict]:
