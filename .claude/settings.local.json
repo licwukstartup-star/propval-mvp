@@ -78,7 +78,11 @@
       "Bash(xargs -I{} taskkill //F //PID {})",
       "Bash(rm -rf \"C:\\\\Users\\\\licww\\\\Desktop\\\\propval-mvp\\\\backend\\\\routers\\\\__pycache__\")",
       "Bash(rm -f \"C:\\\\Users\\\\licww\\\\Desktop\\\\propval-mvp\\\\backend\\\\debug_search.log\")",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(git add frontend/src/app/page.tsx)",
+      "Bash(git commit:*)",
+      "Bash(git push origin master)",
+      "Bash(git add frontend/src/components/ComparableSearch.tsx)"
     ]
   }
 }

@@ -220,8 +220,8 @@ function CustomScaleBar() {
   }, [map]);
 
   const labelM = scaleM >= 1000 ? `${scaleM / 1000} km` : `${scaleM} m`;
-  const ft = Math.round(scaleM * 3.28084);
-  const labelFt = ft >= 5280 ? `${(ft / 5280).toFixed(1)} mi` : `${ft} ft`;
+  const mi = scaleM * 0.000621371;
+  const labelImp = mi >= 0.1 ? `${mi < 1 ? mi.toFixed(2) : mi.toFixed(1)} mi` : `${Math.round(scaleM * 1.09361)} yd`;
   // number of tick marks (including endpoints)
   const ticks = 5;
 
@@ -229,19 +229,13 @@ function CustomScaleBar() {
     <div style={{
       position: "absolute", top: 50, left: 12, zIndex: 1000,
       background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
-      borderRadius: 8, padding: "6px 10px 4px",
+      borderRadius: 8, padding: "6px 12px 6px",
       border: "1px solid #334155", boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
       fontFamily: "var(--font-mono), monospace", fontSize: 10, color: "#E2E8F0",
       userSelect: "none", pointerEvents: "none",
     }}>
-      {/* Metric label */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2, fontWeight: 600, letterSpacing: 0.5 }}>
-        <span style={{ color: "#00F0FF" }}>{labelM}</span>
-        <span style={{ color: "#94A3B8", marginLeft: 12 }}>{labelFt}</span>
-      </div>
       {/* Scale bar with ticks */}
       <div style={{ position: "relative", width: barPx, height: 10 }}>
-        {/* Alternating segments */}
         {Array.from({ length: ticks - 1 }).map((_, i) => {
           const segW = barPx / (ticks - 1);
           return (
@@ -253,7 +247,6 @@ function CustomScaleBar() {
             }} />
           );
         })}
-        {/* Tick marks */}
         {Array.from({ length: ticks }).map((_, i) => {
           const x = (barPx / (ticks - 1)) * i;
           return (
@@ -263,6 +256,15 @@ function CustomScaleBar() {
             }} />
           );
         })}
+      </div>
+      {/* Labels row: 0 on left, metric + imperial on right */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 2, fontWeight: 600, letterSpacing: 0.5 }}>
+        <span style={{ color: "#94A3B8", fontSize: 8 }}>0</span>
+        <span style={{ whiteSpace: "nowrap" }}>
+          <span style={{ color: "#00F0FF", fontSize: 9 }}>{labelM}</span>
+          <span style={{ color: "#334155", margin: "0 3px" }}>|</span>
+          <span style={{ color: "#FF2D78", fontSize: 9 }}>{labelImp}</span>
+        </span>
       </div>
     </div>
   );
@@ -802,7 +804,7 @@ function DeferredOverlays({
               center={[subjectLat, subjectLon]}
               radius={ring.radius}
               pathOptions={{
-                color: "#7B2FBE", weight: 1.5, opacity: 0.5,
+                color: "#C4B5FD", weight: 2, opacity: 0.8,
                 fillColor: "#7B2FBE", fillOpacity: 0.03, dashArray: ring.dash,
               }}
             />

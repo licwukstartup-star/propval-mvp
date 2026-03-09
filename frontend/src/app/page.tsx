@@ -9,6 +9,7 @@ import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCa
 import BrowseSales from "@/components/BrowseSales";
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 import { useAuth } from "@/components/AuthProvider";
+import ReportTyping from "./components/ReportTyping";
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -426,6 +427,29 @@ function PropCard({ id, isCustomising, cardSizes, onSizeChange, children }: Prop
 
 const FULL_POSTCODE_RE = /[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}/i;
 
+/** Auto-fetch HPI when tab is opened and data is missing */
+function HpiAutoFetch({ active, hpi, postcode, propertyType, builtForm, token, onHpi }: {
+  active: boolean; hpi: unknown; postcode?: string; propertyType?: string; builtForm?: string;
+  token?: string; onHpi: (hpi: Record<string, unknown>) => void;
+}) {
+  const fetchedRef = useRef(false);
+  useEffect(() => {
+    if (!active || hpi || fetchedRef.current || !postcode || !token) return;
+    fetchedRef.current = true;
+    fetch(`${API_BASE}/api/property/hpi`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ postcode, property_type: propertyType, built_form: builtForm }),
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.hpi) onHpi(d.hpi); })
+      .catch(() => {});
+  }, [active, hpi, postcode, propertyType, builtForm, token, onHpi]);
+  // Reset when postcode changes (new case loaded)
+  useEffect(() => { fetchedRef.current = false; }, [postcode]);
+  return null;
+}
+
 export default function Home() {
   const { session, isAdmin } = useAuth();
   const [address, setAddress] = useState("");
@@ -442,10 +466,16 @@ export default function Home() {
     return () => { clearInterval(iv); setSearchElapsed(prev => prev !== null ? performance.now() - searchStartRef.current : prev); };
   }, [loading]);
   const [result, setResult] = useState<PropertyResult | null>(null);
+  const [aiNarrative, setAiNarrative] = useState<{ location_summary: string | null; property_overview: string | null; market_context: string | null } | null>(null);
+  const [aiNarrativeLoading, setAiNarrativeLoading] = useState<{ location_summary: boolean; property_overview: boolean; market_context: boolean }>({ location_summary: false, property_overview: false, market_context: false });
+  const [aiNarrativeEditing, setAiNarrativeEditing] = useState<{ location_summary: boolean; property_overview: boolean; market_context: boolean }>({ location_summary: false, property_overview: false, market_context: false });
+  const aiEditRefs = useRef<{ location_summary: HTMLTextAreaElement | null; property_overview: HTMLTextAreaElement | null; market_context: HTMLTextAreaElement | null }>({ location_summary: null, property_overview: null, market_context: null });
+  const [enrichSlowDone, setEnrichSlowDone] = useState(false);
+  const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "outward" | "browse" | "adopted" | "report" | "hpi" | "map";
+  type TabKey = "property" | "comparables" | "outward" | "browse" | "adopted" | "report" | "hpi" | "map" | "report_typing";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "browse", "comparables", "outward", "hpi", "adopted", "report"];
+  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "browse", "comparables", "outward", "hpi", "adopted", "report_typing", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
   type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
@@ -689,8 +719,8 @@ export default function Home() {
       const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
       const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
       const payload = currentCaseId
-        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity }
-        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
+        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent }
+        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -721,7 +751,7 @@ export default function Home() {
     if (!currentCaseId || !result || !session?.access_token) return;
     if (["issued", "archived"].includes(currentCaseStatus)) return;
     const url = `${API_BASE}/api/cases/${currentCaseId}`;
-    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity };
+    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent };
     try {
       fetch(url, {
         method: "PATCH",
@@ -730,7 +760,7 @@ export default function Home() {
         keepalive: true,
       }).catch(() => { /* best effort — ignore network errors */ });
     } catch { /* best effort */ }
-  }, [currentCaseId, result, session?.access_token, currentCaseStatus, adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, buildingSearchResult, outwardSearchResult]);
+  }, [currentCaseId, result, session?.access_token, currentCaseStatus, adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, buildingSearchResult, outwardSearchResult, aiNarrative]);
 
   const fireAndForgetSaveRef = useRef(fireAndForgetSave);
   fireAndForgetSaveRef.current = fireAndForgetSave;
@@ -765,8 +795,29 @@ export default function Home() {
       });
       if (!res.ok) throw new Error("Load failed");
       const data = await res.json();
-      setResult((data.property_snapshot ?? data.property_data) as PropertyResult);
+      const snapshot = (data.property_snapshot ?? data.property_data) as PropertyResult;
+      setResult(snapshot);
+      setEnrichSlowDone(true);  // saved case already enriched
       setAdoptedComparables(data.comparables ?? []);
+      // Restore saved AI narrative if available (no auto-generation)
+      if (data.ai_narrative && (data.ai_narrative.location_summary || data.ai_narrative.property_overview || data.ai_narrative.market_context)) {
+        setAiNarrative(data.ai_narrative);
+      } else {
+        setAiNarrative(null);
+      }
+      // Restore saved report content
+      setReportContent(data.report_content ?? null);
+      // Backfill HPI if missing from old case
+      if (!snapshot?.hpi && snapshot?.postcode) {
+        fetch(`${API_BASE}/api/property/hpi`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ postcode: snapshot.postcode, property_type: snapshot.property_type, built_form: snapshot.built_form }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.hpi) setResult(prev => prev ? { ...prev, hpi: d.hpi } : prev); })
+          .catch(() => {});
+      }
       // Restore cached search results
       const sr = data.search_results ?? {};
       setBuildingSearchResult(sr.building ?? null);
@@ -998,6 +1049,7 @@ export default function Home() {
       setError(null);
       setActiveTab("property");
       // Fire slow enrichment (council tax + planning flood) in background
+      setEnrichSlowDone(false);
       fetch(`${API_BASE}/api/property/enrich-slow`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
@@ -1010,7 +1062,20 @@ export default function Home() {
           rivers_sea_risk: slow.rivers_sea_risk ?? prev.rivers_sea_risk,
           surface_water_risk: slow.surface_water_risk ?? prev.surface_water_risk,
         } : prev);
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => setEnrichSlowDone(true));
+      // Backfill HPI if initial search returned null (timeout)
+      if (!data.hpi && data.postcode) {
+        fetch(`${API_BASE}/api/property/hpi`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
+          body: JSON.stringify({ postcode: data.postcode, property_type: data.property_type, built_form: data.built_form }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.hpi) setResult(prev => prev ? { ...prev, hpi: d.hpi } : prev); })
+          .catch(() => {});
+      }
+      // AI narrative: reset (user must click to generate)
+      setAiNarrative(null);
       setBuildingSearchIds([]);
       setBuildingSearchAddressKeys([]);
       setBuildingSearchDone(false);
@@ -1320,7 +1385,7 @@ export default function Home() {
           <div className="flex items-end border-b border-[#334155] mb-6 no-print">
             {/* ── Section tabs only ── */}
             {tabOrder.map((tab) => {
-              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", outward: "Wider Comparables", browse: "Browse Sales", adopted: "Adopted Comparables", report: "Report" };
+              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", outward: "Wider Comparables", browse: "Browse Sales", adopted: "Adopted Comparables", report_typing: "Report Typing", report: "Report" };
               const active = activeTab === tab;
               const badge = tab === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
               return (
@@ -1674,7 +1739,7 @@ export default function Home() {
                 {!result.council_tax_band && (
                   <div className="bg-[#111827] px-4 py-3">
                     <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Council tax band</dt>
-                    <dd className="text-xs text-[#94A3B8] animate-pulse">Loading…</dd>
+                    <dd className="text-xs text-[#94A3B8]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</dd>
                   </div>
                 )}
                 {result.council_tax_band && (() => {
@@ -2430,6 +2495,153 @@ export default function Home() {
               );
             })()}
             </PropCard>
+
+            {/* ── AI-Assisted Narrative Basic Testing ──────────────────────────────────────── */}
+            <div className="col-span-full">
+              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden" style={{ borderLeft: "3px solid #6366F1" }}>
+                <div className="px-6 py-4 border-b border-[#334155]/60">
+                  <h2 className="font-orbitron text-[#6366F1] text-[10px] tracking-[3px] uppercase">AI-Assisted Narrative Basic Testing</h2>
+                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Generated draft — surveyor review required</p>
+                </div>
+                <div className="px-6 py-4 space-y-5">
+                  {([
+                    { key: "location_summary" as const, label: "Location & Neighbourhood" },
+                    { key: "property_overview" as const, label: "Property Overview" },
+                    { key: "market_context" as const, label: "Market Context" },
+                  ]).map(({ key, label }) => {
+                    const text = aiNarrative?.[key];
+                    const isLoading = aiNarrativeLoading[key];
+                    return (
+                      <div key={key} className="rounded-lg p-4" style={{ backgroundColor: '#0A0E1A', border: '1px solid #1E293B' }}>
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-xs font-semibold text-[#A5B4FC] uppercase tracking-wider">{label}</h3>
+                          {!text && !isLoading && (
+                            <button
+                              onClick={async () => {
+                                if (!result || !session?.access_token) return;
+                                setAiNarrativeLoading(prev => ({ ...prev, [key]: true }));
+                                try {
+                                  const res = await fetch(`${API_BASE}/api/property/ai-narrative`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+                                    body: JSON.stringify({ ...result, requested_section: key }),
+                                  });
+                                  if (!res.ok) throw new Error("Failed");
+                                  const d = await res.json();
+                                  setAiNarrative(prev => ({
+                                    location_summary: d.location_summary || prev?.location_summary || null,
+                                    property_overview: d.property_overview || prev?.property_overview || null,
+                                    market_context: d.market_context || prev?.market_context || null,
+                                  }));
+                                } catch { /* ignore */ }
+                                finally { setAiNarrativeLoading(prev => ({ ...prev, [key]: false })); }
+                              }}
+                              className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-all hover:brightness-110"
+                              style={{ backgroundColor: '#6366F122', color: '#A5B4FC', border: '1px solid #6366F144' }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a4 4 0 0 0-4 4c0 2 2 3 2 6H8l4 4 4-4h-2c0-3 2-4 2-6a4 4 0 0 0-4-4z"/><path d="M8 16h8"/><path d="M9 20h6"/></svg>
+                              Generate
+                            </button>
+                          )}
+                          {text && !isLoading && !aiNarrativeEditing[key] && (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  setAiNarrativeEditing(prev => ({ ...prev, [key]: true }));
+                                }}
+                                className="text-[9px] px-2 py-0.5 rounded transition-all hover:brightness-110"
+                                style={{ color: '#A5B4FC', border: '1px solid #6366F144' }}
+                                title="Edit this section"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (!result || !session?.access_token) return;
+                                  setAiNarrativeLoading(prev => ({ ...prev, [key]: true }));
+                                  try {
+                                    const res = await fetch(`${API_BASE}/api/property/ai-narrative`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+                                      body: JSON.stringify({ ...result, requested_section: key }),
+                                    });
+                                    if (!res.ok) throw new Error("Failed");
+                                    const d = await res.json();
+                                    setAiNarrative(prev => ({
+                                      location_summary: d.location_summary || prev?.location_summary || null,
+                                      property_overview: d.property_overview || prev?.property_overview || null,
+                                      market_context: d.market_context || prev?.market_context || null,
+                                    }));
+                                  } catch { /* ignore */ }
+                                  finally { setAiNarrativeLoading(prev => ({ ...prev, [key]: false })); }
+                                }}
+                                className="text-[9px] px-2 py-0.5 rounded transition-all hover:brightness-110"
+                                style={{ color: '#94A3B8', border: '1px solid #334155' }}
+                                title="Regenerate this section"
+                              >
+                                Regenerate
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {isLoading ? (
+                          <div className="animate-pulse space-y-1.5">
+                            <div className="h-3 w-full bg-[#1E293B] rounded" />
+                            <div className="h-3 w-5/6 bg-[#1E293B] rounded" />
+                            <div className="h-3 w-4/6 bg-[#1E293B] rounded" />
+                            <p className="text-[10px] text-[#94A3B8]/50 mt-2">Generating...</p>
+                          </div>
+                        ) : aiNarrativeEditing[key] ? (
+                          <>
+                            <textarea
+                              ref={el => { aiEditRefs.current[key] = el; }}
+                              defaultValue={text || ""}
+                              className="w-full text-sm leading-relaxed rounded-lg p-3 resize-y focus:outline-none focus:ring-1"
+                              style={{ backgroundColor: '#111827', color: '#E2E8F0', border: '1px solid #334155', minHeight: 100 }}
+                              rows={4}
+                              autoFocus
+                            />
+                            <div className="flex items-center gap-2 mt-2">
+                              <button
+                                onClick={() => {
+                                  const val = aiEditRefs.current[key]?.value.trim() || null;
+                                  setAiNarrative(prev => ({
+                                    location_summary: prev?.location_summary || null,
+                                    property_overview: prev?.property_overview || null,
+                                    market_context: prev?.market_context || null,
+                                    [key]: val,
+                                  }));
+                                  setAiNarrativeEditing(prev => ({ ...prev, [key]: false }));
+                                }}
+                                className="text-[10px] px-3 py-1 rounded-md font-semibold transition-all hover:brightness-110"
+                                style={{ backgroundColor: '#6366F1', color: '#FFFFFF' }}
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setAiNarrativeEditing(prev => ({ ...prev, [key]: false }))}
+                                className="text-[10px] px-3 py-1 rounded-md transition-all hover:brightness-110"
+                                style={{ color: '#94A3B8', border: '1px solid #334155' }}
+                              >
+                                Cancel
+                              </button>
+                              <p className="text-[9px] ml-auto italic" style={{ color: '#94A3B8' }}>Surveyor edits override AI draft</p>
+                            </div>
+                          </>
+                        ) : text ? (
+                          <>
+                            <p className="text-sm text-[#E2E8F0] leading-relaxed">{text}</p>
+                            <p className="text-[10px] text-[#94A3B8]/40 mt-1.5 italic">AI-assisted draft — surveyor review required</p>
+                          </>
+                        ) : (
+                          <p className="text-xs text-[#94A3B8]/40 italic">Click Generate to create this section</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
 
             </div>
 
@@ -3442,12 +3654,21 @@ export default function Home() {
           )}
 
           {/* ── Tab 6: House Price Index ─────────────────────────────────────── */}
+          <HpiAutoFetch
+            active={activeTab === "hpi"}
+            hpi={result.hpi}
+            postcode={result.postcode}
+            propertyType={result.property_type}
+            builtForm={result.built_form}
+            token={session?.access_token}
+            onHpi={(hpi) => setResult(prev => prev ? { ...prev, hpi } : prev)}
+          />
           <div style={{ display: activeTab === "hpi" ? undefined : "none" }}>
             {!result.hpi ? (
               <div className="text-center py-20 text-[#94A3B8]/70 space-y-2">
                 <p className="text-4xl">📊</p>
-                <p className="text-sm font-medium text-[#94A3B8]">HPI data unavailable</p>
-                <p className="text-xs text-[#94A3B8]/60">Could not retrieve House Price Index data for this area.</p>
+                <p className="text-sm font-medium text-[#94A3B8]">Loading HPI data...</p>
+                <p className="text-xs text-[#94A3B8]/60">Fetching House Price Index from Land Registry...</p>
               </div>
             ) : (() => {
               const hpi = result.hpi!;
@@ -3647,6 +3868,11 @@ export default function Home() {
                 </div>
               );
             })()}
+          </div>
+
+          {/* ── Tab: Report Typing ─────────────────────────────────────────────── */}
+          <div style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
+            <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} />
           </div>
 
         </div>

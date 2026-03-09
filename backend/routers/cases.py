@@ -104,6 +104,8 @@ class SaveCaseRequest(BaseModel):
     size_elasticity: float = 0
     notes: str | None = None
     firm_reference: str | None = None
+    ai_narrative: dict | None = None
+    report_content: dict | None = None
 
 
 class UpdateCaseRequest(BaseModel):
@@ -116,6 +118,8 @@ class UpdateCaseRequest(BaseModel):
     size_elasticity: float | None = None
     notes: str | None = None
     firm_reference: str | None = None
+    ai_narrative: dict | None = None
+    report_content: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +156,8 @@ async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user
         "hpi_correlation": body.hpi_correlation,
         "size_elasticity": body.size_elasticity,
         "notes": body.notes,
+        "ai_narrative": body.ai_narrative,
+        "report_content": body.report_content,
     }
     resp = _sb().table("cases").insert(row).execute()
     return resp.data[0]
@@ -160,7 +166,7 @@ async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user
 @router.get("")
 async def list_cases(user: dict = Depends(get_current_user)):
     """List all cases for the current user (summary only)."""
-    resp = (
+    q = (
         _sb()
         .table("cases")
         .select(
@@ -169,10 +175,23 @@ async def list_cases(user: dict = Depends(get_current_user)):
             "valuation_basis, firm_reference, created_at, updated_at"
         )
         .eq("surveyor_id", user["id"])
-        .eq("is_deleted", False)
-        .order("updated_at", desc=True)
-        .execute()
     )
+    try:
+        resp = q.eq("is_deleted", False).order("updated_at", desc=True).execute()
+    except Exception:
+        # is_deleted column may not exist yet — fall back without filter
+        resp = (
+            _sb()
+            .table("cases")
+            .select(
+                "id, display_name, title, address, postcode, uprn, "
+                "case_type, status, valuation_date, case_sequence, "
+                "valuation_basis, firm_reference, created_at, updated_at"
+            )
+            .eq("surveyor_id", user["id"])
+            .order("updated_at", desc=True)
+            .execute()
+        )
     return {"cases": resp.data}
 
 
@@ -302,14 +321,25 @@ async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
             "Issued cases cannot be deleted. Archive them instead.",
         )
 
-    resp = (
-        _sb()
-        .table("cases")
-        .update({"is_deleted": True, "updated_at": "now()"})
-        .eq("id", case_id)
-        .eq("surveyor_id", user["id"])
-        .execute()
-    )
+    try:
+        resp = (
+            _sb()
+            .table("cases")
+            .update({"is_deleted": True, "updated_at": "now()"})
+            .eq("id", case_id)
+            .eq("surveyor_id", user["id"])
+            .execute()
+        )
+    except Exception:
+        # is_deleted column may not exist yet — hard delete instead
+        resp = (
+            _sb()
+            .table("cases")
+            .delete()
+            .eq("id", case_id)
+            .eq("surveyor_id", user["id"])
+            .execute()
+        )
     if not resp.data:
         raise HTTPException(404, "Case not found")
     return {"deleted": True}

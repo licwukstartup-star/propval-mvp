@@ -17,6 +17,7 @@ from routers.auth import get_current_user
 from routers.rate_limit import limiter
 from routers.resilience import resilient_request
 from routers import ppd_cache
+from services.ai_service import generate_property_narrative
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel, Field
 from shapely.geometry import Point, shape
@@ -827,11 +828,27 @@ async def _fetch_sparql_bindings(postcode: str) -> list[dict]:
 _HPI_REST_BASE = "https://landregistry.data.gov.uk/data/ukhpi/region"
 
 
+_HPI_SLUG_MAP = {
+    "westminster": "city-of-westminster",
+    "bristol": "city-of-bristol",
+    "kingston upon hull": "city-of-kingston-upon-hull",
+    "derby": "city-of-derby",
+    "leicester": "city-of-leicester",
+    "nottingham": "city-of-nottingham",
+    "peterborough": "city-of-peterborough",
+    "plymouth": "city-of-plymouth",
+    "portsmouth": "city-of-portsmouth",
+    "southampton": "city-of-southampton",
+    "stoke-on-trent": "city-of-stoke-on-trent",
+    "wolverhampton": "city-of-wolverhampton",
+}
+
 def _hpi_slug(admin_district: str) -> str:
-    """Convert admin district name to HMLR HPI REST slug.
-    'Hammersmith And Fulham' → 'hammersmith-and-fulham'
-    """
-    return re.sub(r"\s+", "-", admin_district.strip().lower())
+    """Convert admin district name to HMLR HPI REST slug."""
+    key = admin_district.strip().lower()
+    if key in _HPI_SLUG_MAP:
+        return _HPI_SLUG_MAP[key]
+    return re.sub(r"\s+", "-", key)
 
 
 async def _fetch_hpi(admin_district: str | None, property_type: str | None, built_form: str | None = None) -> dict | None:
@@ -861,18 +878,18 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
     months.reverse()  # oldest first
 
     # Limit concurrency to avoid throttling (HMLR REST API rejects bursts)
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(4)
 
     async def _fetch_month(year: int, month: int) -> dict | None:
         url = f"{_HPI_REST_BASE}/{slug}/month/{year}-{month:02d}.json"
         try:
             async with sem:
                 client = _get_http_client()
-                resp = await client.get(url, headers={"Accept": "application/json"})
+                resp = await client.get(url, headers={"Accept": "application/json"}, timeout=10.0)
             if resp.status_code != 200:
                 return None
             topic = resp.json().get("result", {}).get("primaryTopic", {})
-            if not topic:
+            if not topic or not isinstance(topic, dict):
                 return None
 
             def _fv(key: str) -> float | None:
@@ -903,14 +920,21 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
                 "hpi_terraced": _fv("housePriceIndexTerraced"),
                 "hpi_flat":     _fv("housePriceIndexFlatMaisonette"),
             }
-        except Exception:
+        except Exception as exc:
+            logging.warning(f"HPI month {year}-{month:02d} failed: {exc}")
             return None
 
     results = await asyncio.gather(*[_fetch_month(y, mo) for y, mo in months])
     trend = [r for r in results if r is not None and r.get("avg_price") is not None]
 
+    if not trend and not slug.startswith("city-of-"):
+        # Retry with "city-of-" prefix (some LAs use this in HMLR)
+        logging.warning(f"HPI — slug='{slug}' empty, retrying as 'city-of-{slug}'")
+        slug = f"city-of-{slug}"
+        results = await asyncio.gather(*[_fetch_month(y, mo) for y, mo in months])
+        trend = [r for r in results if r is not None and r.get("avg_price") is not None]
     if not trend:
-        logging.debug(f"HPI — no data for slug='{slug}'")
+        logging.warning(f"HPI — no data for slug='{slug}' ({len(results)} months queried, all empty)")
         return None
 
     latest = trend[-1]
@@ -924,7 +948,7 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
         None
     )
 
-    logging.debug(f"HPI — {admin_district} {latest['month']} avg=£{latest['avg_price']:,.0f} "
+    logging.warning(f"HPI — {admin_district} {latest['month']} avg=£{latest['avg_price']:,.0f} "
                   f"annual={latest['annual_change_pct']}% points={len(trend)}")
 
     return {
@@ -1963,7 +1987,56 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
     }
 
 
+class HpiRequest(BaseModel):
+    postcode: str
+    property_type: str | None = None
+    built_form: str | None = None
+
+@router.post("/hpi")
+@limiter.limit("20/minute")
+async def fetch_hpi_endpoint(request: Request, body: HpiRequest, _user: dict = Depends(get_current_user)):
+    """Standalone HPI fetch — used to backfill old cases missing HPI data."""
+    location = await _fetch_location("", body.postcode)
+    hpi = await _fetch_hpi(location["admin_district"], body.property_type, body.built_form)
+    return {"hpi": hpi}
+
+
+@router.post("/ai-narrative")
+@limiter.limit("10/minute")
+async def ai_narrative(request: Request, body: dict, _user: dict = Depends(get_current_user)):
+    """Generate AI-assisted narrative paragraphs from property data."""
+    result = await generate_property_narrative(
+        body, user_id=_user.get("id"), user_email=_user.get("email"),
+    )
+    return result
+
+
 _CT_SERVICE = "https://www.tax.service.gov.uk/check-council-tax-band"
+
+
+def _ct_short_address(address: str) -> str:
+    """Extract the short street-level address for fuzzy matching.
+
+    '41, GANDER GREEN LANE, SUTTON, SUTTON, SM1 2EG' → '41 GANDER GREEN LANE'
+    'APARTMENT A13, 101-103 CLEVELAND STREET, LONDON, W1T 6FA' → 'APARTMENT A13 101-103 CLEVELAND STREET'
+    """
+    # Remove postcode (last token if it matches postcode pattern)
+    parts = [p.strip() for p in address.split(",")]
+    # Drop trailing parts that look like town/district/postcode
+    # Keep only first 2-3 parts (number + street, possibly flat designation)
+    short_parts = []
+    for p in parts:
+        # Stop at town-level parts (all-alpha, common town names, or postcode)
+        if re.match(r"^[A-Z]{1,2}\d", p.replace(" ", "")):
+            break  # postcode
+        short_parts.append(p)
+        if len(short_parts) >= 2 and not re.search(r"\d", parts[0]):
+            # e.g. "APARTMENT A13" + "101-103 CLEVELAND STREET" = 2 parts, enough
+            break
+        if len(short_parts) >= 2 and re.search(r"\d", parts[0]) and re.search(r"[A-Z]{3,}", p):
+            # e.g. "41" + "GANDER GREEN LANE" — street name reached
+            break
+    return " ".join(short_parts).upper()
 
 
 def _scrape_council_tax_band(postcode: str, matched_address: str) -> str | None:
@@ -1973,60 +2046,80 @@ def _scrape_council_tax_band(postcode: str, matched_address: str) -> str | None:
     doesn't block the FastAPI event loop. Returns a single band letter (A–H)
     or None if the lookup fails.
     """
-    pc = normalise_postcode(postcode).replace(" ", "")
+    pc = normalise_postcode(postcode)
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.set_default_timeout(10000)  # global cap on all page operations
+            page.set_default_timeout(25000)
             try:
                 # Step 1 — search page: fill postcode and submit
-                page.goto(_CT_SERVICE + "/search", wait_until="domcontentloaded", timeout=15000)
+                page.goto(_CT_SERVICE + "/search", wait_until="domcontentloaded", timeout=25000)
                 page.fill("input[name='postcode']", pc)
                 page.click("button:has-text('Search')")
-                page.wait_for_load_state("domcontentloaded", timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=25000)
 
                 # Step 2 — results page: grab visible text
                 content = page.inner_text("body")
             finally:
                 browser.close()
 
-        # Results page uses a tab-separated table: ADDRESS\tBAND\tLOCAL AUTHORITY
-        # Parse every tab-delimited row that has a single-letter band (A–H)
+        # Results page: ADDRESS\tBAND\tLOCAL AUTHORITY (tab-separated via inner_text)
         entries = re.findall(
             r"^(.+?)\t([A-H])\t.+$",
             content,
             re.MULTILINE | re.IGNORECASE,
         )
         if not entries:
+            # Fallback: try whitespace-separated (some layouts use spaces)
+            entries = re.findall(
+                r"^(.+?)\s+([A-H])\s+\w.+$",
+                content,
+                re.MULTILINE | re.IGNORECASE,
+            )
+        if not entries:
+            logging.warning("council_tax: no entries parsed from GOV.UK for %s", pc)
             return None
 
-        # Fuzzy-match to find our property
-        best_band, best_score = None, 0.0
+        logging.warning("council_tax: %d entries found for %s", len(entries), pc)
+
+        # Build short address for better fuzzy matching
+        q_short = _ct_short_address(matched_address)
         q_num = house_number(matched_address)
+
+        best_band, best_score = None, 0.0
         for addr_text, band in entries:
-            score = fuzz.ratio(matched_address.lower(), addr_text.lower()) / 100.0
-            # Boost exact house-number match (same logic as EPC matching)
+            addr_upper = addr_text.strip().upper()
+
+            # Score 1: fuzzy ratio against short address (removes town/postcode noise)
+            score = fuzz.ratio(q_short, addr_upper) / 100.0
+
+            # Score 2: also try token_set_ratio (handles reordered words)
+            token_score = fuzz.token_set_ratio(q_short, addr_upper) / 100.0
+            score = max(score, token_score)
+
+            # Boost: exact house/flat number match
             if q_num and house_number(addr_text) == q_num:
-                score += 0.3
+                score += 0.25
+
             if score > best_score:
                 best_score = score
                 best_band = band.upper()
 
-        logging.debug(f"council_tax_band: best_score={best_score:.2f} band={best_band}")
-        return best_band if best_score > 0.4 else None
+        logging.warning("council_tax: best_score=%.2f band=%s for '%s' vs GOV.UK", best_score, best_band, q_short)
+        return best_band if best_score > 0.35 else None
 
     except Exception as exc:
-        logging.debug(f"council_tax_band: failed — {exc}")
+        logging.warning("council_tax: scrape failed — %s", exc)
         return None
 
 
 async def _fetch_council_tax_band(postcode: str, matched_address: str) -> str | None:
-    """Async wrapper: run Playwright scraper in a thread with a hard 5 s timeout."""
+    """Async wrapper: run Playwright scraper in a thread with a 30s timeout."""
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_scrape_council_tax_band, postcode, matched_address),
-            timeout=5.0,
+            timeout=30.0,
         )
     except asyncio.TimeoutError:
         logging.warning("Council tax scraper timed out for postcode %s", postcode)
