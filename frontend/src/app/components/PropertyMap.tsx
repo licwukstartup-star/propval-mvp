@@ -1075,6 +1075,7 @@ export default function PropertyMap({
       </div>
 
       <MapContainer
+        key={`map-${subjectLat}-${subjectLon}`}
         center={[subjectLat, subjectLon]}
         zoom={15}
         scrollWheelZoom={true}

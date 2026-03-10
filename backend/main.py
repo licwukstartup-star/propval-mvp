@@ -14,6 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from routers import admin as admin_router
 from routers import cases as cases_router
 from routers import comparables as comparables_router
+from routers import firm_templates as firm_templates_router
 from routers import property as property_router
 from routers.property import _load_green_belt_polygons
 from routers.rate_limit import limiter
@@ -63,6 +64,7 @@ app.include_router(property_router.router)
 app.include_router(comparables_router.router)
 app.include_router(cases_router.router)
 app.include_router(admin_router.router)
+app.include_router(firm_templates_router.router)
 
 
 @app.get("/health")

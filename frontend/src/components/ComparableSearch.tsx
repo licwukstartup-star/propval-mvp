@@ -214,6 +214,7 @@ export default function ComparableSearch({
     ? Number(rooms) : null;
 
   async function runSearch() {
+    if (!valuationDate) { setError("Please select a valuation date before searching."); return; }
     if (!postcode) { setError("No postcode available."); return; }
     setLoading(true);
     setError(null);
@@ -408,20 +409,20 @@ export default function ComparableSearch({
             </div>
           )}
 
-          {/* Valuation date — building mode only; outward tab inherits this value */}
-          {isBuilding && (
-            <div>
-              <label className="block text-xs font-medium text-[#94A3B8] mb-1">
-                Valuation date <span className="font-normal text-[#94A3B8]/70">(optional)</span>
-              </label>
-              <input
-                type="date"
-                value={valuationDate}
-                onChange={e => onValuationDateChange(e.target.value)}
-                className="border border-[#334155] rounded-lg px-3 py-1.5 text-xs text-[#E2E8F0] bg-[#1E293B] focus:outline-none focus:ring-2 focus:ring-[#00F0FF]"
-              />
-            </div>
-          )}
+          {/* Valuation date — compulsory, shared across both tabs */}
+          <div>
+            <label className="block text-xs font-medium text-[#94A3B8] mb-1">
+              Valuation date <span className="text-[#FF2D78]">*</span>
+            </label>
+            <input
+              type="date"
+              value={valuationDate}
+              onChange={e => onValuationDateChange(e.target.value)}
+              className={`border rounded-lg px-3 py-1.5 text-xs text-[#E2E8F0] bg-[#1E293B] focus:outline-none focus:ring-2 focus:ring-[#00F0FF] ${
+                !valuationDate ? "border-[#FF2D78]/60" : "border-[#334155]"
+              }`}
+            />
+          </div>
 
           {/* Time window slider */}
           {isBuilding ? (
@@ -471,9 +472,10 @@ export default function ComparableSearch({
           {/* Search button */}
           <button
             onClick={runSearch}
-            disabled={loading || !postcode}
+            disabled={loading || !postcode || !valuationDate}
             className="px-5 py-2 rounded-xl text-sm font-bold bg-[#00F0FF] text-[#0A0E1A]
                        hover:bg-[#00D4E0] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={!valuationDate ? "Set valuation date first" : undefined}
           >
             {loading ? "Searching…" : "Find comparables"}
           </button>

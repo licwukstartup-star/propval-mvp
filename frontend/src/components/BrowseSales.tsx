@@ -721,7 +721,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                   const ppm2 = row.floor_area_sqm ? Math.round(row.price / row.floor_area_sqm) : null;
 
                   return (
-                    <tr key={row.transaction_id}
+                    <tr key={`${row.transaction_id}-${i}`}
                       className={`border-t border-[#334155]/40 transition-colors ${
                         isAdopted ? "bg-[#39FF14]/10" :
                         isSamePostcode ? "bg-[#00F0FF]/5" :

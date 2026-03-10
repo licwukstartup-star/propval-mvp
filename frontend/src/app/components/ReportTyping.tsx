@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback, useEffect } from "react"
+import FirmTemplateSettings, { type FirmTemplate } from "./FirmTemplateSettings"
 
 /* ── Category badge ─────────────────────────────────────────────────────── */
 const CAT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -228,11 +229,13 @@ interface ReportTypingProps {
   session: any
   reportContent?: ReportContentData | null
   onReportContentChange?: (content: Partial<ReportContentData>) => void
+  onSave?: () => Promise<void>
+  valuationDate?: string
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
 
-export default function ReportTyping({ result, adoptedComparables, session, reportContent, onReportContentChange }: ReportTypingProps) {
+export default function ReportTyping({ result, adoptedComparables, session, reportContent, onReportContentChange, onSave, valuationDate: parentValuationDate }: ReportTypingProps) {
   const [meta, setMeta] = useState<ReportMetadata>({ ...EMPTY_META, ...reportContent?.metadata })
   const metaRef = useRef(meta)
   metaRef.current = meta
@@ -246,6 +249,25 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
   // Valuer input state
   const [valuer, setValuer] = useState<ValuerInputs>({ ...EMPTY_VALUER, ...reportContent?.valuer_inputs })
 
+  // Save button state
+  const [saving, setSaving] = useState(false)
+  const [saveFlash, setSaveFlash] = useState<"ok" | "err" | null>(null)
+
+  // Firm template state
+  const [firmTemplate, setFirmTemplate] = useState<FirmTemplate>({})
+  const [showFirmSettings, setShowFirmSettings] = useState(false)
+
+  // Load firm template on mount
+  useEffect(() => {
+    if (!session?.access_token) return
+    fetch(`${API_BASE}/api/firm-templates`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+      .then(r => r.json())
+      .then(data => setFirmTemplate(data))
+      .catch(err => console.error("Failed to load firm template:", err))
+  }, [session])
+
   // Sync from parent when case loads
   useEffect(() => {
     if (reportContent?.metadata) {
@@ -258,6 +280,18 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
       setValuer({ ...EMPTY_VALUER, ...reportContent.valuer_inputs })
     }
   }, [reportContent])
+
+  // Echo valuation date from Direct Comparables tab
+  useEffect(() => {
+    if (parentValuationDate && parentValuationDate !== meta.valuation_date) {
+      setMeta(prev => {
+        const next = { ...prev, valuation_date: parentValuationDate }
+        notifyParent({ metadata: next })
+        return next
+      })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parentValuationDate])
 
   // Notify parent on changes (debounced)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -313,8 +347,8 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
       const text = data[key] || ""
       setAiSections(prev => {
         const next = { ...prev, [key]: text }
-        // Notify parent immediately (not debounced) for AI generations
-        onReportContentChange?.({ ai_sections: next })
+        // Schedule parent notification after render (avoid setState-during-render)
+        queueMicrotask(() => onReportContentChange?.({ ai_sections: next }))
         return next
       })
     } catch (err) {
@@ -328,7 +362,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
     const text = aiEditRefs.current[key]?.value ?? ""
     setAiSections(prev => {
       const next = { ...prev, [key]: text }
-      onReportContentChange?.({ ai_sections: next })
+      queueMicrotask(() => onReportContentChange?.({ ai_sections: next }))
       return next
     })
     setAiEditing(prev => ({ ...prev, [key]: false }))
@@ -391,25 +425,66 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
     )
   }
 
+  // Firm template text display helper
+  function FirmText({ fieldKey, fallback }: { fieldKey: string; fallback: string }) {
+    const text = firmTemplate[fieldKey]
+    if (text) {
+      return <p className="text-[11px] leading-relaxed" style={{ color: "#E2E8F0" }}>{text}</p>
+    }
+    return (
+      <div className="flex items-center gap-2">
+        <p className="text-[11px] italic" style={{ color: "#94A3B8" }}>{fallback}</p>
+        <button onClick={() => setShowFirmSettings(true)}
+          className="text-[9px] px-1.5 py-0.5 rounded border border-[#7B2FBE]/30 text-[#C4B5FD] hover:bg-[#7B2FBE]/10 transition-colors">
+          Set up
+        </button>
+      </div>
+    )
+  }
+
   if (!result) return null
 
   const r = result
 
   return (
     <div className="space-y-2">
+      {/* Firm Template Settings Modal */}
+      {showFirmSettings && (
+        <FirmTemplateSettings
+          session={session}
+          onClose={() => setShowFirmSettings(false)}
+          onSaved={(t) => { setFirmTemplate(t); setShowFirmSettings(false) }}
+        />
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="font-orbitron text-[#00F0FF] text-xs tracking-[3px] uppercase">Report Typing</h2>
           <p className="text-[10px] text-[#94A3B8]/70 mt-0.5">Draft and edit report sections before export</p>
         </div>
-        <div className="flex gap-1.5 flex-wrap justify-end">
-          {Object.entries(CAT_COLORS).map(([k]) => <CatBadge key={k} cat={k} />)}
+        <div className="flex items-center gap-3">
+          <button onClick={() => setShowFirmSettings(true)}
+            className="flex items-center gap-1.5 text-[10px] px-3 py-1.5 rounded-lg border transition-colors"
+            style={{ borderColor: "#7B2FBE44", color: "#C4B5FD", backgroundColor: "#7B2FBE11" }}
+            onMouseEnter={e => { e.currentTarget.style.backgroundColor = "#7B2FBE22" }}
+            onMouseLeave={e => { e.currentTarget.style.backgroundColor = "#7B2FBE11" }}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            Firm Template
+          </button>
+          <div className="flex gap-1.5 flex-wrap justify-end">
+            {Object.entries(CAT_COLORS).map(([k]) => <CatBadge key={k} cat={k} />)}
+          </div>
         </div>
       </div>
 
       {/* ── Cover Page ──────────────────────────────────────────────────── */}
       <Section id="cover" title="Cover Page" cats={["A", "B", "F"]}>
+        {firmTemplate.firm_name && <AutoField label="Firm" value={firmTemplate.firm_name} />}
         <AutoField label="Property Address" value={r.address} />
         <AutoField label="Postcode" value={r.postcode} />
         <Sub num="" title="Report Reference" cats={["B"]}>
@@ -445,18 +520,25 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
       {/* ── Section 1: Instructions & Scope ─────────────────────────────── */}
       <Section id="s1" title="Section 1: Instructions, Scope & Investigations" cats={["A", "B", "E"]}>
         <Sub num="1.1" title="Instructions" cats={["A", "B"]}>
-          <p className="text-[11px] mb-2" style={{ color: "#94A3B8" }}>Firm boilerplate auto-inserted at export.</p>
-          <MetaField label="Instruction Date" value={meta.instruction_date} onChange={v => updateMeta("instruction_date", v)} type="date" />
+          <FirmText fieldKey="instructions" fallback="No instructions boilerplate set — configure in Firm Template settings" />
+          <div className="mt-2">
+            <MetaField label="Instruction Date" value={meta.instruction_date} onChange={v => updateMeta("instruction_date", v)} type="date" />
+          </div>
         </Sub>
         <Sub num="1.2" title="Client" cats={["A", "B"]}>
           <AutoField label="Client" value={meta.client_name || "—"} />
           <AutoField label="Applicant" value={meta.applicant_name || "—"} />
         </Sub>
         <Sub num="1.3" title="Purpose of Valuation" cats={["A", "B"]}>
-          <Placeholder text="Adapts to valuation purpose selected at case setup" />
+          <FirmText fieldKey="purpose" fallback="No purpose of valuation boilerplate set" />
         </Sub>
         <Sub num="1.4–1.6" title="Dates & Standards" cats={["A", "B"]}>
-          <MetaField label="Valuation Date" value={meta.valuation_date} onChange={v => updateMeta("valuation_date", v)} type="date" />
+          <div>
+            <AutoField label="Valuation Date" value={meta.valuation_date ? new Date(meta.valuation_date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "—"} />
+            {!meta.valuation_date && (
+              <p className="text-[9px] mt-0.5" style={{ color: "#FF2D78" }}>Set in Direct Comparables tab before searching</p>
+            )}
+          </div>
           <MetaField label="Inspection Date" value={meta.inspection_date} onChange={v => updateMeta("inspection_date", v)} type="date" />
           <p className="text-[10px] mt-1" style={{ color: "#94A3B8" }}>Standards: RICS Red Book Global &amp; UK National Supplement</p>
         </Sub>
@@ -481,15 +563,19 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
           )}
         </Sub>
         <Sub num="1.9–1.11" title="Responsibility, Disclosure, PI Insurance" cats={["A"]}>
-          <Placeholder text="Firm boilerplate — no valuer input" />
+          <div className="space-y-2">
+            <FirmText fieldKey="responsibility" fallback="No responsibility statement set" />
+            <FirmText fieldKey="disclosure" fallback="No disclosure statement set" />
+            <FirmText fieldKey="pi_insurance" fallback="No PI insurance details set" />
+          </div>
         </Sub>
         <Sub num="1.12" title="Expertise" cats={["A", "B"]}>
           <AutoField label="Preparer" value={meta.preparer_name || "—"} />
-          <p className="text-[10px]" style={{ color: "#94A3B8" }}>Qualifications auto-inserted from valuer profile at export.</p>
+          <FirmText fieldKey="expertise" fallback="No expertise statement set" />
         </Sub>
         <Sub num="1.13" title="Inspection" cats={["A", "B"]}>
           <AutoField label="Inspection Date" value={meta.inspection_date || "—"} />
-          <p className="text-[10px]" style={{ color: "#94A3B8" }}>Internal/external inspection — boilerplate at export.</p>
+          <FirmText fieldKey="inspection" fallback="No inspection boilerplate set" />
         </Sub>
         <Sub num="1.14" title="Special Assumptions" cats={["E"]}>
           <div className="space-y-1.5">
@@ -596,7 +682,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
         </Sub>
 
         <Sub num="2.9" title="Environmental Matters" cats={["A"]}>
-          <Placeholder text="Firm boilerplate disclaimers" />
+          <FirmText fieldKey="environmental" fallback="No environmental disclaimer set" />
         </Sub>
 
         <Sub num="2.10" title="Green Belt" cats={["C"]}>
@@ -627,10 +713,11 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
 
         <Sub num="2.15" title="Asbestos" cats={["A"]}>
           {r.construction_age_band && !r.construction_age_band.includes("200") && !r.construction_age_band.includes("201") && !r.construction_age_band.includes("202") ? (
-            <p className="text-[11px]" style={{ color: "#FFB800" }}>Pre-2000 construction — asbestos warning included</p>
+            <p className="text-[10px] mb-1.5" style={{ color: "#FFB800" }}>Pre-2000 construction — asbestos warning applies</p>
           ) : (
-            <p className="text-[11px]" style={{ color: "#94A3B8" }}>Post-2000 construction — standard disclaimers apply</p>
+            <p className="text-[10px] mb-1.5" style={{ color: "#94A3B8" }}>Post-2000 construction — standard disclaimers apply</p>
           )}
+          <FirmText fieldKey="asbestos" fallback="No asbestos disclaimer set" />
         </Sub>
 
         <Sub num="2.17" title="Flood Risk" cats={["C"]}>
@@ -642,7 +729,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
         </Sub>
 
         <Sub num="2.18" title="Fire Risk & Cladding / EWS1" cats={["A", "E"]}>
-          <Placeholder text="EWS1 decision tree — interactive guided flow (future)" />
+          <FirmText fieldKey="fire_risk" fallback="No fire risk / EWS1 boilerplate set" />
         </Sub>
 
         <Sub num="2.19" title="Planning & Heritage" cats={["C"]}>
@@ -717,7 +804,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
       {/* ── Section 4: Valuation ────────────────────────────────────────── */}
       <Section id="s4" title="Section 4: Valuation" cats={["A", "E"]}>
         <Sub num="4.1" title="Methodology" cats={["A"]}>
-          <p className="text-[11px]" style={{ color: "#94A3B8" }}>Firm boilerplate — comparative method statement auto-inserted at export.</p>
+          <FirmText fieldKey="methodology" fallback="No methodology statement set" />
         </Sub>
         <Sub num="4.2" title="Market Rent" cats={["E"]}>
           {valuer.basis_market_rent ? (
@@ -781,7 +868,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
           )}
         </Sub>
         <Sub num="4.6" title="General Comments" cats={["A"]}>
-          <p className="text-[11px]" style={{ color: "#94A3B8" }}>Firm boilerplate auto-inserted at export.</p>
+          <FirmText fieldKey="general_comments" fallback="No general comments boilerplate set" />
         </Sub>
         <Sub num="4.7" title="Report Signatures" cats={["B", "F"]}>
           <AutoField label="Preparer" value={meta.preparer_name || "—"} />
@@ -809,6 +896,53 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
           ))}
         </div>
       </Section>
+
+      {/* ── Floating Save Button ──────────────────────────────────────────── */}
+      {onSave && (
+        <button
+          onClick={async () => {
+            setSaving(true)
+            setSaveFlash(null)
+            try {
+              // Flush any pending debounced changes first
+              if (debounceRef.current) {
+                clearTimeout(debounceRef.current)
+                debounceRef.current = null
+                onReportContentChange?.({ metadata: meta, ai_sections: aiSections, valuer_inputs: valuer })
+              }
+              await new Promise(r => setTimeout(r, 50)) // let state propagate
+              await onSave()
+              setSaveFlash("ok")
+            } catch {
+              setSaveFlash("err")
+            } finally {
+              setSaving(false)
+              setTimeout(() => setSaveFlash(null), 2000)
+            }
+          }}
+          disabled={saving}
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-5 py-3 rounded-xl shadow-lg transition-all duration-200"
+          style={{
+            background: saveFlash === "ok" ? "#39FF14" : saveFlash === "err" ? "#FF3131" : "#00F0FF",
+            color: "#0A0E1A",
+            fontWeight: 700,
+            fontSize: "13px",
+            boxShadow: `0 0 20px ${saveFlash === "ok" ? "#39FF1444" : saveFlash === "err" ? "#FF313144" : "#00F0FF44"}, 0 4px 12px rgba(0,0,0,0.4)`,
+            opacity: saving ? 0.7 : 1,
+          }}
+        >
+          {saving ? (
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>
+          ) : saveFlash === "ok" ? (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+          ) : saveFlash === "err" ? (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          ) : (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+          )}
+          {saving ? "Saving…" : saveFlash === "ok" ? "Saved" : saveFlash === "err" ? "Error" : "Save Report"}
+        </button>
+      )}
     </div>
   )
 }
