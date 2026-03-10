@@ -6,11 +6,12 @@ import { EpcBadge } from "./components/EpcBadge";
 import { HpiBarChart } from "./components/HpiBarChart";
 import { HpiIndexChart } from "./components/HpiIndexChart";
 import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard } from "@/components/ComparableSearch";
-import BrowseSales from "@/components/BrowseSales";
+
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 import { useAuth } from "@/components/AuthProvider";
 import ReportTyping from "./components/ReportTyping";
 import ReportPreview from "./components/ReportPreview";
+import SEMVTab from "./components/SEMVTab";
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -474,16 +475,14 @@ export default function Home() {
   const [enrichSlowDone, setEnrichSlowDone] = useState(false);
   const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "outward" | "browse" | "adopted" | "report" | "hpi" | "map" | "report_typing";
+  type TabKey = "property" | "comparables" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "browse", "comparables", "outward", "hpi", "adopted", "report_typing", "report"];
+  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "hpi", "adopted", "report_typing", "semv", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
   type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
   const [adoptedSortPostcode, setAdoptedSortPostcode] = useState<AdoptedSortKey>("default");
   const [adoptedSortDirPostcode, setAdoptedSortDirPostcode] = useState<"asc" | "desc">("desc");
-  const [adoptedSortOutward, setAdoptedSortOutward] = useState<AdoptedSortKey>("default");
-  const [adoptedSortDirOutward, setAdoptedSortDirOutward] = useState<"asc" | "desc">("desc");
   const [buildingSearchIds, setBuildingSearchIds] = useState<string[]>([]);
   const [buildingSearchAddressKeys, setBuildingSearchAddressKeys] = useState<string[]>([]);
   const [buildingSearchDone, setBuildingSearchDone] = useState(false);
@@ -1152,9 +1151,8 @@ export default function Home() {
     if (!adoptedByTier[c.geographic_tier]) adoptedByTier[c.geographic_tier] = [];
     adoptedByTier[c.geographic_tier].push(c);
   }
-  // Split adopted comps into two groups: same postcode (tiers 1-2) vs outward/other (tiers 3-4)
-  const adoptedPostcodeComps = adoptedComparables.filter(c => c.geographic_tier <= 2);
-  const adoptedOutwardComps  = adoptedComparables.filter(c => c.geographic_tier > 2);
+  // Adopted comps for display
+  const adoptedPostcodeComps = adoptedComparables;
 
   function sortAdoptedComps(comps: ComparableCandidate[], sortKey: AdoptedSortKey, dir: "asc" | "desc"): ComparableCandidate[] {
     if (sortKey === "default") return comps;
@@ -1386,7 +1384,7 @@ export default function Home() {
           <div className="flex items-end border-b border-[#334155] mb-6 no-print">
             {/* ── Section tabs only ── */}
             {tabOrder.map((tab) => {
-              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", outward: "Wider Comparables", browse: "Browse Sales", adopted: "Adopted Comparables", report_typing: "Report Typing", report: "Report" };
+              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
               const active = activeTab === tab;
               const badge = tab === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
               return (
@@ -2696,78 +2694,6 @@ export default function Home() {
             />
           </div>
 
-          {/* ── Tab 3: Additional Sales ──────────────────────────────────────── */}
-          <div style={{ display: activeTab === "outward" ? undefined : "none" }}>
-            <ComparableSearch
-              key={`outward-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
-              mode="outward"
-              initialResult={outwardSearchResult}
-              onSearchResult={setOutwardSearchResult}
-              locked={!buildingSearchDone}
-              excludeIds={buildingSearchIds}
-              excludeAddressKeys={buildingSearchAddressKeys}
-              onAdopt={(comp) => setAdoptedComparables(prev => {
-                const k = comp.transaction_id ?? comp.address;
-                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
-                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
-              })}
-              onAdoptAll={(comps) => setAdoptedComparables(prev => {
-                const existing = new Set(prev.map(c => c.transaction_id ?? c.address));
-                const newComps = comps.filter(c => !existing.has(c.transaction_id ?? c.address));
-                return [...prev, ...newComps];
-              })}
-              onUnadoptAll={(comps) => setAdoptedComparables(prev => {
-                const toRemove = new Set(comps.map(c => c.transaction_id ?? c.address));
-                return prev.filter(c => !toRemove.has(c.transaction_id ?? c.address));
-              })}
-              adoptedIds={adoptedIds}
-              valuationDate={valuationDate}
-              onValuationDateChange={setValuationDate}
-              uprn={result.uprn}
-              lat={result.lat}
-              lon={result.lon}
-              postcode={result.postcode}
-              floorArea={result.floor_area_m2}
-              rooms={result.num_rooms}
-              ageBand={result.construction_age_band}
-              epcRating={result.energy_rating}
-              propertyType={result.property_type}
-              builtForm={result.built_form}
-              tenure={result.tenure}
-              buildingName={result.building_name}
-              paonNumber={result.paon_number}
-              saon={result.saon}
-              streetName={result.street_name}
-            />
-          </div>
-
-          {/* ── Tab: Browse Sales ────────────────────────────────────────────── */}
-          <div style={{ display: activeTab === "browse" ? undefined : "none" }}>
-            <BrowseSales
-              outwardCode={result.postcode ? result.postcode.trim().split(/\s+/)[0] : ""}
-              subjectAddress={result.address ?? ""}
-              subjectSaon={result.saon ?? null}
-              subjectPaon={result.paon_number ?? result.building_name ?? null}
-              subjectStreet={result.street_name ?? null}
-              subjectPostcode={result.postcode ?? ""}
-              subjectPropertyType={result.property_type ?? null}
-              subjectTenure={result.tenure ?? null}
-              subjectEpcScore={result.energy_score ?? null}
-              subjectEpcRating={result.energy_rating ?? null}
-              subjectFloorArea={result.floor_area_m2 ?? null}
-              subjectRooms={result.num_rooms ?? null}
-              subjectAgeBand={result.construction_age_band ?? null}
-              subjectLeaseTermYears={result.lease_term_years ?? null}
-              subjectLeaseExpiry={result.lease_expiry_date ?? null}
-              onAdopt={(comp) => setAdoptedComparables(prev => {
-                const k = comp.transaction_id ?? comp.address;
-                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
-                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
-              })}
-              adoptedIds={adoptedIds}
-            />
-          </div>
-
           {/* ── Tab 4: Adopted Comparables ───────────────────────────────────── */}
           <div style={{ display: activeTab === "adopted" ? undefined : "none" }}>
             {adoptedComparables.length === 0 ? (
@@ -3008,92 +2934,41 @@ export default function Home() {
                   );
                 })()}
 
-                {/* ── Same Outward Code group (tiers 3-4) ─────────────── */}
-                {adoptedOutwardComps.length > 0 && (() => {
-                  const sorted = sortAdoptedComps(adoptedOutwardComps, adoptedSortOutward, adoptedSortDirOutward);
-                  return (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-orbitron font-bold tracking-widest text-[#FFB800] uppercase">
-                          Same Outward Code ({adoptedOutwardComps.length})
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
-                          {([["default", "Tier"], ["date", "Date"], ["price", "Price"], ["size", "Size"], ["psf", "£/sqft"]] as [AdoptedSortKey, string][]).map(([key, label]) => {
-                            const active = adoptedSortOutward === key;
-                            return (
-                              <button key={key}
-                                onClick={() => {
-                                  if (active && key !== "default") setAdoptedSortDirOutward(d => d === "desc" ? "asc" : "desc");
-                                  else { setAdoptedSortOutward(key); setAdoptedSortDirOutward("desc"); }
-                                }}
-                                className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                                  active ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30" : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
-                                }`}
-                              >
-                                {label}{active && key !== "default" && <span className="ml-1">{adoptedSortDirOutward === "asc" ? "↑" : "↓"}</span>}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      {adoptedSortOutward === "default" ? (
-                        Object.entries(adoptedByTier)
-                          .filter(([t]) => Number(t) > 2)
-                          .sort(([a], [b]) => Number(a) - Number(b))
-                          .map(([tierStr, comps]) => {
-                            const tier = Number(tierStr);
-                            const style = ADOPTED_TIER_STYLE[tier] ?? ADOPTED_TIER_STYLE[4];
-                            const label = comps[0]?.tier_label ?? `Tier ${tier}`;
-                            return (
-                              <div key={tier} className="rounded-2xl border border-[#334155] overflow-hidden shadow-lg shadow-black/30">
-                                <div className={`px-4 py-2.5 border-b flex items-center justify-between ${style.header}`}>
-                                  <div className="flex items-center gap-2">
-                                    <span>{style.icon}</span>
-                                    <span className="font-orbitron font-bold text-xs text-[#F5E6C8] tracking-wider">{label.toUpperCase()}</span>
-                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.pill}`}>{comps.length} adopted</span>
-                                  </div>
-                                </div>
-                                <div className="divide-y divide-[#334155]/60 bg-[#111827]">
-                                  {comps.map((comp, idx) => {
-                                    const globalIdx = adoptedComparables.indexOf(comp);
-                                    return (
-                                      <CompCard key={comp.transaction_id ?? idx} comp={comp} valuationYear={valuationYear} isAdopted={true}
-                                        onAdopt={() => setAdoptedComparables(prev => prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address)))}
-                                        onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })
-                      ) : (
-                        <div className="rounded-2xl border border-[#334155] overflow-hidden shadow-lg shadow-black/30">
-                          <div className="px-4 py-2.5 border-b flex items-center gap-2 bg-[#FFB800]/5 border-[#FFB800]/30">
-                            <span>📊</span>
-                            <span className="font-orbitron font-bold text-xs text-[#F5E6C8] tracking-wider">
-                              SORTED BY {adoptedSortOutward === "psf" ? "£/SQFT" : adoptedSortOutward.toUpperCase()}
-                            </span>
-                            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[#FFB800]/15 text-[#FFB800]">{sorted.length} adopted</span>
-                          </div>
-                          <div className="divide-y divide-[#334155]/60 bg-[#111827]">
-                            {sorted.map((comp, idx) => {
-                              const globalIdx = adoptedComparables.indexOf(comp);
-                              return (
-                                <CompCard key={comp.transaction_id ?? idx} comp={comp} valuationYear={valuationYear} isAdopted={true}
-                                  onAdopt={() => setAdoptedComparables(prev => prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address)))}
-                                  onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
               </div>
             )}
           </div>
+
+          {/* ── SEMV Tab ──────────────────────────────────────────────────── */}
+          {activeTab === "semv" && (() => {
+            const layer1All = [
+              ...(buildingSearchResult?.comparables ?? []),
+              ...(outwardSearchResult?.comparables ?? []),
+            ];
+            // De-duplicate by transaction_id
+            const seen = new Set<string>();
+            const layer1Deduped = layer1All.filter(c => {
+              const key = c.transaction_id ?? c.address;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+            const mvStr = reportContent?.valuer_inputs?.market_value ?? "";
+            const mvNum = parseFloat(mvStr.replace(/,/g, "")) || null;
+            return (
+              <SEMVTab
+                layer1Comps={layer1Deduped}
+                adoptedComparables={adoptedComparables}
+                adoptedMV={mvNum}
+                subjectSizeSqft={subjectAreaSqft}
+                hpiTrend={hpiTrend}
+                valuationDate={valuationDate}
+                subjectPropertyType={result?.property_type ?? null}
+                subjectHouseSubType={result?.built_form ?? null}
+                subjectEpcScore={result?.energy_score ?? null}
+                subjectSaon={result?.saon ?? null}
+              />
+            );
+          })()}
 
           {/* ── Tab 5: Report (Print Preview) ──────────────────────────────── */}
           <div style={{ display: activeTab === "report" ? undefined : "none" }}>
