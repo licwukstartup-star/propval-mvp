@@ -85,20 +85,25 @@ def extract_and_convert(zip_path: Path, geojson_out: Path):
 def main():
     print("\n=== Script 01b: Batch Convert INSPIRE Zips -> GeoJSON ===\n")
 
-    # Find all named zips: {gss}_{slug}.zip
-    zips = sorted(DATA_DIR.glob("E??????_*.zip"))
+    # Known slugs from Script 00 (plain-named zips e.g. bromley.zip)
+    KNOWN_SLUGS = {
+        "city_of_london", "barking_and_dagenham", "barnet", "bexley", "brent",
+        "bromley", "camden", "croydon", "ealing", "enfield", "greenwich",
+        "hackney", "hammersmith_and_fulham", "haringey", "harrow", "havering",
+        "hillingdon", "hounslow", "islington", "kensington_and_chelsea",
+        "kingston_upon_thames", "lambeth", "lewisham", "merton", "newham",
+        "redbridge", "richmond_upon_thames", "southwark", "sutton",
+        "tower_hamlets", "waltham_forest", "wandsworth", "westminster",
+    }
 
-    # Also find manually-downloaded zips (e.g. "London_Borough_of_Bromley.zip")
-    # that don't match our naming convention — skip these with a note
-    other_zips = [z for z in DATA_DIR.glob("*.zip") if not z.name.startswith("E0")]
-    if other_zips:
-        print(f"  Note: {len(other_zips)} manually-named zips found (not batch-named):")
-        for z in other_zips:
-            print(f"    {z.name} — run Script 01 manually for this one")
-        print()
+    # Find GSS-prefixed zips (E09000006_bromley.zip) AND plain slug zips (bromley.zip)
+    gss_zips = sorted(DATA_DIR.glob("E??????_*.zip"))
+    slug_zips = sorted(z for z in DATA_DIR.glob("*.zip")
+                       if z.stem in KNOWN_SLUGS)
+    zips = gss_zips + [z for z in slug_zips if z not in gss_zips]
 
     if not zips:
-        print("  No batch-named zips found (E0*_*.zip).")
+        print("  No borough zips found.")
         print("  Run Script 00 first: python scripts/00_batch_download_inspire.py")
         return
 
@@ -109,10 +114,11 @@ def main():
     failed = 0
 
     for zip_path in zips:
-        # Extract slug from filename: E09000006_bromley.zip -> bromley
-        parts = zip_path.stem.split("_", 1)
-        slug = parts[1] if len(parts) == 2 else zip_path.stem
-        gss = parts[0]
+        # Derive slug: E09000006_bromley.zip -> bromley, bromley.zip -> bromley
+        if zip_path.stem.startswith("E0") and "_" in zip_path.stem:
+            slug = zip_path.stem.split("_", 1)[1]
+        else:
+            slug = zip_path.stem
 
         geojson_out = DATA_DIR / f"inspire_{slug}.geojson"
 
