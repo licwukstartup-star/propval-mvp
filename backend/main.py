@@ -15,9 +15,11 @@ from routers import admin as admin_router
 from routers import cases as cases_router
 from routers import comparables as comparables_router
 from routers import firm_templates as firm_templates_router
+from routers import news as news_router
 from routers import property as property_router
 from routers.property import _load_green_belt_polygons
 from routers.rate_limit import limiter
+from services.inspire import InspireService
 
 # Load .env from project root (one level above /backend)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -26,7 +28,11 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Download reference datasets once at startup before serving requests."""
+    import asyncio
     _load_green_belt_polygons()
+    app.state.inspire = await asyncio.to_thread(InspireService.load)
+    await news_router.start_background_refresh()
+    await news_router.start_market_refresh()
     yield
 
 
@@ -52,6 +58,20 @@ app.add_middleware(
 )
 
 @app.middleware("http")
+async def request_timeout(request: Request, call_next):
+    """Hard 90s cap on every request — prevents hung external API calls draining server resources."""
+    import asyncio
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=90.0)
+    except asyncio.TimeoutError:
+        logging.error("Request hard timeout (>90s): %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "The request timed out. Please try again."},
+        )
+
+
+@app.middleware("http")
 async def maintenance_guard(request: Request, call_next):
     """Block all API requests (except /health) when MAINTENANCE_MODE=true."""
     if os.getenv("MAINTENANCE_MODE", "").lower() in ("true", "1"):
@@ -65,6 +85,7 @@ app.include_router(comparables_router.router)
 app.include_router(cases_router.router)
 app.include_router(admin_router.router)
 app.include_router(firm_templates_router.router)
+app.include_router(news_router.router)
 
 
 @app.get("/health")

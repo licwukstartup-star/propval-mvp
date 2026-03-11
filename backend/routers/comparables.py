@@ -138,6 +138,8 @@ class ComparableCandidate(BaseModel):
     epc_score:           int | None = None   # e.g. 72
     months_ago:          int | None = None
     lease_remaining:     str | None = None
+    distance_m:          float | None = None  # haversine distance from subject (metres)
+    coord_source:        str | None = None    # 'inspire' | 'postcode' | None
 
 
 class SearchMetadata(BaseModel):
@@ -638,6 +640,8 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
         epc_rating            = raw.get("epc_rating"),
         epc_score             = raw.get("epc_score"),
         months_ago            = _months_ago(raw["sale_date"], val_date),
+        distance_m            = raw.get("_dist_m"),
+        coord_source          = raw.get("_coord_source"),
     )
 
 # ---------------------------------------------------------------------------
@@ -979,6 +983,88 @@ async def _run_house_tier(
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine distance in metres between two WGS84 points."""
+    from math import atan2, cos, radians, sin, sqrt
+    R = 6_371_000
+    p1, p2 = radians(lat1), radians(lat2)
+    dp = radians(lat2 - lat1)
+    dl = radians(lon2 - lon1)
+    a = sin(dp / 2) ** 2 + cos(p1) * cos(p2) * sin(dl / 2) ** 2
+    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
+
+
+async def _bulk_geocode_postcodes(postcodes: list[str]) -> dict[str, tuple[float, float]]:
+    """
+    Bulk geocode up to 100 postcodes in one postcodes.io POST request.
+    Returns {postcode: (lat, lng)} for successful lookups only.
+    """
+    if not postcodes:
+        return {}
+    results: dict[str, tuple[float, float]] = {}
+    try:
+        c = _get_http_client()
+        r = await c.post(
+            "https://api.postcodes.io/postcodes",
+            json={"postcodes": postcodes[:100]},
+            timeout=5.0,
+        )
+        if r.status_code != 200:
+            return results
+        for item in r.json().get("result", []):
+            if item and item.get("result"):
+                pc  = item["query"]
+                lat = item["result"].get("latitude")
+                lng = item["result"].get("longitude")
+                if lat and lng:
+                    results[pc] = (float(lat), float(lng))
+    except Exception:
+        logging.warning("Bulk postcode geocode failed")
+    return results
+
+
+async def _annotate_pool_with_distances(
+    pool: list[dict],
+    subj_lat: float,
+    subj_lng: float,
+    inspire,   # InspireService | None
+) -> list[dict]:
+    """
+    For each comparable in pool:
+      1. Look up postcode centroid via postcodes.io (bulk, one request).
+      2. Try INSPIRE nearest-centroid lookup from that postcode centroid.
+      3. Compute haversine distance to subject.
+      4. Store _dist_m and _coord_source on the raw dict.
+
+    Returns pool with distances annotated (in-place modification).
+    Comparables where geocoding fails get _dist_m = None.
+    """
+    unique_postcodes = list({r["postcode"] for r in pool})
+    pc_coords = await _bulk_geocode_postcodes(unique_postcodes)
+
+    for r in pool:
+        pc = r["postcode"]
+        pc_latlon = pc_coords.get(pc)
+        if not pc_latlon:
+            continue
+
+        pc_lat, pc_lng = pc_latlon
+        comp_lat, comp_lng = pc_lat, pc_lng
+        coord_source = "postcode"
+
+        if inspire and inspire.loaded:
+            hit = inspire.lookup(pc_lat, pc_lng)
+            if hit:
+                comp_lat    = hit["lat"]
+                comp_lng    = hit["lng"]
+                coord_source = "inspire"
+
+        r["_dist_m"]        = _haversine_m(subj_lat, subj_lng, comp_lat, comp_lng)
+        r["_coord_source"]  = coord_source
+
+    return pool
+
+
 async def _orchestrate(
     subject:              SubjectPropertyInput,
     target:               int,
@@ -1129,9 +1215,30 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
         logging.warning("Comparable search timed out after %.0fs — returning partial results", TOTAL_TIMEOUT)
         pool, total_scanned = [], 0
 
-    # Sort: tier ASC, then most recent first (stable sort)
-    pool_sorted = sorted(pool, key=lambda r: r["sale_date"], reverse=True)
-    pool_sorted = sorted(pool_sorted, key=lambda r: r["_tier"])
+    # Annotate pool with distances if subject coordinates are available
+    subj_lat = req.subject.lat
+    subj_lng = req.subject.lon
+    inspire  = getattr(request.app.state, "inspire", None)
+
+    if subj_lat is not None and subj_lng is not None and pool:
+        try:
+            pool = await asyncio.wait_for(
+                _annotate_pool_with_distances(pool, subj_lat, subj_lng, inspire),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            logging.warning("Distance annotation timed out — falling back to date sort")
+
+    # Sort: tier ASC, then distance ASC (if available), then most recent first
+    has_distances = any(r.get("_dist_m") is not None for r in pool)
+    if has_distances:
+        pool_sorted = sorted(
+            pool,
+            key=lambda r: (r["_tier"], r.get("_dist_m") or 999_999, r["sale_date"]),
+        )
+    else:
+        pool_sorted = sorted(pool, key=lambda r: r["sale_date"], reverse=True)
+        pool_sorted = sorted(pool_sorted, key=lambda r: r["_tier"])
 
     comparables = [
         _make_candidate(r, r["_tier"], r["_label"], r["_window"], r["_relax"], val_date)
