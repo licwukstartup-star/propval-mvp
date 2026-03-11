@@ -1137,7 +1137,7 @@ async def _fetch_flood_risk(lat: float | None, lon: float | None) -> dict:
 
 
 async def _fetch_listed_buildings(lat: float | None, lon: float | None) -> list[dict]:
-    """Return listed buildings within 75 m of the property from Historic England NHLE.
+    """Return listed buildings within 50 m of the property from Historic England NHLE.
 
     Uses a buffered point query on the ArcGIS Online public FeatureServer.
     Results include name, grade, list entry number, and a link to the HE record.
@@ -1148,7 +1148,7 @@ async def _fetch_listed_buildings(lat: float | None, lon: float | None) -> list[
         "geometry": f"{lon},{lat}",
         "geometryType": "esriGeometryPoint",
         "inSR": "4326",
-        "distance": "75",
+        "distance": "50",
         "units": "esriSRUnit_Meter",
         "outFields": "ListEntry,Name,Grade,hyperlink",
         "returnGeometry": "false",

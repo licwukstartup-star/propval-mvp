@@ -3,6 +3,8 @@
 // Leaflet CSS must be imported here (inside the dynamically-imported module) so it
 // only runs client-side and is present before any Leaflet rendering begins.
 import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import {
@@ -17,6 +19,7 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
+import "leaflet.markercluster";
 import type { ComparableCandidate } from "@/components/ComparableSearch";
 
 // Fix Leaflet's default icon paths broken by webpack/Next.js bundling.
@@ -50,6 +53,7 @@ interface PropertyMapProps {
   showCrime: boolean; onShowCrimeChange: (v: boolean) => void;
   showIncome: boolean; onShowIncomeChange: (v: boolean) => void;
   showEducation: boolean; onShowEducationChange: (v: boolean) => void;
+  showHeritage: boolean; onShowHeritageChange: (v: boolean) => void;
   tileLayer: TileLayerKey; onTileLayerChange: (v: TileLayerKey) => void;
   landUseCache: GeoJSON.FeatureCollection | null; onLandUseCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
   imdCache: GeoJSON.FeatureCollection | null; onImdCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
@@ -121,7 +125,9 @@ function FitBounds({ subject, compCoords }: {
   useEffect(() => {
     if (hasFitted.current) return;
     const points: L.LatLngExpression[] = [subject];
-    Object.values(compCoords).forEach(c => points.push([c.lat, c.lon]));
+    Object.values(compCoords).forEach(c => {
+      if (c.lat != null && c.lon != null && !isNaN(c.lat) && !isNaN(c.lon)) points.push([c.lat, c.lon]);
+    });
     if (points.length > 1) {
       const bounds = L.latLngBounds(points);
       map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
@@ -343,6 +349,357 @@ function useLandUseGeoJSON(
   }, [cache]);
 
   return { geojson: cache, geoKey };
+}
+
+// ── Hook: fetch listed buildings from Historic England NHLE ArcGIS ────────────
+
+interface ListedBuildingMarker {
+  listEntry: number;
+  name: string;
+  grade: string; // "I", "II*", "II"
+  url: string;
+  lat: number;
+  lon: number;
+}
+
+const NHLE_URL = "https://services-eu1.arcgis.com/ZOdPfBS3aqqDYPUQ/arcgis/rest/services/National_Heritage_List_for_England_NHLE_v02_VIEW/FeatureServer/0/query";
+
+function useListedBuildings(lat: number, lon: number, enabled: boolean) {
+  const [data, setData] = useState<ListedBuildingMarker[] | null>(null);
+  const loadingRef = useRef(false);
+
+  useEffect(() => {
+    if (!enabled || data || loadingRef.current) return;
+    loadingRef.current = true;
+    let cancelled = false;
+
+    const params = new URLSearchParams({
+      geometry: `${lon},${lat}`,
+      geometryType: "esriGeometryPoint",
+      inSR: "4326",
+      outSR: "4326",
+      distance: "50",
+      units: "esriSRUnit_Meter",
+      outFields: "ListEntry,Name,Grade,hyperlink",
+      returnGeometry: "true",
+      f: "json",
+    });
+
+    fetch(`${NHLE_URL}?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`NHLE ${r.status}`); return r.json(); })
+      .then(json => {
+        if (cancelled) return;
+        const features = json.features ?? [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const buildings: ListedBuildingMarker[] = features
+          .filter((f: { attributes: { Name?: string }; geometry?: { points?: number[][]; x?: number; y?: number } }) =>
+            f.attributes?.Name && f.geometry)
+          .map((f: { attributes: { ListEntry: number; Name: string; Grade: string; hyperlink: string }; geometry: { points?: number[][]; x?: number; y?: number } }) => {
+            // ArcGIS returns multipoint {points:[[lon,lat]]} or point {x,y}
+            const g = f.geometry;
+            const lon = g.points?.[0]?.[0] ?? g.x;
+            const lat = g.points?.[0]?.[1] ?? g.y;
+            return {
+              listEntry: f.attributes.ListEntry,
+              name: f.attributes.Name.replace(/\b\w+/g, (w: string) => w[0].toUpperCase() + w.slice(1).toLowerCase()),
+              grade: f.attributes.Grade,
+              url: f.attributes.hyperlink || "",
+              lat: lat!,
+              lon: lon!,
+            };
+          })
+          .filter((b: ListedBuildingMarker) => b.lat != null && b.lon != null && !isNaN(b.lat) && !isNaN(b.lon));
+        console.log(`[Heritage] ${buildings.length} listed buildings within 50m`);
+        setData(buildings);
+      })
+      .catch(err => console.warn("[Heritage] fetch failed:", err))
+      .finally(() => { loadingRef.current = false; });
+
+    return () => { cancelled = true; loadingRef.current = false; };
+  }, [lat, lon, enabled, data]);
+
+  return data;
+}
+
+const GRADE_COLOURS: Record<string, { bg: string; border: string }> = {
+  "I":   { bg: "#FF3131", border: "#FF6B6B" },
+  "II*": { bg: "#FFB800", border: "#FBBF24" },
+  "II":  { bg: "#67E8F9", border: "#00F0FF" },
+};
+
+// ── Comparable cluster layer ──────────────────────────────────────────────────
+
+function ComparableClusterLayer({
+  comparables, compCoords, onRemoveComparable,
+  subjectLat, subjectLon, subjectAddress, subjectEpc, subjectFloodRisk,
+}: {
+  comparables: ComparableCandidate[];
+  compCoords: Record<string, { lat: number; lon: number }>;
+  onRemoveComparable?: (comp: ComparableCandidate) => void;
+  subjectLat: number;
+  subjectLon: number;
+  subjectAddress: string;
+  subjectEpc: string | null;
+  subjectFloodRisk: string | null;
+}) {
+  const map = useMap();
+  const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
+  // Store callback ref so popup event listeners always use latest
+  const onRemoveRef = useRef(onRemoveComparable);
+  onRemoveRef.current = onRemoveComparable;
+
+  useEffect(() => {
+    if (clusterRef.current) {
+      map.removeLayer(clusterRef.current);
+      clusterRef.current = null;
+    }
+
+    const cluster = L.markerClusterGroup({
+      maxClusterRadius: 35,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      animate: true,
+      chunkedLoading: true,
+      iconCreateFunction: (c) => {
+        const count = c.getChildCount();
+        // Check if subject marker is in this cluster (has zIndexOffset 10000)
+        const hasSubject = c.getAllChildMarkers().some(m => (m.options.zIndexOffset ?? 0) >= 10000);
+        const bg = hasSubject
+          ? "radial-gradient(circle at 35% 35%, #67E8F9, #00F0FF)"
+          : "radial-gradient(circle at 35% 35%, #FF6FA3, #FF2D78)";
+        const shadow = hasSubject ? "#00F0FF" : "#FF2D78";
+        return L.divIcon({
+          className: "",
+          html: `<div style="
+            width:26px;height:26px;border-radius:50%;
+            background:${bg};
+            border:2px solid #fff;
+            box-shadow:0 0 10px ${shadow},0 0 20px ${shadow}66;
+            display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:800;color:#fff;
+          ">${count}</div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        });
+      },
+    });
+
+    const compIcon = L.divIcon({
+      className: "",
+      html: `<div style="
+        width:16px;height:16px;border-radius:50%;
+        background:radial-gradient(circle at 35% 35%, #FF6FA3, #FF2D78);
+        border:2px solid #fff;
+        box-shadow:0 0 8px #FF2D78,0 0 16px #FF2D7866;
+      "></div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+      popupAnchor: [0, -12],
+    });
+
+    comparables.forEach((comp, i) => {
+      const coords = compCoords[comp.postcode];
+      if (!coords || coords.lat == null || coords.lon == null) return;
+
+      const marker = L.marker([coords.lat, coords.lon], { icon: compIcon });
+      const psf = comp.floor_area_sqm
+        ? "£" + Math.round(comp.price / (comp.floor_area_sqm * 10.764)).toLocaleString("en-GB") + "/sqft"
+        : null;
+      const price = "£" + comp.price.toLocaleString("en-GB");
+      const removeId = `remove-comp-${comp.transaction_id ?? i}`;
+
+      marker.bindPopup(
+        `<div style="font-family:system-ui;min-width:180px">
+          <div style="font-size:10px;color:#FF2D78;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:6px">
+            Comparable ${i + 1}
+          </div>
+          <div style="font-weight:600;font-size:12px;margin-bottom:8px;line-height:1.4;color:#E2E8F0">
+            ${comp.address}
+          </div>
+          <div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
+            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Price</span>
+            <span style="font-weight:700;color:#E2E8F0">${price}</span>
+          </div>
+          ${psf ? `<div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
+            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Rate</span>
+            <span style="font-weight:600;color:#67E8F9">${psf}</span>
+          </div>` : ""}
+          <div style="margin-bottom:${onRemoveRef.current ? 8 : 0}px;display:flex;align-items:center;gap:6px">
+            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Date</span>
+            <span style="color:#E2E8F0">${comp.transaction_date.slice(0, 7)}</span>
+          </div>
+          ${onRemoveRef.current ? `<button id="${removeId}" style="
+            width:100%;padding:5px 0;font-size:10px;font-weight:700;
+            text-transform:uppercase;letter-spacing:0.06em;
+            background:#FF3131;color:#fff;border:none;
+            border-radius:4px;cursor:pointer;
+          ">Remove Comparable</button>` : ""}
+        </div>`,
+        { className: "propval-popup", minWidth: 200 }
+      );
+
+      if (onRemoveRef.current) {
+        marker.on("popupopen", () => {
+          const btn = document.getElementById(removeId);
+          if (btn) {
+            btn.onclick = () => {
+              onRemoveRef.current?.(comp);
+              map.closePopup();
+            };
+          }
+        });
+      }
+
+      cluster.addLayer(marker);
+    });
+
+    // Add subject property marker into the same cluster group
+    const sIcon = L.divIcon({
+      className: "",
+      html: `<div style="
+        width:24px;height:24px;border-radius:50%;
+        background:radial-gradient(circle at 35% 35%, #67E8F9, #00F0FF);
+        border:2.5px solid #fff;
+        box-shadow:0 0 12px #00F0FF,0 0 28px #00F0FF66;
+        animation:pulse-cyan 2s ease-in-out infinite;
+      "></div>`,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12],
+      popupAnchor: [0, -16],
+    });
+    const subjectMarker = L.marker([subjectLat, subjectLon], { icon: sIcon, zIndexOffset: 10000 });
+    const floodHtml = subjectFloodRisk
+      ? `<div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Flood</span>
+          <span style="font-weight:600;color:${subjectFloodRisk === "High" ? "#FF3131" : subjectFloodRisk === "Medium" ? "#FFB800" : "#39FF14"};font-size:13px">${subjectFloodRisk}</span>
+        </div>` : "";
+    const epcHtml = subjectEpc
+      ? `<div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
+          <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">EPC</span>
+          <span style="font-weight:700;color:#39FF14;font-size:13px">${subjectEpc}</span>
+        </div>` : "";
+    subjectMarker.bindPopup(
+      `<div style="font-family:system-ui;min-width:200px">
+        <div style="font-size:10px;color:#00F0FF;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:6px">Subject Property</div>
+        <div style="font-weight:700;font-size:13px;margin-bottom:8px;line-height:1.4;color:#E2E8F0">${subjectAddress}</div>
+        ${epcHtml}${floodHtml}
+      </div>`,
+      { className: "propval-popup", minWidth: 220 }
+    );
+    cluster.addLayer(subjectMarker);
+
+    map.addLayer(cluster);
+    clusterRef.current = cluster;
+
+    return () => {
+      if (clusterRef.current) {
+        map.removeLayer(clusterRef.current);
+        clusterRef.current = null;
+      }
+    };
+  // Only rebuild when comparables or coords actually change — subject props are stable per property
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, comparables, compCoords, subjectLat, subjectLon]);
+
+  return null;
+}
+
+// ── Heritage cluster layer ───────────────────────────────────────────────────
+
+function HeritageClusterLayer({ buildings }: { buildings: ListedBuildingMarker[] }) {
+  const map = useMap();
+  const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
+
+  useEffect(() => {
+    if (clusterRef.current) {
+      map.removeLayer(clusterRef.current);
+      clusterRef.current = null;
+    }
+    if (buildings.length === 0) return;
+
+    const cluster = L.markerClusterGroup({
+      maxClusterRadius: 30,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      animate: true,
+      chunkedLoading: true,
+      iconCreateFunction: (c) => {
+        const count = c.getChildCount();
+        // Check highest grade in cluster
+        const markers = c.getAllChildMarkers();
+        let hasGradeI = false;
+        let hasGradeIIStar = false;
+        markers.forEach(m => {
+          const g = (m.options as { grade?: string }).grade;
+          if (g === "I") hasGradeI = true;
+          if (g === "II*") hasGradeIIStar = true;
+        });
+        const color = hasGradeI ? "#FF3131" : hasGradeIIStar ? "#FFB800" : "#67E8F9";
+        return L.divIcon({
+          className: "",
+          html: `<div style="
+            width:24px;height:24px;border-radius:4px;
+            background:${color};color:#0A0E1A;
+            display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:800;
+            border:2px solid #fff;
+            box-shadow:0 0 8px ${color}88;
+            transform:rotate(45deg);
+          "><span style="transform:rotate(-45deg)">${count}</span></div>`,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+        });
+      },
+    });
+
+    buildings.forEach(b => {
+      if (b.lat == null || b.lon == null || isNaN(b.lat) || isNaN(b.lon)) return;
+      const gc = GRADE_COLOURS[b.grade] ?? GRADE_COLOURS["II"];
+      const icon = L.divIcon({
+        className: "",
+        html: `<div style="
+          width:12px;height:12px;
+          background:${gc.bg};
+          border:1.5px solid ${gc.border};
+          border-radius:2px;
+          box-shadow:0 0 6px ${gc.bg}88;
+          transform:rotate(45deg);
+        "></div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+        popupAnchor: [0, -10],
+      });
+      const marker = L.marker([b.lat, b.lon], { icon, grade: b.grade } as L.MarkerOptions);
+      marker.bindPopup(
+        `<div style="font-family:system-ui;min-width:180px">
+          <div style="font-size:10px;color:${gc.bg};text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:4px">
+            Grade ${b.grade} Listed
+          </div>
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;line-height:1.4;color:#E2E8F0">
+            ${b.name}
+          </div>
+          <div style="font-size:10px;color:#94A3B8;margin-bottom:${b.url ? 6 : 0}px">
+            List Entry: ${b.listEntry}
+          </div>
+          ${b.url ? `<a href="${b.url}" target="_blank" rel="noopener noreferrer" style="font-size:10px;color:#00F0FF;text-decoration:underline">View on Historic England</a>` : ""}
+        </div>`,
+        { className: "propval-popup" }
+      );
+      cluster.addLayer(marker);
+    });
+
+    map.addLayer(cluster);
+    clusterRef.current = cluster;
+
+    return () => {
+      if (clusterRef.current) {
+        map.removeLayer(clusterRef.current);
+        clusterRef.current = null;
+      }
+    };
+  }, [map, buildings]);
+
+  return null;
 }
 
 // ── Minimal OSM JSON → GeoJSON converter ──────────────────────────────────────
@@ -871,6 +1228,7 @@ export default function PropertyMap({
   showCrime, onShowCrimeChange: setShowCrime,
   showIncome, onShowIncomeChange: setShowIncome,
   showEducation, onShowEducationChange: setShowEducation,
+  showHeritage, onShowHeritageChange: setShowHeritage,
   tileLayer, onTileLayerChange: setTileLayer,
   landUseCache, onLandUseCacheChange,
   imdCache, onImdCacheChange,
@@ -883,6 +1241,7 @@ export default function PropertyMap({
   const { geojson: incomeData, geoKey: incomeKey } = useIncomeGeoJSON(subjectLat, subjectLon, showIncome, incomeCache, onIncomeCacheChange);
   const { geojson: educationData, geoKey: educationKey } = useEducationGeoJSON(subjectLat, subjectLon, showEducation, educationCache, onEducationCacheChange);
   const crimeData = useCrimeData(subjectLat, subjectLon, showCrime, crimeCache, onCrimeCacheChange);
+  const heritageData = useListedBuildings(subjectLat, subjectLon, showHeritage);
 
   const onEachImd = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
     const decile = feature.properties?.IMDDec0 as number | undefined;
@@ -945,33 +1304,6 @@ export default function PropertyMap({
     );
   }, []);
 
-  const subjectIcon = useMemo(() => L.divIcon({
-    className: "",
-    html: `<div style="
-      width:24px;height:24px;border-radius:50%;
-      background:radial-gradient(circle at 35% 35%, #67E8F9, #00F0FF);
-      border:2.5px solid #fff;
-      box-shadow:0 0 12px #00F0FF,0 0 28px #00F0FF66;
-      animation:pulse-cyan 2s ease-in-out infinite;
-    "></div>`,
-    iconSize:    [24, 24],
-    iconAnchor:  [12, 12],
-    popupAnchor: [0, -16],
-  }), []);
-
-  const compIcon = useMemo(() => L.divIcon({
-    className: "",
-    html: `<div style="
-      width:16px;height:16px;border-radius:50%;
-      background:radial-gradient(circle at 35% 35%, #FF6FA3, #FF2D78);
-      border:2px solid #fff;
-      box-shadow:0 0 8px #FF2D78,0 0 16px #FF2D7866;
-    "></div>`,
-    iconSize:    [16, 16],
-    iconAnchor:  [8, 8],
-    popupAnchor: [0, -12],
-  }), []);
-
   const tile = TILE_LAYERS[tileLayer];
 
   return (
@@ -1003,6 +1335,16 @@ export default function PropertyMap({
         /* Hide default Leaflet attribution & zoom controls */
         .leaflet-control-attribution { display: none !important; }
         .leaflet-control-zoom { display: none !important; }
+        /* Override default MarkerCluster styles — we use custom iconCreateFunction */
+        .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+          background: transparent !important;
+        }
+        .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+          background: transparent !important;
+        }
+        .leaflet-cluster-anim .leaflet-marker-icon, .leaflet-cluster-anim .leaflet-marker-shadow {
+          transition: transform 0.25s ease-out, opacity 0.25s ease-out;
+        }
       `}</style>
 
       {/* ── Floating: tile switcher + fullscreen (top-left row) ────────── */}
@@ -1061,16 +1403,21 @@ export default function PropertyMap({
       <div style={{
         position: "absolute", top: 12, right: 12, zIndex: 1000,
         display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end",
-        maxWidth: 320,
+        maxWidth: 380,
       }}>
         <ToggleBtn label="Flood" active={showFlood} color="#FF2D78" onClick={() => setShowFlood(!showFlood)} />
         <ToggleBtn label="Land Use" active={showLandUse} color="#FBBF24" onClick={() => setShowLandUse(!showLandUse)} />
-        <ToggleBtn label="Deprivation" active={showDeprivation} color="#F97316" onClick={() => setShowDeprivation(!showDeprivation)} />
-        <ToggleBtn label="Road Noise" active={showRoadNoise} color="#EF4444" onClick={() => setShowRoadNoise(!showRoadNoise)} />
-        <ToggleBtn label="Rail Noise" active={showRailNoise} color="#A855F7" onClick={() => setShowRailNoise(!showRailNoise)} />
-        <ToggleBtn label="Income" active={showIncome} color="#22C55E" onClick={() => setShowIncome(!showIncome)} />
-        <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
+        <ToggleBtnGroup label="Noise" color="#EF4444" active={showRoadNoise || showRailNoise}>
+          <ToggleBtn label="Road Noise" active={showRoadNoise} color="#EF4444" onClick={() => setShowRoadNoise(!showRoadNoise)} />
+          <ToggleBtn label="Rail Noise" active={showRailNoise} color="#A855F7" onClick={() => setShowRailNoise(!showRailNoise)} />
+        </ToggleBtnGroup>
+        <ToggleBtnGroup label="Deprivation" color="#F97316" active={showDeprivation || showIncome || showEducation}>
+          <ToggleBtn label="Overall IMD" active={showDeprivation} color="#F97316" onClick={() => setShowDeprivation(!showDeprivation)} />
+          <ToggleBtn label="Income" active={showIncome} color="#22C55E" onClick={() => setShowIncome(!showIncome)} />
+          <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
+        </ToggleBtnGroup>
         <ToggleBtn label="Crime" active={showCrime} color="#DC2626" onClick={() => setShowCrime(!showCrime)} />
+        <ToggleBtn label="Heritage" active={showHeritage} color="#FFB800" onClick={() => setShowHeritage(!showHeritage)} />
         <ToggleBtn label="Rings" active={showRings} color="#7B2FBE" onClick={() => setShowRings(!showRings)} />
       </div>
 
@@ -1102,78 +1449,22 @@ export default function PropertyMap({
           showCrime={showCrime} crimeData={crimeData}
         />
 
-        {/* Subject property marker */}
-        <Marker position={[subjectLat, subjectLon]} icon={subjectIcon}>
-          <Popup className="propval-popup" minWidth={220}>
-            <div style={{ fontSize: 10, color: "#00F0FF", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 6 }}>
-              Subject Property
-            </div>
-            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, lineHeight: 1.4, color: "#E2E8F0" }}>
-              {subjectAddress}
-            </div>
-            {subjectEpc && (
-              <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 10, color: "#94A3B8", textTransform: "uppercase" }}>EPC</span>
-                <span style={{ fontWeight: 700, color: "#39FF14", fontSize: 13 }}>{subjectEpc}</span>
-              </div>
-            )}
-            {subjectFloodRisk && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 10, color: "#94A3B8", textTransform: "uppercase" }}>Flood</span>
-                <span style={{ fontWeight: 600, color: floodColour(subjectFloodRisk), fontSize: 13 }}>{subjectFloodRisk}</span>
-              </div>
-            )}
-          </Popup>
-        </Marker>
+        {/* Subject + Comparable markers — clustered together */}
+        <ComparableClusterLayer
+          comparables={adoptedComparables}
+          compCoords={compCoords}
+          onRemoveComparable={onRemoveComparable}
+          subjectLat={subjectLat}
+          subjectLon={subjectLon}
+          subjectAddress={subjectAddress}
+          subjectEpc={subjectEpc ?? null}
+          subjectFloodRisk={subjectFloodRisk ?? null}
+        />
 
-        {/* Comparable markers */}
-        {adoptedComparables.map((comp, i) => {
-          const coords = compCoords[comp.postcode];
-          if (!coords) return null;
-          const psf = fmtPsf(comp);
-          return (
-            <Marker key={comp.transaction_id ?? i} position={[coords.lat, coords.lon]} icon={compIcon}>
-              <Popup className="propval-popup" minWidth={200}>
-                <div style={{ fontSize: 10, color: "#FF2D78", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 6 }}>
-                  Comparable {i + 1}
-                </div>
-                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, lineHeight: 1.4, color: "#E2E8F0" }}>
-                  {comp.address}
-                </div>
-                <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 10, color: "#94A3B8", textTransform: "uppercase" }}>Price</span>
-                  <span style={{ fontWeight: 700, color: "#E2E8F0" }}>{fmtPrice(comp.price)}</span>
-                </div>
-                {psf && (
-                  <div style={{ marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 10, color: "#94A3B8", textTransform: "uppercase" }}>Rate</span>
-                    <span style={{ fontWeight: 600, color: "#67E8F9" }}>{psf}</span>
-                  </div>
-                )}
-                <div style={{ marginBottom: onRemoveComparable ? 8 : 0, display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 10, color: "#94A3B8", textTransform: "uppercase" }}>Date</span>
-                  <span style={{ color: "#E2E8F0" }}>{comp.transaction_date.slice(0, 7)}</span>
-                </div>
-                {onRemoveComparable && (
-                  <button
-                    onClick={() => onRemoveComparable(comp)}
-                    style={{
-                      width: "100%", padding: "5px 0", fontSize: 10, fontWeight: 700,
-                      textTransform: "uppercase", letterSpacing: "0.06em",
-                      background: "#FF3131", color: "#fff", border: "none",
-                      borderRadius: 4, cursor: "pointer",
-                      transition: "background 0.15s",
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#E02020")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "#FF3131")}
-                  >
-                    Remove Comparable
-                  </button>
-                )}
-              </Popup>
-            </Marker>
-          );
-        })}
+        {/* Listed buildings (Heritage) — clustered */}
+        {showHeritage && heritageData && heritageData.length > 0 && (
+          <HeritageClusterLayer buildings={heritageData} />
+        )}
       </MapContainer>
 
       {/* ── Floating: Legend (top-left, below scale bar) ──────────────── */}
@@ -1228,6 +1519,13 @@ export default function PropertyMap({
           </div>
         )}
         {showCrime && <LegendItem color="#DC2626" label="Crime hotspot" />}
+        {showHeritage && (
+          <>
+            <LegendItem color="#FF3131" label="Grade I Listed" />
+            <LegendItem color="#FFB800" label="Grade II* Listed" />
+            <LegendItem color="#67E8F9" label="Grade II Listed" />
+          </>
+        )}
         {showDeprivation && (
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             <span style={{ fontSize: 9, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.06em" }}>IMD Deprivation</span>
@@ -1261,6 +1559,59 @@ export default function PropertyMap({
 }
 
 // ── Small UI components ───────────────────────────────────────────────────────
+
+function ToggleBtnGroup({ label, color, active, children }: {
+  label: string; color: string; active: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleEnter = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setOpen(true);
+  };
+  const handleLeave = () => {
+    timeoutRef.current = setTimeout(() => setOpen(false), 200);
+  };
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+    >
+      <button
+        style={{
+          padding: "4px 8px", fontSize: 10, fontWeight: 600,
+          letterSpacing: "0.04em", cursor: "pointer", borderRadius: 6,
+          background: active ? color : "rgba(10, 14, 26, 0.85)",
+          backdropFilter: active ? undefined : "blur(8px)",
+          color: active ? "#fff" : "#94A3B8",
+          border: `1px solid ${active ? color : "#334155"}`,
+          boxShadow: active ? `0 0 10px ${color}66, 0 2px 8px rgba(0,0,0,0.4)` : "0 2px 8px rgba(0,0,0,0.3)",
+          transition: "all 0.2s",
+          display: "flex", alignItems: "center", gap: 4,
+        }}
+      >
+        {label}
+        <span style={{ fontSize: 8, opacity: 0.7 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", right: 0,
+          display: "flex", flexDirection: "column", gap: 3,
+          background: "rgba(10, 14, 26, 0.95)", backdropFilter: "blur(12px)",
+          border: "1px solid #334155", borderRadius: 8,
+          padding: 4, minWidth: 110,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.6)",
+          zIndex: 1001,
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ToggleBtn({ label, active, color, onClick }: {
   label: string; active: boolean; color: string; onClick: () => void;

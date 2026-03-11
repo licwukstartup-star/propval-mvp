@@ -106,6 +106,7 @@ class SaveCaseRequest(BaseModel):
     firm_reference: str | None = None
     ai_narrative: dict | None = None
     report_content: dict | None = None
+    ui_state: dict | None = None
 
 
 class UpdateCaseRequest(BaseModel):
@@ -120,6 +121,7 @@ class UpdateCaseRequest(BaseModel):
     firm_reference: str | None = None
     ai_narrative: dict | None = None
     report_content: dict | None = None
+    ui_state: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +160,7 @@ async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user
         "notes": body.notes,
         "ai_narrative": body.ai_narrative,
         "report_content": body.report_content,
+        "ui_state": body.ui_state or {},
     }
     resp = _sb().table("cases").insert(row).execute()
     return resp.data[0]

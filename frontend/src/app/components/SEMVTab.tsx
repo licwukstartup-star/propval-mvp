@@ -267,8 +267,8 @@ function runMonteCarlo(
     }
 
     // Randomness 2 — Adjustment parameters
-    const passthroughRate = rng() * 0.5; // Uniform[0, 0.5] — most valuers apply partial HPI indexation
-    const betaEpc = rng() * 0.003; // Uniform[0, 0.003] — EPC point sensitivity
+    const passthroughRate = rng(); // Uniform[0, 1] — full range of HPI indexation
+    const betaEpc = rng() * 0.005; // Uniform[0, 0.005] — 0–0.5% per EPC point
     const sizeAlpha = rng() * 0.5; // Uniform[0, 0.5] — size elasticity, capped at 50%
     const floorPremium = 0.001 + rng() * 0.019; // Uniform[0.1%, 2%] per floor — higher floor = more expensive
 
@@ -907,14 +907,14 @@ export default function SEMVTab({
                     const compHpi = getHpiForMonth(hpiTrend, txMonth, c);
                     const subjectProxy = { ...c, property_type: subjectPropertyType, house_sub_type: subjectHouseSubType } as ComparableCandidate;
                     const subHpi = getHpiForMonth(hpiTrend, valMonth, subjectProxy);
-                    // Midpoint adjustments: passthrough 0.25, betaEpc 0.0015, sizeAlpha 0.25, floorPremium 1%
+                    // Midpoint adjustments: passthrough 0.5, betaEpc 0.0015, sizeAlpha 0.25, floorPremium 1%
                     let timeAdj = 0;
                     if (compHpi != null && subHpi != null && compHpi > 0) {
                       timeAdj = ((subHpi - compHpi) / compHpi) * 0.25;
                     }
                     let epcAdj = 0;
                     if (subjectEpcScore != null && c.epc_score != null && c.epc_score > 0) {
-                      epcAdj = (subjectEpcScore - c.epc_score) * 0.0015;
+                      epcAdj = (subjectEpcScore - c.epc_score) * 0.0025;
                     }
                     let sizeAdj = 0.25 * (subjectSizeSqft - sqft) / sqft;
                     let floorAdj = 0;
@@ -981,7 +981,7 @@ export default function SEMVTab({
       <p className="text-[10px] text-[#475569] text-center leading-relaxed max-w-2xl mx-auto">
         SEMV V1.0 &middot; 100,000 Monte Carlo simulations &middot;
         Hard size gate &plusmn;25% &middot; Similarity-biased selection &amp; weighting &middot;
-        Size &alpha; [0–0.5], floor premium [0.1–2%/floor], time passthrough [0–0.5], EPC &beta; [0–0.003] &middot;
+        Size &alpha; [0–0.5], floor premium [0.1–2%/floor], time passthrough [0–1], EPC &beta; [0–0.5%] &middot;
         Layer 1 = HMLR observable universe &middot; Layer 2 = unregistered (unobservable) &middot;
         Layer 3 = surveyor adopted &middot;
         Confidence assessment only — this is not a valuation

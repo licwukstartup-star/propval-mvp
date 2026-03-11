@@ -15,7 +15,7 @@ export default function Navbar() {
 
   const handleLogoClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    saveBeforeNavigate();
+    // propval-reset-home handler awaits the save itself — no fire-and-forget needed
     window.dispatchEvent(new CustomEvent('propval-reset-home'));
   };
 

@@ -490,7 +490,7 @@ export default function Home() {
   const [outwardSearchResult, setOutwardSearchResult] = useState<SearchResponse | null>(null);
   const [adoptedComparables, setAdoptedComparables] = useState<ComparableCandidate[]>([]);
   const [hpiCorrelation, setHpiCorrelation] = useState(100);
-  const [sizeElasticity, setSizeElasticity] = useState(0); // β in percent (0–50)
+  const [sizeElasticity, setSizeElasticity] = useState(15); // β in percent (0–50)
   const [valuationDate, setValuationDate] = useState("");
   const [cardSizes, setCardSizes] = useState<Record<string, CardSizeKey>>({ ...PROP_CARD_DEFAULTS });
   const [isCustomising, setIsCustomising] = useState(false);
@@ -520,6 +520,7 @@ export default function Home() {
   const [mapShowCrime, setMapShowCrime] = useState(false);
   const [mapShowIncome, setMapShowIncome] = useState(false);
   const [mapShowEducation, setMapShowEducation] = useState(false);
+  const [mapShowHeritage, setMapShowHeritage] = useState(false);
   const [mapTileLayer, setMapTileLayer] = useState<"dark" | "satellite" | "street">("dark");
   const [mapLandUseCache, setMapLandUseCache] = useState<GeoJSON.FeatureCollection | null>(null);
   const [mapImdCache, setMapImdCache] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -657,8 +658,10 @@ export default function Home() {
   const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedAtRef = useRef(0);   // timestamp of last case load — suppress auto-save for 3s after
   const [pendingExitAfterSave, setPendingExitAfterSave] = useState(false);
   const pendingExitRef = useRef(false);
+  const [pendingHomeReset, setPendingHomeReset] = useState(false);
   const [casesFilter, setCasesFilter] = useState<string>("all");
   const [casesSort, setCasesSort] = useState<string>("updated");
   const [casesSortDir, setCasesSortDir] = useState<"asc" | "desc">("desc");
@@ -710,6 +713,19 @@ export default function Home() {
     setManualMode(false);
   }, []);
 
+  // Keep UI state in a ref so fire-and-forget save always captures latest
+  const uiStateRef = useRef<Record<string, unknown>>({});
+  uiStateRef.current = {
+    activeTab,
+    cardSizes,
+    mapLayers: {
+      flood: mapShowFlood, rings: mapShowRings, landUse: mapShowLandUse,
+      deprivation: mapShowDeprivation, roadNoise: mapShowRoadNoise, railNoise: mapShowRailNoise,
+      crime: mapShowCrime, income: mapShowIncome, education: mapShowEducation, heritage: mapShowHeritage,
+    },
+    mapTileLayer,
+  };
+
   async function saveCase(silent = false) {
     if (!result || !session?.access_token) return;
     if (!silent) setSavingCase(true);
@@ -719,8 +735,8 @@ export default function Home() {
       const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
       const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
       const payload = currentCaseId
-        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent }
-        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent };
+        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current }
+        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -751,7 +767,7 @@ export default function Home() {
     if (!currentCaseId || !result || !session?.access_token) return;
     if (["issued", "archived"].includes(currentCaseStatus)) return;
     const url = `${API_BASE}/api/cases/${currentCaseId}`;
-    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent };
+    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
     try {
       fetch(url, {
         method: "PATCH",
@@ -775,12 +791,16 @@ export default function Home() {
   useEffect(() => {
     if (!currentCaseId || ["issued", "archived"].includes(currentCaseStatus)) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    // Skip auto-save for 3s after loading a case (avoids race with stale state)
+    if (Date.now() - loadedAtRef.current < 3000) return;
     autoSaveTimerRef.current = setTimeout(() => {
       saveCaseRef.current(true);
-    }, 3000);
+    }, 1500);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, currentCaseId, currentCaseStatus]);
+  }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, currentCaseId, currentCaseStatus,
+      activeTab, cardSizes, mapShowFlood, mapShowRings, mapShowLandUse, mapShowDeprivation,
+      mapShowRoadNoise, mapShowRailNoise, mapShowCrime, mapShowIncome, mapShowEducation, mapShowHeritage, mapTileLayer]);
 
   async function loadCase(c: SavedCaseSummary) {
     if (!session?.access_token) return;
@@ -796,6 +816,7 @@ export default function Home() {
       if (!res.ok) throw new Error("Load failed");
       const data = await res.json();
       const snapshot = (data.property_snapshot ?? data.property_data) as PropertyResult;
+      loadedAtRef.current = Date.now();  // suppress auto-save during state restoration
       setResult(snapshot);
       setEnrichSlowDone(true);  // saved case already enriched
       setAdoptedComparables(data.comparables ?? []);
@@ -845,7 +866,29 @@ export default function Home() {
       setSaveCaseType(data.case_type ?? "research");
       setCurrentCaseStatus(data.status === "draft" ? "in_progress" : (data.status ?? "in_progress"));
       setAddress(data.address);
-      setActiveTab("property");
+
+      // Restore UI state (tab, map layers, card sizes)
+      const ui = data.ui_state;
+      if (ui) {
+        setActiveTab(ui.activeTab ?? "property");
+        if (ui.cardSizes) setCardSizes(ui.cardSizes);
+        if (ui.mapLayers) {
+          setMapShowFlood(ui.mapLayers.flood ?? false);
+          setMapShowRings(ui.mapLayers.rings ?? true);
+          setMapShowLandUse(ui.mapLayers.landUse ?? true);
+          setMapShowDeprivation(ui.mapLayers.deprivation ?? false);
+          setMapShowRoadNoise(ui.mapLayers.roadNoise ?? false);
+          setMapShowRailNoise(ui.mapLayers.railNoise ?? false);
+          setMapShowCrime(ui.mapLayers.crime ?? false);
+          setMapShowIncome(ui.mapLayers.income ?? false);
+          setMapShowEducation(ui.mapLayers.education ?? false);
+          setMapShowHeritage(ui.mapLayers.heritage ?? false);
+        }
+        if (ui.mapTileLayer) setMapTileLayer(ui.mapTileLayer);
+      } else {
+        setActiveTab("property");
+      }
+
       setShowCasesPanel(false);
       setError(null);
     } catch { alert("Failed to load case."); }
@@ -891,19 +934,16 @@ export default function Home() {
     // Navbar navigation intercept: save before navigating away
     const onBeforeNavigate = () => { fireAndForgetSaveRef.current(); };
     window.addEventListener("propval-before-navigate", onBeforeNavigate);
-    // Logo / Save & Exit: save + reset to clean search-only state
+    // Logo click: set flag → useEffect handles save + reset
     const onResetHome = () => {
-      // If there's an unsaved new case (result exists but never saved), prompt to save first
       if (resultRef.current && !currentCaseIdRef.current) {
         if (confirm("You have unsaved work. Save before exiting?")) {
           setShowSaveDialog(true);
           setPendingExitAfterSave(true);
-          return; // Don't reset yet — will reset after save completes
+          return;
         }
-      } else {
-        fireAndForgetSaveRef.current();
       }
-      doResetHome();
+      setPendingHomeReset(true);
     };
     window.addEventListener("propval-reset-home", onResetHome);
     return () => {
@@ -915,6 +955,23 @@ export default function Home() {
       window.removeEventListener("propval-reset-home", onResetHome);
     };
   }, [fetchCases]);
+
+  // Handle PropVal logo click: save current case (with ui_state) then reset
+  useEffect(() => {
+    if (!pendingHomeReset) return;
+    let cancelled = false;
+    (async () => {
+      if (currentCaseId && !["issued", "archived"].includes(currentCaseStatus)) {
+        await saveCaseRef.current(true);
+      }
+      if (!cancelled) {
+        setPendingHomeReset(false);
+        doResetHome();
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingHomeReset]);
 
   useEffect(() => {
     try {
@@ -1528,7 +1585,17 @@ export default function Home() {
                 </button>
               )}
               <button
-                onClick={() => window.dispatchEvent(new CustomEvent('propval-reset-home'))}
+                onClick={async () => {
+                  if (currentCaseId) {
+                    await saveCase(true);
+                    doResetHome();
+                  } else if (result) {
+                    setPendingExitAfterSave(true);
+                    setShowSaveDialog(true);
+                  } else {
+                    doResetHome();
+                  }
+                }}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border transition-all"
                 style={{
                   background: 'linear-gradient(135deg, #FF2D78 0%, #7B2FBE 100%)',
@@ -1591,7 +1658,7 @@ export default function Home() {
           </div>
 
           {/* ── Tab 1: Property Information ─────────────────────────────────── */}
-          <div style={{ display: activeTab === "property" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "property" ? undefined : "none" }}>
             <div className="space-y-5">
 
             {/* Search bar — disabled while a case is loaded (Save & Exit to unlock) */}
@@ -2219,12 +2286,12 @@ export default function Home() {
               {/* Listed Buildings section */}
               <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
                 <h3 className="text-xs font-orbitron text-[#00F0FF] tracking-[3px] uppercase">Listed Buildings</h3>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Historic England NHLE — within 75 m</p>
+                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Historic England NHLE — within 50 m</p>
               </div>
               {(result.listed_buildings ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-3 border-b border-[#334155]/60">
                   <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">No listed buildings within 75 m</p>
+                  <p className="text-sm text-[#94A3B8]">No listed buildings within 50 m</p>
                 </div>
               ) : (
                 <ul className="divide-y divide-[#334155]/60 border-b border-[#334155]/60">
@@ -2495,152 +2562,6 @@ export default function Home() {
             })()}
             </PropCard>
 
-            {/* ── AI-Assisted Narrative Basic Testing ──────────────────────────────────────── */}
-            <div className="col-span-full">
-              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden" style={{ borderLeft: "3px solid #6366F1" }}>
-                <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#6366F1] text-[10px] tracking-[3px] uppercase">AI-Assisted Narrative Basic Testing</h2>
-                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Generated draft — surveyor review required</p>
-                </div>
-                <div className="px-6 py-4 space-y-5">
-                  {([
-                    { key: "location_summary" as const, label: "Location & Neighbourhood" },
-                    { key: "property_overview" as const, label: "Property Overview" },
-                    { key: "market_context" as const, label: "Market Context" },
-                  ]).map(({ key, label }) => {
-                    const text = aiNarrative?.[key];
-                    const isLoading = aiNarrativeLoading[key];
-                    return (
-                      <div key={key} className="rounded-lg p-4" style={{ backgroundColor: '#0A0E1A', border: '1px solid #1E293B' }}>
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="text-xs font-semibold text-[#A5B4FC] uppercase tracking-wider">{label}</h3>
-                          {!text && !isLoading && (
-                            <button
-                              onClick={async () => {
-                                if (!result || !session?.access_token) return;
-                                setAiNarrativeLoading(prev => ({ ...prev, [key]: true }));
-                                try {
-                                  const res = await fetch(`${API_BASE}/api/property/ai-narrative`, {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-                                    body: JSON.stringify({ ...result, requested_section: key }),
-                                  });
-                                  if (!res.ok) throw new Error("Failed");
-                                  const d = await res.json();
-                                  setAiNarrative(prev => ({
-                                    location_summary: d.location_summary || prev?.location_summary || null,
-                                    property_overview: d.property_overview || prev?.property_overview || null,
-                                    market_context: d.market_context || prev?.market_context || null,
-                                  }));
-                                } catch { /* ignore */ }
-                                finally { setAiNarrativeLoading(prev => ({ ...prev, [key]: false })); }
-                              }}
-                              className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-all hover:brightness-110"
-                              style={{ backgroundColor: '#6366F122', color: '#A5B4FC', border: '1px solid #6366F144' }}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a4 4 0 0 0-4 4c0 2 2 3 2 6H8l4 4 4-4h-2c0-3 2-4 2-6a4 4 0 0 0-4-4z"/><path d="M8 16h8"/><path d="M9 20h6"/></svg>
-                              Generate
-                            </button>
-                          )}
-                          {text && !isLoading && !aiNarrativeEditing[key] && (
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                onClick={() => {
-                                  setAiNarrativeEditing(prev => ({ ...prev, [key]: true }));
-                                }}
-                                className="text-[9px] px-2 py-0.5 rounded transition-all hover:brightness-110"
-                                style={{ color: '#A5B4FC', border: '1px solid #6366F144' }}
-                                title="Edit this section"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                onClick={async () => {
-                                  if (!result || !session?.access_token) return;
-                                  setAiNarrativeLoading(prev => ({ ...prev, [key]: true }));
-                                  try {
-                                    const res = await fetch(`${API_BASE}/api/property/ai-narrative`, {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-                                      body: JSON.stringify({ ...result, requested_section: key }),
-                                    });
-                                    if (!res.ok) throw new Error("Failed");
-                                    const d = await res.json();
-                                    setAiNarrative(prev => ({
-                                      location_summary: d.location_summary || prev?.location_summary || null,
-                                      property_overview: d.property_overview || prev?.property_overview || null,
-                                      market_context: d.market_context || prev?.market_context || null,
-                                    }));
-                                  } catch { /* ignore */ }
-                                  finally { setAiNarrativeLoading(prev => ({ ...prev, [key]: false })); }
-                                }}
-                                className="text-[9px] px-2 py-0.5 rounded transition-all hover:brightness-110"
-                                style={{ color: '#94A3B8', border: '1px solid #334155' }}
-                                title="Regenerate this section"
-                              >
-                                Regenerate
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                        {isLoading ? (
-                          <div className="animate-pulse space-y-1.5">
-                            <div className="h-3 w-full bg-[#1E293B] rounded" />
-                            <div className="h-3 w-5/6 bg-[#1E293B] rounded" />
-                            <div className="h-3 w-4/6 bg-[#1E293B] rounded" />
-                            <p className="text-[10px] text-[#94A3B8]/50 mt-2">Generating...</p>
-                          </div>
-                        ) : aiNarrativeEditing[key] ? (
-                          <>
-                            <textarea
-                              ref={el => { aiEditRefs.current[key] = el; }}
-                              defaultValue={text || ""}
-                              className="w-full text-sm leading-relaxed rounded-lg p-3 resize-y focus:outline-none focus:ring-1"
-                              style={{ backgroundColor: '#111827', color: '#E2E8F0', border: '1px solid #334155', minHeight: 100 }}
-                              rows={4}
-                              autoFocus
-                            />
-                            <div className="flex items-center gap-2 mt-2">
-                              <button
-                                onClick={() => {
-                                  const val = aiEditRefs.current[key]?.value.trim() || null;
-                                  setAiNarrative(prev => ({
-                                    location_summary: prev?.location_summary || null,
-                                    property_overview: prev?.property_overview || null,
-                                    market_context: prev?.market_context || null,
-                                    [key]: val,
-                                  }));
-                                  setAiNarrativeEditing(prev => ({ ...prev, [key]: false }));
-                                }}
-                                className="text-[10px] px-3 py-1 rounded-md font-semibold transition-all hover:brightness-110"
-                                style={{ backgroundColor: '#6366F1', color: '#FFFFFF' }}
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => setAiNarrativeEditing(prev => ({ ...prev, [key]: false }))}
-                                className="text-[10px] px-3 py-1 rounded-md transition-all hover:brightness-110"
-                                style={{ color: '#94A3B8', border: '1px solid #334155' }}
-                              >
-                                Cancel
-                              </button>
-                              <p className="text-[9px] ml-auto italic" style={{ color: '#94A3B8' }}>Surveyor edits override AI draft</p>
-                            </div>
-                          </>
-                        ) : text ? (
-                          <>
-                            <p className="text-sm text-[#E2E8F0] leading-relaxed">{text}</p>
-                            <p className="text-[10px] text-[#94A3B8]/40 mt-1.5 italic">AI-assisted draft — surveyor review required</p>
-                          </>
-                        ) : (
-                          <p className="text-xs text-[#94A3B8]/40 italic">Click Generate to create this section</p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
 
             </div>
 
@@ -2648,7 +2569,7 @@ export default function Home() {
           </div>{/* /property tab */}
 
           {/* ── Tab 2: Same Building Sales ───────────────────────────────────── */}
-          <div style={{ display: activeTab === "comparables" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "comparables" ? undefined : "none" }}>
             <ComparableSearch
               key={`building-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
               mode="building"
@@ -2695,7 +2616,7 @@ export default function Home() {
           </div>
 
           {/* ── Tab 4: Adopted Comparables ───────────────────────────────────── */}
-          <div style={{ display: activeTab === "adopted" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "adopted" ? undefined : "none" }}>
             {adoptedComparables.length === 0 ? (
               <div className="text-center py-16 text-[#94A3B8]/70 space-y-2">
                 <p className="text-4xl">📋</p>
@@ -2955,6 +2876,7 @@ export default function Home() {
             const mvStr = reportContent?.valuer_inputs?.market_value ?? "";
             const mvNum = parseFloat(mvStr.replace(/,/g, "")) || null;
             return (
+              <div className="pb-8">
               <SEMVTab
                 layer1Comps={layer1Deduped}
                 adoptedComparables={adoptedComparables}
@@ -2967,11 +2889,12 @@ export default function Home() {
                 subjectEpcScore={result?.energy_score ?? null}
                 subjectSaon={result?.saon ?? null}
               />
+              </div>
             );
           })()}
 
           {/* ── Tab 5: Report (Print Preview) ──────────────────────────────── */}
-          <div style={{ display: activeTab === "report" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "report" ? undefined : "none" }}>
             <ReportPreview result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} valuationDate={valuationDate} />
           </div>
 
@@ -3008,6 +2931,7 @@ export default function Home() {
                 showCrime={mapShowCrime} onShowCrimeChange={setMapShowCrime}
                 showIncome={mapShowIncome} onShowIncomeChange={setMapShowIncome}
                 showEducation={mapShowEducation} onShowEducationChange={setMapShowEducation}
+                showHeritage={mapShowHeritage} onShowHeritageChange={setMapShowHeritage}
                 tileLayer={mapTileLayer} onTileLayerChange={setMapTileLayer}
                 incomeCache={mapIncomeCache} onIncomeCacheChange={setMapIncomeCache}
                 educationCache={mapEducationCache} onEducationCacheChange={setMapEducationCache}
@@ -3033,7 +2957,7 @@ export default function Home() {
             token={session?.access_token}
             onHpi={(hpi) => setResult(prev => prev ? { ...prev, hpi } : prev)}
           />
-          <div style={{ display: activeTab === "hpi" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "hpi" ? undefined : "none" }}>
             {!result.hpi ? (
               <div className="text-center py-20 text-[#94A3B8]/70 space-y-2">
                 <p className="text-4xl">📊</p>
@@ -3241,7 +3165,7 @@ export default function Home() {
           </div>
 
           {/* ── Tab: Report Typing ─────────────────────────────────────────────── */}
-          <div style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
+          <div className="pb-8" style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
             <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} />
           </div>
 
