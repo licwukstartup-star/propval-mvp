@@ -1,0 +1,13 @@
+{
+  "total_polygons": 62280,
+  "skipped": 0,
+  "area_sqm": {
+    "min": 0.1,
+    "p10": 83.3,
+    "median": 255.0,
+    "p90": 740.1,
+    "max": 1616690.2,
+    "mean": 745.4
+  },
+  "residential_range_note": "Typical UK residential plots: 50\u2013500 sqm. Large polygons (>2000 sqm) are likely commercial/industrial."
+}
