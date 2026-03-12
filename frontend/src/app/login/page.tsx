@@ -87,10 +87,11 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 rounded-lg font-semibold transition-opacity disabled:opacity-50"
+            className="w-full py-2.5 rounded-lg font-semibold transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
             style={{ backgroundColor: '#00F0FF', color: '#0a0e1a' }}
           >
-            {loading ? 'Signing in...' : 'Sign in'}
+            {loading && <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>}
+            {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
 

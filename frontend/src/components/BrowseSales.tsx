@@ -604,9 +604,10 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
             <option value="Y">New Build</option>
           </select>
 
-          <button onClick={() => { setFetched(false); }}
-            className="px-2.5 py-1 text-[10px] font-medium rounded bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/80 transition-colors">
-            Apply
+          <button onClick={() => { setFetched(false); }} disabled={loading}
+            className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {loading && <svg className="animate-spin h-2.5 w-2.5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>}
+            {loading ? "Loading…" : "Apply"}
           </button>
           <button onClick={() => { fetchData(true); }} disabled={loading}
             className="px-2.5 py-1 text-[10px] font-medium rounded border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#94A3B8] transition-colors disabled:opacity-40"

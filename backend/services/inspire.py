@@ -54,15 +54,18 @@ class InspireService:
         except ImportError:
             log.warning("INSPIRE: scipy not available — INSPIRE lookup disabled")
 
-    def lookup(self, lat: float, lng: float, max_dist_m: float = 200.0) -> dict | None:
+    def lookup(self, lat: float, lng: float, max_dist_m: float = 350.0) -> dict | None:
         """
         Return the nearest INSPIRE centroid within max_dist_m metres, or None.
 
         Args:
             lat, lng: WGS84 coordinates to query (e.g. postcode centroid).
-            max_dist_m: reject matches beyond this distance. Default 200m covers
-                        all London postcodes (largest outer-London postcodes are
-                        ~120m radius; 200m gives comfortable headroom).
+            max_dist_m: reject matches beyond this distance. Default 350m —
+                        the KDTree computes Euclidean degree-space distance and
+                        converts with 111,000 m/deg, but at 51.5°N longitude
+                        degrees are only ~69,000 m, so E/W displacements are
+                        overestimated by ~60%. 350m here reliably covers a true
+                        200m radius across all compass directions.
 
         Returns:
             {"lat": float, "lng": float, "area_sqm": float} or None.

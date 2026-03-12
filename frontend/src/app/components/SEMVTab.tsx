@@ -383,6 +383,8 @@ function PdfChart({
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
+  if (simMVs.length < 2) return null;
+
   const bins = 70;
   const minV = simMVs[0];
   const maxV = simMVs[simMVs.length - 1];

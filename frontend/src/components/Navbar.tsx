@@ -15,14 +15,22 @@ export default function Navbar() {
 
   const handleLogoClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    // propval-reset-home handler awaits the save itself — no fire-and-forget needed
+    // Fire the reset event (home page listens to this to clear state)
     window.dispatchEvent(new CustomEvent('propval-reset-home'));
+    // Always navigate to home — event listener on home page handles the reset if present
+    router.push('/');
   };
 
   const handleAdminClick = (e: React.MouseEvent) => {
     e.preventDefault();
     saveBeforeNavigate();
     router.push('/admin');
+  };
+
+  const handleNewsClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    saveBeforeNavigate();
+    router.push('/news');
   };
 
   const handleSignOut = () => {
@@ -46,8 +54,22 @@ export default function Navbar() {
       </a>
 
       <div className="flex items-center gap-4">
+        <a
+          href="/news"
+          onClick={handleNewsClick}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors"
+          style={{ borderColor: '#00f0ff33', color: '#8888aa' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#00f0ff'; (e.currentTarget as HTMLElement).style.borderColor = '#00f0ff66'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#8888aa'; (e.currentTarget as HTMLElement).style.borderColor = '#00f0ff33'; }}
+        >
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: '#00f0ff' }} />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: '#00f0ff' }} />
+          </span>
+          Market Intelligence
+        </a>
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('open-my-cases'))}
+          onClick={() => { router.push('/'); setTimeout(() => window.dispatchEvent(new CustomEvent('open-my-cases')), 100); }}
           className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg border transition-colors shadow-[0_0_8px_#00F0FF20]"
           style={{ borderColor: '#00F0FF66', color: '#00F0FF' }}
           onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#00F0FF1a'; e.currentTarget.style.borderColor = '#00F0FF99'; }}

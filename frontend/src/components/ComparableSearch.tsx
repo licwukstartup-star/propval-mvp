@@ -174,7 +174,7 @@ export default function ComparableSearch({
   excludeIds = [], excludeAddressKeys = [],
   onAdopt, onAdoptAll, onUnadoptAll, adoptedIds = new Set(),
   valuationDate, onValuationDateChange,
-  uprn, postcode, floorArea, rooms, ageBand, epcRating,
+  uprn, lat, lon, postcode, floorArea, rooms, ageBand, epcRating,
   propertyType, builtForm, tenure, buildingName, paonNumber, saon, streetName,
 }: Props) {
   const { session } = useAuth();
@@ -229,6 +229,8 @@ export default function ComparableSearch({
         address:       address || postcode,
         postcode:      postcode,
         uprn:          uprn ?? undefined,
+        lat:           lat ?? undefined,
+        lon:           lon ?? undefined,
         tenure:        normTenure,
         property_type: propType,
         house_sub_type: subType,
