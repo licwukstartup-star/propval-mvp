@@ -36,14 +36,14 @@ Started: 2026-03-11
 | 30 | tower_hamlets | ✅ done | 3.5 MB | |
 | 31 | waltham_forest | ✅ done | 7.7 MB | |
 | 32 | wandsworth | ✅ done | 7.0 MB | |
-| 33 | westminster | ❌ failed | — | HMLR server redirect loop (30 redirects). Retry tomorrow. |
+| 33 | westminster | ✅ done | ~5 MB | Manual download (City_of_Westminster.zip), renamed to westminster.zip |
 
 ## Summary
 - Total: 33 boroughs
-- Downloaded: **32 / 33** (westminster pending)
-- GeoJSON converted: **32 / 33**
-- Centroids extracted: **32 / 33**
-- Production file: `inspire_centroids_london.json` — **119.1 MB, 2,033,242 unique polygons**
+- Downloaded: **33 / 33** ✅ COMPLETE
+- GeoJSON converted: **33 / 33** ✅ COMPLETE
+- Centroids extracted: **33 / 33** ✅ COMPLETE
+- Production file: `inspire_centroids_london.json` — **120.7 MB, 2,061,222 unique polygons**
 
 ## Next Steps
 1. Retry Westminster: `py -3.11 scripts/00_batch_download_inspire.py --slug westminster`
