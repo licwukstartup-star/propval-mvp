@@ -685,7 +685,7 @@ _EPC_FIELDS = [
     "postcode", "property-type", "built-form", "total-floor-area",
     "number-habitable-rooms", "current-energy-rating", "current-energy-efficiency",
     "construction-year", "construction-age-band", "tenure",
-    "lodgement-date",
+    "lodgement-date", "uprn", "uprn-source",
 ]
 
 
@@ -785,6 +785,8 @@ def _epc_row_to_db(row: dict, outward: str) -> dict | None:
         "construction_age":  row.get("construction-age-band", "").strip(),
         "tenure":            row.get("tenure", "").strip(),
         "lodgement_date":    row.get("lodgement-date", "") or None,
+        "uprn":              row.get("uprn", "") or None,
+        "uprn_source":       row.get("uprn-source", "") or None,
     }
 
 
@@ -922,16 +924,42 @@ async def query_epc_cached(postcode: str) -> list[dict]:
     return await asyncio.to_thread(_query_epc_by_postcode_sync, postcode.strip().upper())
 
 
+_EPC_OUTWARD_COLS = (
+    "postcode,address1,address2,address3,"
+    "number_rooms,floor_area,energy_rating,energy_score,"
+    "construction_year,construction_age,property_type,built_form,"
+    "uprn,uprn_source"
+)
+
+
 def _query_epc_by_outward_sync(outward: str) -> list[dict]:
-    """Get cached EPC records for an outward code (only columns needed for matching)."""
+    """Get cached EPC records for an outward code (columns needed for EpcIndex)."""
     sb = _get_sb()
-    _EPC_COLS = "postcode,address1,address2,address3,number_rooms,floor_area,energy_rating,energy_score,construction_year"
     all_rows: list[dict] = []
     offset = 0
     while True:
         resp = sb.table("epc_cache") \
-            .select(_EPC_COLS) \
+            .select(_EPC_OUTWARD_COLS) \
             .eq("outward_code", outward) \
+            .range(offset, offset + 999) \
+            .execute()
+        rows = resp.data or []
+        all_rows.extend(rows)
+        if len(rows) < 1000:
+            break
+        offset += 1000
+    return all_rows
+
+
+def _query_epc_outward_multi_sync(outward_codes: list[str]) -> list[dict]:
+    """Get cached EPC records for multiple outward codes in one IN query."""
+    sb = _get_sb()
+    all_rows: list[dict] = []
+    offset = 0
+    while True:
+        resp = sb.table("epc_cache") \
+            .select(_EPC_OUTWARD_COLS) \
+            .in_("outward_code", outward_codes) \
             .range(offset, offset + 999) \
             .execute()
         rows = resp.data or []
@@ -945,3 +973,11 @@ def _query_epc_by_outward_sync(outward: str) -> list[dict]:
 async def query_epc_outward(outward: str) -> list[dict]:
     """Get all cached EPC records for an outward code."""
     return await asyncio.to_thread(_query_epc_by_outward_sync, outward.strip().upper())
+
+
+async def query_epc_outward_multi(outward_codes: list[str]) -> list[dict]:
+    """Get all cached EPC records for multiple outward codes — single SQL round trip."""
+    if not outward_codes:
+        return []
+    codes = [oc.strip().upper() for oc in outward_codes]
+    return await asyncio.to_thread(_query_epc_outward_multi_sync, codes)

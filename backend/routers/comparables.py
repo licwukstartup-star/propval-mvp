@@ -133,6 +133,7 @@ class ComparableCandidate(BaseModel):
     tier_label:          str
     spec_relaxations:    list[str] = []
     time_window_months:  int
+    uprn:                str | None = None
     epc_matched:         bool = False
     epc_rating:          str | None = None   # e.g. "C"
     epc_score:           int | None = None   # e.g. 72
@@ -380,30 +381,100 @@ def _months_ago(tx_date_str: str, val_date: date) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# EPC cache (lazy, shared across tiers in one request)
+# EPC index — bulk Supabase cache with live API fallback
 # ---------------------------------------------------------------------------
 
-class EpcCache:
+# Translate bulk cache snake_case keys → live API hyphenated keys so _enrich()
+# works unchanged regardless of data source.
+_BULK_TO_API: dict[str, str] = {
+    "construction_year": "construction-year",
+    "construction_age":  "construction-age-band",
+    "property_type":     "property-type",
+    "built_form":        "built-form",
+    "number_rooms":      "number-habitable-rooms",
+    "floor_area":        "total-floor-area",
+    "energy_score":      "current-energy-efficiency",
+    "energy_rating":     "current-energy-rating",
+}
+
+
+def _translate_bulk_row(row: dict) -> dict:
+    """Return a copy of a bulk-cache row with field names matching the live EPC API."""
+    result = dict(row)
+    for snake, hyphen in _BULK_TO_API.items():
+        if snake in result:
+            result[hyphen] = result.pop(snake)
+    return result
+
+
+class EpcIndex:
+    """
+    Request-scoped EPC data store.
+
+    On preload(): loads entire outward code(s) from Supabase bulk cache in one
+    SQL query — no live API calls. Falls back to live EPC API per-postcode when
+    the bulk cache is cold (first search for that area).
+
+    Exposes the same .get(postcode) interface as the old EpcCache so _enrich()
+    and all callers are unchanged.
+    """
+
     def __init__(self, email: str, key: str):
-        self._email  = email
-        self._key    = key
-        self._sem    = asyncio.Semaphore(EPC_CONCURRENT)
-        self._data: dict[str, list[dict]] = {}
+        self._email = email
+        self._key   = key
+        self._sem   = asyncio.Semaphore(EPC_CONCURRENT)
+        # Postcodes with bulk-cache data loaded this request
+        self._bulk_loaded: set[str] = set()   # outward codes
+        # postcode → [epc_rows translated to live-API field names]
+        self._by_pc: dict[str, list[dict]] = {}
+        # Live API fallback: postcode → [epc_rows] (raw live format)
+        self._live: dict[str, list[dict]] = {}
+
+    async def preload(self, outward_codes: list[str]) -> None:
+        """Load bulk EPC cache for all outward codes. One SQL round trip."""
+        to_load = [oc for oc in outward_codes if oc not in self._bulk_loaded]
+        if not to_load:
+            return
+        rows = await ppd_cache.query_epc_outward_multi(to_load)
+        for row in rows:
+            pc = (row.get("postcode") or "").strip().upper()
+            if pc:
+                self._by_pc.setdefault(pc, []).append(_translate_bulk_row(row))
+        for oc in to_load:
+            self._bulk_loaded.add(oc)
+        logging.warning(
+            "⏱ EpcIndex: loaded %d rows for outward=%s",
+            len(rows), to_load,
+        )
 
     async def get(self, postcode: str) -> list[dict]:
-        if postcode not in self._data:
-            self._data[postcode] = await self._fetch(postcode)
-        return self._data[postcode]
+        """Return EPC rows for a postcode. Bulk cache if warm, else live API."""
+        pc = postcode.strip().upper()
+        oc = _outward(pc)
+        if oc in self._bulk_loaded:
+            return self._by_pc.get(pc, [])
+        # Bulk cache cold — fall back to live API
+        if pc not in self._live:
+            self._live[pc] = await self._fetch_live(pc)
+        return self._live[pc]
 
     async def prefetch(self, postcodes: list[str]) -> None:
-        missing = [pc for pc in dict.fromkeys(postcodes) if pc not in self._data]
-        if missing:
-            tasks = {pc: self._fetch(pc) for pc in missing}
-            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-            for pc, r in zip(tasks.keys(), results):
-                self._data[pc] = r if isinstance(r, list) else []
+        """Prefetch live API for postcodes not covered by bulk cache.
+        No-op for postcodes whose outward code is already bulk-loaded."""
+        missing = [
+            pc for pc in dict.fromkeys(p.strip().upper() for p in postcodes)
+            if _outward(pc) not in self._bulk_loaded and pc not in self._live
+        ]
+        if not missing:
+            return
+        results = await asyncio.gather(
+            *[self._fetch_live(pc) for pc in missing],
+            return_exceptions=True,
+        )
+        for pc, r in zip(missing, results):
+            self._live[pc] = r if isinstance(r, list) else []
 
-    async def _fetch(self, postcode: str) -> list[dict]:
+    async def _fetch_live(self, postcode: str) -> list[dict]:
         async with self._sem:
             try:
                 c = _get_http_client()
@@ -619,6 +690,7 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
         postcode              = raw["postcode"],
         outward_code          = raw["outward_code"],
         saon                  = raw.get("saon") or None,
+        uprn                  = raw.get("epc_uprn"),
         tenure                = raw.get("tenure"),
         property_type         = raw.get("property_type"),
         house_sub_type        = raw.get("house_sub_type"),
@@ -651,7 +723,7 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
 async def _process_rows(
     rows:        list[dict],
     subject:     SubjectPropertyInput,
-    epc_cache:   EpcCache,
+    epc_cache:   EpcIndex,
     val_date:    date,
     seen:        set[str],
     relaxations: list[str],
@@ -806,7 +878,7 @@ async def _run_flat_tier(
     tier:                int,
     subject:             SubjectPropertyInput,
     sc:                  PpdCache,
-    epc:                 EpcCache,
+    epc:                 EpcIndex,
     val_date:            date,
     seen:                set[str],
     relax:               list[str],
@@ -925,7 +997,7 @@ async def _run_house_tier(
     tier:                int,
     subject:             SubjectPropertyInput,
     sc:                  PpdCache,
-    epc:                 EpcCache,
+    epc:                 EpcIndex,
     val_date:            date,
     seen:                set[str],
     relax:               list[str],
@@ -1082,7 +1154,7 @@ async def _orchestrate(
     Returns (raw_pool, total_candidates_scanned).
     """
     sc     = PpdCache(val_date=val_date)
-    epc    = EpcCache(epc_email, epc_key)
+    epc    = EpcIndex(epc_email, epc_key)
     pool:  list[dict] = []
     seen:  set[str]   = set(exclude_ids)   # pre-seed with already-found IDs from building search
     # Address keys to exclude: "SAON|POSTCODE" (uppercased) — blocks same flat/house from
@@ -1092,16 +1164,25 @@ async def _orchestrate(
     is_flat  = subject.property_type == "flat"
     oc       = _outward(subject.postcode)
 
-    # ── Step 1: ensure PPD cache is warm for all needed outward codes ─────
+    # ── Step 1: warm PPD cache + preload EPC index — all parallel ─────────
     _t0 = time.monotonic()
     adj = await _adjacent_outcodes(oc) if max_tier >= 4 else []
-    # Pre-download HMLR data for outward code + adjacents (if not already cached)
     codes_to_cache = [oc] + adj
+
+    # Fire EPC bulk cache warming in background (non-blocking — may take 30-60s
+    # on first run; subsequent requests hit the Supabase cache instantly).
+    for code in codes_to_cache:
+        asyncio.create_task(ppd_cache._ensure_epc_background(code))
+
+    # Block until PPD is warm (needed for queries), then load EPC index from
+    # whatever bulk cache rows are already available (may be partial on first run).
     await asyncio.gather(
         *[ppd_cache.ensure_cache(code) for code in codes_to_cache],
         return_exceptions=True,
     )
-    logging.warning("⏱ Comp: PPD cache warm in %.0fms — outward=%s adjacents=%s",
+    await epc.preload(codes_to_cache)
+
+    logging.warning("⏱ Comp: PPD+EPC warm in %.0fms — outward=%s adjacents=%s",
                     (time.monotonic() - _t0) * 1000, oc, adj)
 
     tier_fn = _run_flat_tier if is_flat else _run_house_tier

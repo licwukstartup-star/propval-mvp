@@ -1431,7 +1431,7 @@ export default function PropertyMap({
         <TileLayer
           url={tile.url}
           attribution={tile.attribution}
-          subdomains={tile.subdomains || undefined}
+          {...(tile.subdomains ? { subdomains: tile.subdomains } : {})}
           maxZoom={19}
         />
 

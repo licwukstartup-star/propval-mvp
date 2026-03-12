@@ -349,6 +349,7 @@ def _paon_match(epc_paon: str, lr_paon: str) -> bool:
     - Whitespace-normalised: "101-103" == "101 - 103"
     - Comma-separated: "WESTMARK TOWER, 1" contains "1"
     - Hyphen ranges: "101" matches "101 - 103" or "101-103"
+    - Building+range formatting: "EYRE COURT 3-21" matches "EYRE COURT, 3 - 21"
     """
     if epc_paon == lr_paon:
         return True
@@ -367,6 +368,14 @@ def _paon_match(epc_paon: str, lr_paon: str) -> bool:
         return True
     range_m2 = re.match(r"^(\d+\w*)\s*-\s*(\d+\w*)$", epc_paon)
     if range_m2 and lr_paon in (range_m2.group(1), range_m2.group(2)):
+        return True
+    # Building-name + range: "EYRE COURT 3-21" matches "EYRE COURT, 3 - 21"
+    # Normalise by removing commas and collapsing hyphen-whitespace
+    def _norm(s: str) -> str:
+        s = s.replace(",", " ")
+        s = re.sub(r"\s*-\s*", "-", s)
+        return re.sub(r"\s+", " ", s).strip()
+    if _norm(epc_paon) == _norm(lr_paon):
         return True
     return False
 
@@ -824,6 +833,144 @@ async def _fetch_sparql_bindings(postcode: str) -> list[dict]:
     return await ppd_cache.query_by_postcode_all_time(pc)
 
 
+def _sparql_sales_query(postcode: str, saon: str | None, paon: str | None,
+                        include_saon: bool = False) -> str:
+    """Build a SPARQL query for Land Registry sales by postcode + saon/paon.
+
+    Queries HMLR Linked Data directly — no address-field filtering needed.
+    HMLR Linked Data does not expose UPRN as a queryable predicate, so we use
+    postcode + saon (for flats) or postcode + paon (for houses) as the exact anchor.
+
+    include_saon=True: also SELECT ?saon (used for Pass 3 client-side filtering).
+    """
+    filters = [f'?addr lrcommon:postcode "{_sparql_escape(postcode)}" .']
+    if saon:
+        filters.append(f'?addr lrcommon:saon "{_sparql_escape(saon)}" .')
+    elif paon:
+        filters.append(f'?addr lrcommon:paon "{_sparql_escape(paon)}" .')
+    filter_block = "\n  ".join(filters)
+    saon_select = "?saon " if include_saon else ""
+    saon_optional = "\n  OPTIONAL { ?addr lrcommon:saon ?saon . }" if include_saon else ""
+    return f"""
+PREFIX lrppi: <http://landregistry.data.gov.uk/def/ppi/>
+PREFIX lrcommon: <http://landregistry.data.gov.uk/def/common/>
+
+SELECT ?date ?price ?estateType ?propertyType ?newBuild {saon_select}WHERE {{
+  ?trans lrppi:propertyAddress ?addr .
+  {filter_block}
+  ?trans lrppi:pricePaid ?price ;
+         lrppi:transactionDate ?date .
+  OPTIONAL {{ ?trans lrppi:estateType ?estateType . }}
+  OPTIONAL {{ ?trans lrppi:propertyType ?propertyType . }}
+  OPTIONAL {{ ?trans lrppi:newBuild ?newBuild . }}{saon_optional}
+}}
+ORDER BY DESC(?date)
+"""
+
+
+def _parse_sparql_sales(bindings: list[dict]) -> list[dict]:
+    """Convert SPARQL result bindings into the standard sale dict format."""
+    sales = []
+    for b in bindings:
+        raw_estate = b.get("estateType", {}).get("value", "")
+        raw_pt = b.get("propertyType", {}).get("value", "")
+        raw_nb = b.get("newBuild", {}).get("value", "")
+        # URI tail: "http://.../freehold" → "F", "http://.../flat-maisonette" → "F"
+        estate_code = raw_estate.rsplit("/", 1)[-1].upper()[:1]
+        pt_uri_tail = raw_pt.rsplit("/", 1)[-1].lower()
+        # Map URI tail to single letter: flat-maisonette → F, detached → D, etc.
+        pt_map = {"flat-maisonette": "F", "detached": "D", "semi-detached": "S",
+                  "terraced": "T", "other": "O"}
+        pt_code = pt_map.get(pt_uri_tail, pt_uri_tail.upper()[:1])
+        sales.append({
+            "date": (b.get("date", {}).get("value", "") or "")[:10],
+            "price": int(float(b.get("price", {}).get("value", 0) or 0)),
+            "tenure": _TENURE_LABEL.get(estate_code, estate_code),
+            "property_type": _PT_LABEL.get(pt_code, pt_code),
+            "new_build": raw_nb.upper() in ("TRUE", "YES", "1"),
+        })
+    return sales
+
+
+async def _fetch_sales_by_address(postcode: str, saon: str | None, paon: str | None) -> list[dict]:
+    """Fetch Land Registry sales by postcode + saon/paon via direct SPARQL.
+
+    More reliable than filtering a postcode-wide CSV by address fields:
+    HMLR's Linked Data stores saon/paon as exact predicates, so querying them
+    directly eliminates formatting-mismatch false negatives.
+
+    For flats: query by postcode + saon (e.g. "FLAT 99").
+    For houses: query by postcode + paon (e.g. "41").
+
+    Falls back to empty list on any error — caller uses _filter_sales as safety net.
+    """
+    if not saon and not paon:
+        return []
+    try:
+        client = _get_http_client()
+        query = _sparql_sales_query(postcode, saon, paon)
+        resp = await client.get(
+            SPARQL_ENDPOINT,
+            params={"query": query},
+            headers={"Accept": "application/sparql-results+json"},
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            logging.warning("Sales SPARQL HTTP %d for postcode=%s saon=%s", resp.status_code, postcode, saon)
+            return []
+        bindings = resp.json().get("results", {}).get("bindings", [])
+        sales = _parse_sparql_sales(bindings)
+        logging.warning("Sales SPARQL: postcode=%s saon=%s paon=%s → %d sales", postcode, saon, paon, len(sales))
+
+        # Pass 2: HMLR might store just the number (e.g. "99" not "FLAT 99").
+        if not sales and saon:
+            num = _saon_num(saon)
+            if num and num != saon:
+                query2 = _sparql_sales_query(postcode, num, paon)
+                resp2 = await client.get(
+                    SPARQL_ENDPOINT,
+                    params={"query": query2},
+                    headers={"Accept": "application/sparql-results+json"},
+                    timeout=10.0,
+                )
+                if resp2.status_code == 200:
+                    bindings2 = resp2.json().get("results", {}).get("bindings", [])
+                    sales = _parse_sparql_sales(bindings2)
+                    if sales:
+                        logging.warning("Sales SPARQL pass2 saon=%s → %d sales", num, len(sales))
+
+        # Pass 3: query by PAON (building name) and filter client-side by saon number.
+        # Handles cases where HMLR stores the saon in an unexpected format or the
+        # saon predicate is absent but the paon uniquely identifies the building.
+        # Inspired by the 4-stage matching approach in:
+        # https://bin-chi.github.io/Link-LR-PPD-and-Domestic-EPCs/
+        if not sales and saon and paon:
+            saon_num = _saon_num(saon)
+            if saon_num:
+                query3 = _sparql_sales_query(postcode, None, paon, include_saon=True)
+                resp3 = await client.get(
+                    SPARQL_ENDPOINT,
+                    params={"query": query3},
+                    headers={"Accept": "application/sparql-results+json"},
+                    timeout=10.0,
+                )
+                if resp3.status_code == 200:
+                    bindings3 = resp3.json().get("results", {}).get("bindings", [])
+                    # Filter client-side: keep only rows whose saon number matches ours
+                    matched = [
+                        b for b in bindings3
+                        if _saon_num((b.get("saon") or {}).get("value", "") or "") == saon_num
+                    ]
+                    if matched:
+                        sales = _parse_sparql_sales(matched)
+                        logging.warning("Sales SPARQL pass3 paon=%s saon_num=%s → %d sales", paon, saon_num, len(sales))
+
+        return sales
+    except Exception:
+        logging.exception("Sales SPARQL failed for postcode=%s saon=%s", postcode, saon)
+        return []
+
+
 
 _HPI_REST_BASE = "https://landregistry.data.gov.uk/data/ukhpi/region"
 
@@ -960,6 +1107,29 @@ async def _fetch_hpi(admin_district: str | None, property_type: str | None, buil
         "monthly_change_pct":latest["monthly_change_pct"],
         "sales_volume":      latest["sales_volume"],
         "trend":             trend,
+    }
+
+
+def _inspire_coords(request, lat: float | None, lon: float | None) -> dict:
+    """Return INSPIRE centroid coords if available, else empty dict."""
+    if lat is None or lon is None:
+        return {}
+    inspire = getattr(request.app.state, "inspire", None)
+    if inspire is None:
+        logging.warning("INSPIRE: app.state.inspire is None — service not loaded")
+        return {}
+    if not inspire.loaded:
+        logging.warning("INSPIRE: KDTree not built — scipy missing?")
+        return {}
+    hit = inspire.lookup(lat, lon, max_dist_m=350)
+    if hit is None:
+        logging.warning("INSPIRE: no match within 350m for lat=%.6f lon=%.6f", lat, lon)
+        return {}
+    logging.warning("INSPIRE: matched lat=%.6f lon=%.6f -> inspire=%.6f,%.6f area=%.1f sqm",
+                    lat, lon, hit["lat"], hit["lng"], hit.get("area_sqm", 0))
+    return {
+        "inspire_lat": hit["lat"],
+        "inspire_lon": hit["lng"],
     }
 
 
@@ -1680,12 +1850,24 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
 
         # Phase 1: EPC, Land Registry and coordinates — all concurrent.
         import time as _t; _t0 = _t.monotonic()
-        epc_rows, sparql_bindings, location = await asyncio.gather(
-            _fetch_epc_rows(postcode, epc_email, epc_api_key),
-            _fetch_sparql_bindings(postcode),
-            _fetch_location(body.address, postcode),
-        )
+        try:
+            epc_rows, sparql_bindings, location = await asyncio.wait_for(
+                asyncio.gather(
+                    _fetch_epc_rows(postcode, epc_email, epc_api_key),
+                    _fetch_sparql_bindings(postcode),
+                    _fetch_location(body.address, postcode),
+                ),
+                timeout=25.0,
+            )
+        except asyncio.TimeoutError:
+            logging.error("⏱ Phase 1 TIMEOUT (>25s) postcode=%s", postcode)
+            raise HTTPException(status_code=503, detail="Property data services are taking too long. Please try again in a moment.")
         logging.warning("⏱ Phase 1 (EPC+LR+location): %.0fms", (_t.monotonic() - _t0) * 1000)
+
+        # Kick off EPC bulk cache warming in the background so it's ready by the
+        # time the user runs comparables (typically 30-60s later).
+        _oc = postcode.strip().upper().split()[0]
+        asyncio.create_task(ppd_cache._ensure_epc_background(_oc))
 
         # ── Try EPC match ──────────────────────────────────────────────────────
         epc_matched = False
@@ -1730,8 +1912,21 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                         inferred_building_name = lr_paon.title()
                         break
 
-        sales = _filter_sales(sparql_bindings, parts)
-        logging.debug("_filter_sales: parts=%s → %d sales from %d bindings", parts, len(sales), len(sparql_bindings))
+        # Primary: direct SPARQL by postcode+saon/paon — queries HMLR Linked Data
+        # exact address predicates, eliminating formatting-mismatch false negatives.
+        # Fallback: address-field filter against PPD cache (no EPC match, or SPARQL empty/error).
+        sparql_saon = parts.get("saon")
+        sparql_paon = parts.get("paon")
+        if sparql_saon or sparql_paon:
+            sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
+            if not sales:
+                # SPARQL returned nothing (pre-1995 or SPARQL timeout) —
+                # fall back to PPD cache filter so we never silently drop real records.
+                sales = _filter_sales(sparql_bindings, parts)
+                logging.debug("Sales SPARQL empty → _filter_sales fallback: %d sales", len(sales))
+        else:
+            sales = _filter_sales(sparql_bindings, parts)
+            logging.debug("No saon/paon → _filter_sales: %d sales", len(sales))
 
         # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
         _cached = _load_cached_enrichment(best.get("uprn", ""))
@@ -1767,18 +1962,25 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             return r
 
         # Fast APIs only — flood, council_tax, planning_flood deferred to /enrich-slow
-        _p2 = await asyncio.gather(
-            _timed("listed_bldgs",     _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"])),
-            _timed("conservation",     _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"])),
-            _timed("natural_eng",      _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"])),
-            _timed("epc_cert_url",     _fetch_epc_cert_url(postcode, matched_address)),
-            _timed("brownfield",       _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"])),
-            _timed("coal_mining",      _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"])),
-            _timed("radon",            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"])),
-            _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
-            _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
-            _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
-        )
+        try:
+            _p2 = await asyncio.wait_for(
+                asyncio.gather(
+                    _timed("listed_bldgs",     _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"])),
+                    _timed("conservation",     _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"])),
+                    _timed("natural_eng",      _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"])),
+                    _timed("epc_cert_url",     _fetch_epc_cert_url(postcode, matched_address)),
+                    _timed("brownfield",       _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"])),
+                    _timed("coal_mining",      _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"])),
+                    _timed("radon",            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"])),
+                    _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
+                    _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
+                    _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
+                ),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            logging.error("⏱ Phase 2 TIMEOUT (>30s) postcode=%s — returning all defaults", postcode)
+            _p2 = [TimeoutError("Phase 2 timed out")] * 10
 
         logging.warning("⏱ Phase 2 (10 fast APIs): %.0fms", (_t.monotonic() - _t1) * 1000)
         _degraded: list[str] = []
@@ -1911,6 +2113,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "lat": location["lat"],
             "lon": location["lon"],
             "coord_source": location["coord_source"],
+            **_inspire_coords(request, location["lat"], location["lon"]),
             "admin_district": location["admin_district"],
             "region": location["region"],
             "lsoa": location["lsoa"],
@@ -1955,6 +2158,21 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
 
 
 # ---------------------------------------------------------------------------
+# INSPIRE lookup — lightweight endpoint for post-load coordinate enrichment
+# ---------------------------------------------------------------------------
+
+class InspireLookupRequest(BaseModel):
+    lat: float
+    lon: float
+
+@router.post("/inspire-lookup")
+async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Depends(get_current_user)):
+    """Return INSPIRE centroid for a lat/lon. Used to enrich saved cases loaded from Supabase."""
+    coords = _inspire_coords(request, body.lat, body.lon)
+    return coords  # {} if no match, else {"inspire_lat": ..., "inspire_lon": ...}
+
+
+# ---------------------------------------------------------------------------
 # Slow enrichment — council tax + planning flood zone (deferred from main search)
 # ---------------------------------------------------------------------------
 
@@ -1973,7 +2191,14 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
     pf_coro = _fetch_planning_flood_zone(body.lat, body.lon) if has_coords else asyncio.sleep(0)
     fl_coro = _fetch_flood_risk(body.lat, body.lon) if has_coords else asyncio.sleep(0)
 
-    ct_r, pf_r, fl_r = await asyncio.gather(ct_coro, pf_coro, fl_coro, return_exceptions=True)
+    try:
+        ct_r, pf_r, fl_r = await asyncio.wait_for(
+            asyncio.gather(ct_coro, pf_coro, fl_coro, return_exceptions=True),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        logging.error("⏱ enrich-slow TIMEOUT (>30s)")
+        ct_r, pf_r, fl_r = None, None, None
 
     ct = ct_r if isinstance(ct_r, str) else None
     pf = pf_r if isinstance(pf_r, str) else None

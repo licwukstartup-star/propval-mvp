@@ -77,6 +77,8 @@ interface PropertyResult {
   lat: number | null;
   lon: number | null;
   coord_source: string | null;
+  inspire_lat: number | null;
+  inspire_lon: number | null;
   admin_district: string | null;
   region: string | null;
   lsoa: string | null;
@@ -475,9 +477,9 @@ export default function Home() {
   const [enrichSlowDone, setEnrichSlowDone] = useState(false);
   const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
+  type TabKey = "property" | "comparables" | "wider" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "hpi", "adopted", "report_typing", "semv", "report"];
+  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "wider", "hpi", "adopted", "report_typing", "semv", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
   type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
@@ -653,6 +655,7 @@ export default function Home() {
   const [casesLoading, setCasesLoading] = useState(false);
   const [currentCaseId, setCurrentCaseId] = useState<string | null>(null);
   const [savingCase, setSavingCase] = useState(false);
+  const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
   const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
@@ -828,6 +831,17 @@ export default function Home() {
       }
       // Restore saved report content
       setReportContent(data.report_content ?? null);
+      // Backfill INSPIRE coords if missing (cases saved before this feature)
+      if (!snapshot?.inspire_lat && snapshot?.lat && snapshot?.lon) {
+        fetch(`${API_BASE}/api/property/inspire-lookup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ lat: snapshot.lat, lon: snapshot.lon }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.inspire_lat) setResult(prev => prev ? { ...prev, inspire_lat: d.inspire_lat, inspire_lon: d.inspire_lon } : prev); })
+          .catch(() => {});
+      }
       // Backfill HPI if missing from old case
       if (!snapshot?.hpi && snapshot?.postcode) {
         fetch(`${API_BASE}/api/property/hpi`, {
@@ -910,6 +924,7 @@ export default function Home() {
 
   async function updateCaseStatus(newStatus: string) {
     if (!currentCaseId || !session?.access_token) return;
+    setStatusUpdating(newStatus);
     try {
       const res = await fetch(`${API_BASE}/api/cases/${currentCaseId}`, {
         method: "PATCH",
@@ -919,6 +934,7 @@ export default function Home() {
       if (!res.ok) throw new Error("Update failed");
       setCurrentCaseStatus(newStatus);
     } catch { alert("Failed to update status."); }
+    finally { setStatusUpdating(null); }
   }
 
   useEffect(() => {
@@ -1085,7 +1101,7 @@ export default function Home() {
     setError(null);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), 95000);
 
     try {
       const res = await fetch(`${API_BASE}/api/property/search`, {
@@ -1107,10 +1123,13 @@ export default function Home() {
       setActiveTab("property");
       // Fire slow enrichment (council tax + planning flood) in background
       setEnrichSlowDone(false);
+      const slowController = new AbortController();
+      setTimeout(() => slowController.abort(), 95000);
       fetch(`${API_BASE}/api/property/enrich-slow`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
         body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon }),
+        signal: slowController.signal,
       }).then(r => r.ok ? r.json() : null).then(slow => {
         if (slow) setResult(prev => prev ? {
           ...prev,
@@ -1193,9 +1212,15 @@ export default function Home() {
         ["Region", result.region],
         ["LSOA", result.lsoa],
         [
-          "Coordinates",
+          `Coordinates (${result.coord_source ?? "geocoder"})`,
           result.lat != null && result.lon != null
             ? `${result.lat.toFixed(5)}, ${result.lon.toFixed(5)}`
+            : null,
+        ],
+        [
+          "Coordinates (HMLR INSPIRE)",
+          result.inspire_lat != null && result.inspire_lon != null
+            ? `${result.inspire_lat.toFixed(5)}, ${result.inspire_lon.toFixed(5)}`
             : null,
         ],
       ]
@@ -1441,7 +1466,7 @@ export default function Home() {
           <div className="flex items-end border-b border-[#334155] mb-6 no-print">
             {/* ── Section tabs only ── */}
             {tabOrder.map((tab) => {
-              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
+              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", wider: "Wider Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
               const active = activeTab === tab;
               const badge = tab === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
               return (
@@ -1545,15 +1570,20 @@ export default function Home() {
                             if (isAllowed && s.key === "issued" && !confirm("Issue this case? It will become locked and cannot be edited.")) return;
                             if (isAllowed) updateCaseStatus(s.key);
                           }}
-                          disabled={!isAllowed && !isCurrent}
-                          className={`px-2 py-1 text-[10px] font-medium rounded border transition-colors ${
+                          disabled={(!isAllowed && !isCurrent) || !!statusUpdating}
+                          className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded border transition-colors ${
                             isCurrent
                               ? s.color + " ring-1 ring-current"
-                              : isAllowed
+                              : isAllowed && !statusUpdating
                                 ? "border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] cursor-pointer"
                                 : "border-[#1E293B] text-[#334155] cursor-not-allowed opacity-40"
                           }`}
                         >
+                          {statusUpdating === s.key && (
+                            <svg className="animate-spin h-2.5 w-2.5" viewBox="0 0 24 24" fill="none">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" />
+                            </svg>
+                          )}
                           {s.label}
                         </button>
                       );
@@ -1596,7 +1626,8 @@ export default function Home() {
                     doResetHome();
                   }
                 }}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border transition-all"
+                disabled={savingCase}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 style={{
                   background: 'linear-gradient(135deg, #FF2D78 0%, #7B2FBE 100%)',
                   color: '#FFFFFF',
@@ -1604,20 +1635,25 @@ export default function Home() {
                   boxShadow: '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22',
                 }}
                 onMouseEnter={e => {
-                  e.currentTarget.style.boxShadow = '0 0 16px #FF2D7888, 0 0 32px #7B2FBE44';
-                  e.currentTarget.style.transform = 'scale(1.03)';
+                  if (!savingCase) { e.currentTarget.style.boxShadow = '0 0 16px #FF2D7888, 0 0 32px #7B2FBE44'; e.currentTarget.style.transform = 'scale(1.03)'; }
                 }}
                 onMouseLeave={e => {
                   e.currentTarget.style.boxShadow = '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22';
                   e.currentTarget.style.transform = 'scale(1)';
                 }}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-                  <polyline points="17 21 17 13 7 13 7 21" />
-                  <polyline points="7 3 7 8 15 8" />
-                </svg>
-                Save &amp; Exit
+                {savingCase ? (
+                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                    <polyline points="17 21 17 13 7 13 7 21" />
+                    <polyline points="7 3 7 8 15 8" />
+                  </svg>
+                )}
+                {savingCase ? "Saving…" : "Save & Exit"}
               </button>
               {currentCaseId && (
                 <button
@@ -1775,17 +1811,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* EPC score + clickable badge */}
-              {result.energy_score != null && (
-                <div className="border-b border-[#334155]/60">
-                  <EpcBadge
-                    score={Number(result.energy_score)}
-                    certificateUrl={result.epc_url}
-                    onDownloadPdf={result.epc_url ? () => downloadEpc(result.epc_url!) : undefined}
-                  />
-                </div>
-              )}
-
               <dl className="grid grid-cols-2 gap-px bg-[#334155]/40">
                 {epcFields.map(([label, value]) => {
                   const isEmpty = value === null || value === undefined || value === "";
@@ -1802,13 +1827,8 @@ export default function Home() {
                     </div>
                   );
                 })}
-                {!result.council_tax_band && (
-                  <div className="bg-[#111827] px-4 py-3">
-                    <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Council tax band</dt>
-                    <dd className="text-xs text-[#94A3B8]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</dd>
-                  </div>
-                )}
-                {result.council_tax_band && (() => {
+                {/* Council tax band — left cell */}
+                {(() => {
                   const CT_COLORS: Record<string, { bg: string; dark: boolean }> = {
                     A: { bg: "#008054", dark: false },
                     B: { bg: "#19b459", dark: false },
@@ -1819,29 +1839,88 @@ export default function Home() {
                     G: { bg: "#e9153b", dark: false },
                     H: { bg: "#c0392b", dark: false },
                   };
-                  const band = result.council_tax_band.toUpperCase();
-                  const { bg, dark } = CT_COLORS[band] ?? { bg: "#9ca3af", dark: false };
+                  const ctBand = result.council_tax_band?.toUpperCase();
+                  const ctColors = ctBand ? (CT_COLORS[ctBand] ?? { bg: "#9ca3af", dark: false }) : null;
                   return (
                     <div className="bg-[#111827] px-4 py-3">
                       <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Council tax band</dt>
                       <dd>
-                        <span style={{
-                          display: "inline-flex", alignItems: "center", gap: "6px",
-                          padding: "3px 10px 3px 4px", borderRadius: "999px",
-                          border: `1.5px solid ${bg}`, backgroundColor: `${bg}1a`,
-                        }}>
+                        {ctBand && ctColors ? (
                           <span style={{
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            width: "24px", height: "24px", borderRadius: "50%",
-                            backgroundColor: bg, color: dark ? "#1a1a1a" : "#ffffff",
-                            fontWeight: 700, fontSize: "13px",
+                            display: "inline-flex", alignItems: "center", gap: "6px",
+                            padding: "3px 10px 3px 4px", borderRadius: "999px",
+                            border: `1.5px solid ${ctColors.bg}`, backgroundColor: `${ctColors.bg}1a`,
                           }}>
-                            {band}
+                            <span style={{
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              width: "24px", height: "24px", borderRadius: "50%",
+                              backgroundColor: ctColors.bg, color: ctColors.dark ? "#1a1a1a" : "#ffffff",
+                              fontWeight: 700, fontSize: "13px",
+                            }}>{ctBand}</span>
+                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>Band {ctBand}</span>
                           </span>
-                          <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>
-                            Band {band}
-                          </span>
-                        </span>
+                        ) : (
+                          <span className="text-xs text-[#94A3B8]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</span>
+                        )}
+                      </dd>
+                    </div>
+                  );
+                })()}
+                {/* Energy score — right cell */}
+                {(() => {
+                  const epcScore = result.energy_score != null ? Number(result.energy_score) : null;
+                  const EPC_COLORS = [
+                    { band: "A", min: 92, color: "#008054", dark: false },
+                    { band: "B", min: 81, color: "#19b459", dark: false },
+                    { band: "C", min: 69, color: "#8dce46", dark: true  },
+                    { band: "D", min: 55, color: "#ffd500", dark: true  },
+                    { band: "E", min: 39, color: "#fcaa65", dark: true  },
+                    { band: "F", min: 21, color: "#ef8023", dark: false },
+                    { band: "G", min: 1,  color: "#e9153b", dark: false },
+                  ];
+                  const epcConfig = epcScore != null
+                    ? (EPC_COLORS.find(b => epcScore >= b.min) ?? EPC_COLORS[EPC_COLORS.length - 1])
+                    : null;
+                  return (
+                    <div className="bg-[#111827] px-4 py-3">
+                      <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Energy score</dt>
+                      <dd>
+                        {epcConfig && epcScore != null ? (
+                          result.epc_url ? (
+                            <a href={result.epc_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: "6px",
+                                padding: "3px 10px 3px 4px", borderRadius: "999px",
+                                border: `1.5px solid ${epcConfig.color}`, backgroundColor: `${epcConfig.color}1a`,
+                                cursor: "pointer",
+                              }}>
+                                <span style={{
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  width: "24px", height: "24px", borderRadius: "50%",
+                                  backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
+                                  fontWeight: 700, fontSize: "13px",
+                                }}>{epcConfig.band}</span>
+                                <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore} · View ↗</span>
+                              </span>
+                            </a>
+                          ) : (
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: "6px",
+                              padding: "3px 10px 3px 4px", borderRadius: "999px",
+                              border: `1.5px solid ${epcConfig.color}`, backgroundColor: `${epcConfig.color}1a`,
+                            }}>
+                              <span style={{
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                width: "24px", height: "24px", borderRadius: "50%",
+                                backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
+                                fontWeight: 700, fontSize: "13px",
+                              }}>{epcConfig.band}</span>
+                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore}</span>
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-[#475569] font-normal text-sm">Data Not Available</span>
+                        )}
                       </dd>
                     </div>
                   );
@@ -2580,6 +2659,49 @@ export default function Home() {
                 setBuildingSearchAddressKeys(addressKeys);
                 setBuildingSearchDone(true);
               }}
+              onAdopt={(comp) => setAdoptedComparables(prev => {
+                const k = comp.transaction_id ?? comp.address;
+                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
+                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
+              })}
+              onAdoptAll={(comps) => setAdoptedComparables(prev => {
+                const existing = new Set(prev.map(c => c.transaction_id ?? c.address));
+                const newComps = comps.filter(c => !existing.has(c.transaction_id ?? c.address));
+                return [...prev, ...newComps];
+              })}
+              onUnadoptAll={(comps) => setAdoptedComparables(prev => {
+                const toRemove = new Set(comps.map(c => c.transaction_id ?? c.address));
+                return prev.filter(c => !toRemove.has(c.transaction_id ?? c.address));
+              })}
+              adoptedIds={adoptedIds}
+              valuationDate={valuationDate}
+              onValuationDateChange={setValuationDate}
+              uprn={result.uprn}
+              lat={result.lat}
+              lon={result.lon}
+              postcode={result.postcode}
+              floorArea={result.floor_area_m2}
+              rooms={result.num_rooms}
+              ageBand={result.construction_age_band}
+              epcRating={result.energy_rating}
+              propertyType={result.property_type}
+              builtForm={result.built_form}
+              tenure={result.tenure}
+              buildingName={result.building_name}
+              paonNumber={result.paon_number}
+              saon={result.saon}
+              streetName={result.street_name}
+            />
+          </div>
+
+          {/* ── Tab: Wider Comparables ───────────────────────────────────────── */}
+          <div className="pb-8" style={{ display: activeTab === "wider" ? undefined : "none" }}>
+            <ComparableSearch
+              key={`wider-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
+              mode="outward"
+              locked={!buildingSearchDone}
+              excludeIds={buildingSearchIds}
+              excludeAddressKeys={buildingSearchAddressKeys}
               onAdopt={(comp) => setAdoptedComparables(prev => {
                 const k = comp.transaction_id ?? comp.address;
                 const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
