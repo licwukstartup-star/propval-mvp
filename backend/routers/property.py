@@ -156,6 +156,7 @@ _SOURCE_TTL: dict[str, int] = {
     "radon":              365 * 86400,   # 365 days
     "brownfield":          30 * 86400,   # 30 days (planning)
     "council_tax":        365 * 86400,   # 365 days
+    "nearby_planning":      7 * 86400,   # 7 days (applications update daily)
 }
 _DEFAULT_TTL = 86400  # 24 hours fallback
 
@@ -240,6 +241,10 @@ _autocomplete_cache: dict[str, list[dict]] = {}
 # Historic England NHLE — listed buildings within 75 m
 NHLE_URL = "https://services-eu1.arcgis.com/ZOdPfBS3aqqDYPUQ/arcgis/rest/services/National_Heritage_List_for_England_NHLE_v02_VIEW/FeatureServer/0/query"
 PLANNING_DATA_URL = "https://www.planning.data.gov.uk/entity.json"
+
+# GLA Planning London Datahub — Elasticsearch 7.9 (guest API, no registration)
+PLD_API_URL = "https://planningdata.london.gov.uk/api-guest"
+PLD_API_KEY = "be2rmRnt&"
 
 # EA flood risk — NaFRA2 (Jan 2025) via environment.data.gov.uk WMS (public, no auth)
 NAFRA2_RS_WMS = "https://environment.data.gov.uk/spatialdata/nafra2-risk-of-flooding-from-rivers-and-sea/wms"
@@ -1567,6 +1572,85 @@ async def _fetch_brownfield(lat: float | None, lon: float | None) -> list[dict]:
         return []
 
 
+
+async def _fetch_nearby_planning(lat: float | None, lon: float | None, region: str | None) -> dict:
+    """Return nearby planning applications within 500 m via the GLA PLD API.
+
+    London-only — returns immediately for non-London properties.
+    Uses the Planning London Datahub Elasticsearch 7.9 guest API.
+    """
+    empty = {"applications": [], "london_only": False}
+    if lat is None or lon is None:
+        return empty
+    if region != "London":
+        return {"applications": [], "london_only": True}
+    body = {
+        "query": {
+            "bool": {
+                "must": [{"match_all": {}}],
+                "filter": [
+                    {"geo_distance": {"distance": "500m", "centroid": {"lat": lat, "lon": lon}}}
+                ],
+            }
+        },
+        "_source": [
+            "lpa_name", "site_name", "decision_date", "lpa_app_no", "decision",
+            "application_type", "application_type_full", "postcode", "description",
+            "street_name", "status", "valid_date",
+        ],
+        "size": 20,
+        "sort": [
+            {"_geo_distance": {"centroid": {"lat": lat, "lon": lon}, "order": "asc", "unit": "m"}}
+        ],
+    }
+    try:
+        import html as _html_mod
+        client = _get_http_client()
+        resp = await client.post(
+            f"{PLD_API_URL}/applications/_search",
+            json=body,
+            headers={"X-API-AllowRequest": PLD_API_KEY},
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            logging.warning("PLD API returned %s", resp.status_code)
+            return empty
+        hits = resp.json().get("hits", {}).get("hits", [])
+        apps = []
+        for hit in hits:
+            src = hit.get("_source", {})
+            desc = src.get("description") or ""
+            # Strip HTML entities (&nbsp; etc.)
+            desc = _html_mod.unescape(desc).strip()
+            distance = None
+            sort_vals = hit.get("sort")
+            if sort_vals and len(sort_vals) > 0:
+                try:
+                    distance = round(float(sort_vals[0]))
+                except (ValueError, TypeError):
+                    pass
+            apps.append({
+                "lpa_name": src.get("lpa_name"),
+                "site_name": src.get("site_name"),
+                "decision_date": src.get("decision_date"),
+                "lpa_app_no": src.get("lpa_app_no"),
+                "decision": src.get("decision"),
+                "application_type": src.get("application_type"),
+                "application_type_full": src.get("application_type_full"),
+                "postcode": src.get("postcode"),
+                "description": desc,
+                "street_name": src.get("street_name"),
+                "status": src.get("status"),
+                "valid_date": src.get("valid_date"),
+                "distance_m": distance,
+            })
+        logging.debug(f"PLD nearby planning = {len(apps)} apps within 500m")
+        return {"applications": apps, "london_only": False}
+    except Exception:
+        logging.exception("_fetch_nearby_planning failed for lat=%s lon=%s", lat, lon)
+        return empty
+
+
 async def _fetch_coal_mining_risk(lat: float | None, lon: float | None) -> dict:
     """Return coal mining risk at the property using the Coal Authority WMS.
 
@@ -1857,11 +1941,27 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     _fetch_sparql_bindings(postcode),
                     _fetch_location(body.address, postcode),
                 ),
-                timeout=25.0,
+                timeout=45.0,
             )
         except asyncio.TimeoutError:
-            logging.error("⏱ Phase 1 TIMEOUT (>25s) postcode=%s", postcode)
-            raise HTTPException(status_code=503, detail="Property data services are taking too long. Please try again in a moment.")
+            logging.error("⏱ Phase 1 TIMEOUT (>45s) postcode=%s — falling back to partial", postcode)
+            # Retry with just location + EPC (skip slow SPARQL / PPD if they stalled)
+            try:
+                epc_rows_retry, _, location_retry = await asyncio.wait_for(
+                    asyncio.gather(
+                        _fetch_epc_rows(postcode, epc_email, epc_api_key),
+                        asyncio.sleep(0),  # placeholder for SPARQL
+                        _fetch_location(body.address, postcode),
+                    ),
+                    timeout=15.0,
+                )
+                epc_rows = epc_rows_retry
+                sparql_bindings = []
+                location = location_retry
+                logging.warning("⏱ Phase 1 partial recovery succeeded for %s (no SPARQL)", postcode)
+            except (asyncio.TimeoutError, Exception):
+                logging.error("⏱ Phase 1 partial recovery also failed for %s", postcode)
+                raise HTTPException(status_code=503, detail="Property data services are taking too long. Please try again in a moment.")
         logging.warning("⏱ Phase 1 (EPC+LR+location): %.0fms", (_t.monotonic() - _t0) * 1000)
 
         # Kick off EPC bulk cache warming in the background so it's ready by the
@@ -1945,7 +2045,8 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         # Sources safe to cache (spatial/environmental — rarely change):
         _CACHEABLE = {"flood_risk", "listed_buildings", "conservation_areas",
                       "natural_england", "ground_conditions", "coal_mining",
-                      "radon", "brownfield", "council_tax"}
+                      "radon", "brownfield", "council_tax",
+                      "nearby_planning"}
         # Always fetch fresh: epc, land_registry, hpi, lease (transactional data)
         _sc = {k: v for k, v in _cached.items() if k in _CACHEABLE}
 
@@ -1975,14 +2076,15 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
                     _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
                     _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
+                    _timed("nearby_planning",  _use_cache(_sc["nearby_planning"]) if "nearby_planning" in _sc else _fetch_nearby_planning(location["lat"], location["lon"], location["region"])),
                 ),
                 timeout=30.0,
             )
         except asyncio.TimeoutError:
             logging.error("⏱ Phase 2 TIMEOUT (>30s) postcode=%s — returning all defaults", postcode)
-            _p2 = [TimeoutError("Phase 2 timed out")] * 10
+            _p2 = [TimeoutError("Phase 2 timed out")] * 11
 
-        logging.warning("⏱ Phase 2 (10 fast APIs): %.0fms", (_t.monotonic() - _t1) * 1000)
+        logging.warning("⏱ Phase 2 (11 fast APIs): %.0fms", (_t.monotonic() - _t1) * 1000)
         _degraded: list[str] = []
 
         def _safe(val, default, source: str = "unknown"):
@@ -2007,6 +2109,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         }, "ground_conditions")
         lease_details    = _safe(_p2[8], {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None}, "lease")
         hpi              = _safe(_p2[9], None, "hpi")
+        nearby_planning  = _safe(_p2[10], {"applications": [], "london_only": False}, "nearby_planning")
         # Deferred — will be null in initial response, filled by /enrich-slow
         planning_zone    = None
         council_tax_band = None
@@ -2088,6 +2191,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     "council_tax": {"band": council_tax_band},
                     "lease": lease_details,
                     "hpi": hpi,
+                    "nearby_planning": nearby_planning,
                 },
             )
 
@@ -2147,6 +2251,8 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "sales": sales,
             "epc_matched": epc_matched,
             "hpi": hpi,
+            "nearby_planning": nearby_planning.get("applications", []),
+            "nearby_planning_london_only": nearby_planning.get("london_only", False),
             "degraded_sources": _degraded if _degraded else None,
         }
         logging.warning("⏱ Upsert+response: %.0fms | TOTAL: %.0fms", (_t.monotonic() - _t3) * 1000, (_t.monotonic() - _t0) * 1000)

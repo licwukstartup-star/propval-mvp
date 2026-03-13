@@ -1169,15 +1169,11 @@ async def _orchestrate(
     adj = await _adjacent_outcodes(oc) if max_tier >= 4 else []
     codes_to_cache = [oc] + adj
 
-    # Fire EPC bulk cache warming in background (non-blocking — may take 30-60s
-    # on first run; subsequent requests hit the Supabase cache instantly).
-    for code in codes_to_cache:
-        asyncio.create_task(ppd_cache._ensure_epc_background(code))
-
-    # Block until PPD is warm (needed for queries), then load EPC index from
-    # whatever bulk cache rows are already available (may be partial on first run).
+    # Warm PPD + EPC bulk caches in parallel, then load EPC index.
+    # Both must complete before epc.preload() queries Supabase.
     await asyncio.gather(
         *[ppd_cache.ensure_cache(code) for code in codes_to_cache],
+        *[ppd_cache._ensure_epc_background(code) for code in codes_to_cache],
         return_exceptions=True,
     )
     await epc.preload(codes_to_cache)
@@ -1482,7 +1478,12 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
     if req.force_refresh:
         await ppd_cache.force_refresh(outward)
     else:
-        await ppd_cache.ensure_cache_with_epc(outward)
+        # Warm PPD + EPC caches in parallel so EPC enrichment has data
+        await asyncio.gather(
+            ppd_cache.ensure_cache(outward),
+            ppd_cache._ensure_epc_background(outward),
+            return_exceptions=True,
+        )
 
     def _query() -> list[dict]:
         sb = ppd_cache._get_sb()

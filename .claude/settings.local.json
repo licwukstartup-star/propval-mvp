@@ -82,7 +82,16 @@
       "Bash(git add frontend/src/app/page.tsx)",
       "Bash(git commit:*)",
       "Bash(git push origin master)",
-      "Bash(git add frontend/src/components/ComparableSearch.tsx)"
+      "Bash(git add frontend/src/components/ComparableSearch.tsx)",
+      "Bash(grep -n \"ai_narrative\\\\|report_content\" /c/Users/licww/Desktop/propval-mvp/supabase/migrations/*.sql)",
+      "Bash(pkill -f uvicorn)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"node.*next\")",
+      "Bash(pkill -f node)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\licww\\Desktop\\propval-mvp\\frontend\\.next",
+      "C:\\Users\\licww\\Desktop\\propval-mvp\\.claude"
     ]
   }
 }

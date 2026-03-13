@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(npm run *)",
+      "Bash(npm test)",
+      "Bash(npm install *)",
+      "Bash(npm uninstall *)",
+      "Bash(npx *)",
+      "Bash(py -3.11 *)",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(netstat *)",
+      "Bash(tasklist *)",
+      "Bash(mkdir *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(sleep *)"
+    ],
+    "deny": [
+      "Edit(.env*)",
+      "Write(.env*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /c/Users/licww/Desktop/propval-mvp/.claude/hooks/protect-env.py"
+          }
+        ]
+      }
+    ]
+  }
+}

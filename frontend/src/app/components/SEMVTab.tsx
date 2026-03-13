@@ -1,5 +1,5 @@
 "use client";
-import { useMemo } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ComparableCandidate {
@@ -374,6 +374,9 @@ function PdfChart({
   p95: number;
   stdDev: number;
 }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hover, setHover] = useState<{ x: number; y: number; value: number; pct: number } | null>(null);
+
   const W = 800;
   const H = 300;
   const PAD_L = 70;
@@ -383,37 +386,76 @@ function PdfChart({
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
 
-  if (simMVs.length < 2) return null;
-
   const bins = 70;
-  const minV = simMVs[0];
-  const maxV = simMVs[simMVs.length - 1];
+  // Extend chart range to include adoptedMV so the marker always sits at its true position
+  const rawMin = simMVs.length >= 2 ? simMVs[0] : 0;
+  const rawMax = simMVs.length >= 2 ? simMVs[simMVs.length - 1] : 1;
+  const minV = Math.min(rawMin, adoptedMV);
+  const maxV = Math.max(rawMax, adoptedMV);
   const range = maxV - minV || 1;
   const binWidth = range / bins;
 
-  // Build histogram
-  const counts = new Array(bins).fill(0);
-  for (const v of simMVs) {
-    const idx = Math.min(Math.floor((v - minV) / binWidth), bins - 1);
-    counts[idx]++;
-  }
-  const maxCount = Math.max(...counts);
+  // Build histogram + densities (memoised for hover lookups)
+  const { densities, maxDensity, points } = useMemo(() => {
+    if (simMVs.length < 2) return { densities: [], maxDensity: 0, points: [] as { x: number; y: number; d: number; v: number }[] };
 
-  // Normalize to density
-  const totalArea = simMVs.length * binWidth;
-  const densities = counts.map((c) => c / totalArea);
-  const maxDensity = Math.max(...densities);
+    const counts = new Array(bins).fill(0);
+    for (const v of simMVs) {
+      const idx = Math.min(Math.floor((v - minV) / binWidth), bins - 1);
+      counts[idx]++;
+    }
+    const totalArea = simMVs.length * binWidth;
+    const dens = counts.map((c: number) => c / totalArea);
+    const maxD = Math.max(...dens);
 
-  // X scale: value → pixel
+    const xScale = (v: number) => PAD_L + ((v - minV) / range) * plotW;
+    const yScale = (d: number) => PAD_T + plotH - (d / maxD) * plotH;
+
+    const pts = dens.map((d: number, i: number) => {
+      const v = minV + (i + 0.5) * binWidth;
+      return { x: xScale(v), y: yScale(d), d, v };
+    });
+    return { densities: dens, maxDensity: maxD, points: pts };
+  }, [simMVs, minV, maxV, range, binWidth, bins, plotW, plotH]);
+
+  // Percentile lookup: what % of simMVs are below a given value
+  const pctBelow = useCallback((val: number) => {
+    if (simMVs.length === 0) return 0;
+    let lo = 0, hi = simMVs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (simMVs[mid] < val) lo = mid + 1; else hi = mid;
+    }
+    return Math.round((lo / simMVs.length) * 100);
+  }, [simMVs]);
+
+  // Mouse/touch → SVG coordinate → nearest curve point
+  const handlePointer = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg || points.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * W;
+
+    // Find nearest point by x
+    let best = points[0];
+    let bestDist = Math.abs(svgX - best.x);
+    for (let i = 1; i < points.length; i++) {
+      const dist = Math.abs(svgX - points[i].x);
+      if (dist < bestDist) { best = points[i]; bestDist = dist; }
+    }
+    // Only show if within plot area
+    if (svgX >= PAD_L && svgX <= PAD_L + plotW) {
+      setHover({ x: best.x, y: best.y, value: best.v, pct: pctBelow(best.v) });
+    } else {
+      setHover(null);
+    }
+  }, [points, pctBelow, W, plotW]);
+
+  if (simMVs.length < 2) return null;
+
+  // X/Y scales (for static elements)
   const xScale = (v: number) => PAD_L + ((v - minV) / range) * plotW;
-  // Y scale: density → pixel
   const yScale = (d: number) => PAD_T + plotH - (d / maxDensity) * plotH;
-
-  // Build smooth path through bin centres
-  const points = densities.map((d, i) => ({
-    x: xScale(minV + (i + 0.5) * binWidth),
-    y: yScale(d),
-  }));
 
   // Catmull-Rom to cubic bezier path
   let path = `M ${points[0].x},${yScale(0)} L ${points[0].x},${points[0].y}`;
@@ -445,22 +487,41 @@ function PdfChart({
   }
 
   const meanX = xScale(mean);
-  const mvX = xScale(Math.max(minV, Math.min(maxV, adoptedMV)));
+  const mvX = xScale(adoptedMV);
 
-  // X-axis labels
-  const tickCount = 6;
-  const ticks = Array.from({ length: tickCount }, (_, i) => {
-    const v = minV + (range * i) / (tickCount - 1);
-    return { v, x: xScale(v) };
-  });
+  // X-axis labels — snap to clean round numbers so labels align with actual values
+  const niceStep = (() => {
+    const rough = range / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    if (norm <= 1) return mag;
+    if (norm <= 2) return 2 * mag;
+    if (norm <= 5) return 5 * mag;
+    return 10 * mag;
+  })();
+  const ticks: { v: number; x: number }[] = [];
+  const tickStart = Math.ceil(minV / niceStep) * niceStep;
+  for (let v = tickStart; v <= maxV; v += niceStep) {
+    ticks.push({ v, x: xScale(v) });
+  }
 
+  // Compact format for axis ticks (clean round numbers)
   const fmt = (v: number) => {
     if (v >= 1_000_000) return `£${(v / 1_000_000).toFixed(1)}m`;
     return `£${Math.round(v / 1000)}k`;
   };
+  // Full precision for marker labels so they match their x position
+  const fmtFull = (v: number) => "£" + Math.round(v).toLocaleString("en-GB");
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 320 }}>
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 ${W} ${H}`}
+      className="w-full"
+      style={{ maxHeight: 320, touchAction: "none" }}
+      onPointerMove={handlePointer}
+      onPointerLeave={() => setHover(null)}
+    >
       {/* P5-P95 shaded area */}
       {shadePath && (
         <path d={shadePath} fill="#00F0FF" opacity={0.1} />
@@ -490,10 +551,10 @@ function PdfChart({
               stroke={color} strokeWidth={1} strokeDasharray="4,3" opacity={0.5} />
             {/* Labels at bottom */}
             <text x={lo} y={PAD_T + plotH + 36} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
-              -{n}σ {fmt(mean - n * stdDev)}
+              -{n}σ {fmtFull(mean - n * stdDev)}
             </text>
             <text x={hi} y={PAD_T + plotH + 36} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
-              +{n}σ {fmt(mean + n * stdDev)}
+              +{n}σ {fmtFull(mean + n * stdDev)}
             </text>
           </g>
         );
@@ -505,7 +566,7 @@ function PdfChart({
         stroke="#00F0FF" strokeWidth={1.5} strokeDasharray="6,4" opacity={0.7}
       />
       <text x={meanX} y={PAD_T - 5} fill="#00F0FF" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
-        Mean {fmt(mean)}
+        Mean {fmtFull(mean)}
       </text>
 
       {/* Adopted MV solid line */}
@@ -519,7 +580,7 @@ function PdfChart({
         fill="#FF2D78"
       />
       <text x={mvX} y={PAD_T - 5} fill="#FF2D78" fontSize={11} textAnchor="middle" fontWeight="bold" fontFamily="Inter, sans-serif">
-        Adopted {fmt(adoptedMV)}
+        Adopted {fmtFull(adoptedMV)}
       </text>
 
       {/* X axis */}
@@ -540,6 +601,52 @@ function PdfChart({
       <text x={15} y={PAD_T + plotH / 2} fill="#94A3B8" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif" transform={`rotate(-90, 15, ${PAD_T + plotH / 2})`}>
         Density
       </text>
+
+      {/* Interactive hover dot + crosshair + tooltip */}
+      {hover && (
+        <g>
+          {/* Vertical crosshair */}
+          <line x1={hover.x} y1={PAD_T} x2={hover.x} y2={PAD_T + plotH}
+            stroke="#E2E8F0" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.4} />
+          {/* Horizontal crosshair */}
+          <line x1={PAD_L} y1={hover.y} x2={PAD_L + plotW} y2={hover.y}
+            stroke="#E2E8F0" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.3} />
+          {/* Glow ring */}
+          <circle cx={hover.x} cy={hover.y} r={8} fill="#00F0FF" opacity={0.15} />
+          {/* Dot */}
+          <circle cx={hover.x} cy={hover.y} r={4.5} fill="#00F0FF" stroke="#0A0E1A" strokeWidth={2} />
+          {/* Tooltip background — flips below dot when near top */}
+          {(() => {
+            const label = `${fmtFull(hover.value)}  ·  P${hover.pct}`;
+            const tw = label.length * 6.5 + 16;
+            const th = 24;
+            const gap = 12;  // space between dot and tooltip
+            // Flip below when not enough room above
+            const above = hover.y - gap - th >= PAD_T - 4;
+            const ty = above ? hover.y - gap - th : hover.y + gap;
+            // Keep tooltip within horizontal chart bounds
+            let tx = hover.x - tw / 2;
+            if (tx < PAD_L) tx = PAD_L;
+            if (tx + tw > PAD_L + plotW) tx = PAD_L + plotW - tw;
+            return (
+              <g>
+                <rect x={tx} y={ty} width={tw} height={th} rx={6}
+                  fill="#0A0E1A" stroke="#00F0FF" strokeWidth={0.8} opacity={0.92} />
+                <text x={tx + tw / 2} y={ty + 16} fill="#E2E8F0" fontSize={11} textAnchor="middle"
+                  fontFamily="JetBrains Mono, Fira Code, monospace" fontWeight="600">
+                  {fmtFull(hover.value)}
+                  <tspan fill="#94A3B8" fontWeight="400">  ·  </tspan>
+                  <tspan fill="#00F0FF">P{hover.pct}</tspan>
+                </text>
+              </g>
+            );
+          })()}
+        </g>
+      )}
+
+      {/* Invisible overlay to capture pointer events across the full plot area */}
+      <rect x={PAD_L} y={PAD_T} width={plotW} height={plotH}
+        fill="transparent" style={{ cursor: "crosshair" }} />
     </svg>
   );
 }

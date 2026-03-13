@@ -186,6 +186,18 @@ export default function ComparableSearch({
   const [rejected,            setRejected]            = useState<Set<string>>(new Set());
   const [sortBy,              setSortBy]              = useState<"default" | "date" | "size" | "price" | "psf">("default");
   const [sortDir,             setSortDir]             = useState<"asc" | "desc">("desc");
+  const [filtersOpen,         setFiltersOpen]         = useState(false);
+  const [filterTenure,        setFilterTenure]        = useState<"all" | "freehold" | "leasehold">("all");
+  const [filterType,          setFilterType]          = useState<"all" | "flat" | "house">("all");
+  const [filterEpcVerified,   setFilterEpcVerified]   = useState<"all" | "yes" | "no">("all");
+  const [filterNewBuild,      setFilterNewBuild]      = useState<"all" | "yes" | "no">("all");
+  const [filterMinPrice,      setFilterMinPrice]      = useState<string>("");
+  const [filterMaxPrice,      setFilterMaxPrice]      = useState<string>("");
+  const [filterMinArea,       setFilterMinArea]       = useState<string>("");
+  const [filterMaxArea,       setFilterMaxArea]       = useState<string>("");
+  const [filterMinRooms,      setFilterMinRooms]      = useState<string>("");
+  const [filterMaxRooms,      setFilterMaxRooms]      = useState<string>("");
+  const [filterEpcRating,     setFilterEpcRating]     = useState<Set<string>>(new Set());
   const [outwardEnabled,      setOutwardEnabled]      = useState(false); // outward mode only
   const [buildingMonths,      setBuildingMonths]      = useState(36);    // Tier 1 time window (same building / same street)
   const [neighbouringMonths,  setNeighbouringMonths]  = useState(12);    // outward mode only
@@ -337,22 +349,77 @@ export default function ComparableSearch({
     return sorted;
   }
 
+  // ── Filter logic ──────────────────────────────────────────────────────────
+  function filterComps(comps: ComparableCandidate[]): ComparableCandidate[] {
+    return comps.filter(c => {
+      if (filterTenure !== "all" && c.tenure?.toLowerCase() !== filterTenure) return false;
+      if (filterType !== "all") {
+        const ct = c.property_type?.toLowerCase() ?? "";
+        const isFlat = ct.includes("flat") || ct.includes("maisonette");
+        if (filterType === "flat" && !isFlat) return false;
+        if (filterType === "house" && isFlat) return false;
+      }
+      if (filterEpcVerified === "yes" && !c.epc_matched) return false;
+      if (filterEpcVerified === "no" && c.epc_matched) return false;
+      if (filterNewBuild === "yes" && !c.new_build) return false;
+      if (filterNewBuild === "no" && c.new_build) return false;
+      const minP = filterMinPrice ? Number(filterMinPrice) : null;
+      const maxP = filterMaxPrice ? Number(filterMaxPrice) : null;
+      if (minP != null && c.price < minP) return false;
+      if (maxP != null && c.price > maxP) return false;
+      const minA = filterMinArea ? Number(filterMinArea) : null;
+      const maxA = filterMaxArea ? Number(filterMaxArea) : null;
+      if (minA != null && (c.floor_area_sqm == null || c.floor_area_sqm < minA)) return false;
+      if (maxA != null && (c.floor_area_sqm == null || c.floor_area_sqm > maxA)) return false;
+      const minR = filterMinRooms ? Number(filterMinRooms) : null;
+      const maxR = filterMaxRooms ? Number(filterMaxRooms) : null;
+      if (minR != null && (c.bedrooms == null || c.bedrooms < minR)) return false;
+      if (maxR != null && (c.bedrooms == null || c.bedrooms > maxR)) return false;
+      if (filterEpcRating.size > 0 && (!c.epc_rating || !filterEpcRating.has(c.epc_rating))) return false;
+      return true;
+    });
+  }
+
+  const activeFilterCount = [
+    filterTenure !== "all",
+    filterType !== "all",
+    filterEpcVerified !== "all",
+    filterNewBuild !== "all",
+    filterMinPrice !== "",
+    filterMaxPrice !== "",
+    filterMinArea !== "",
+    filterMaxArea !== "",
+    filterMinRooms !== "",
+    filterMaxRooms !== "",
+    filterEpcRating.size > 0,
+  ].filter(Boolean).length;
+
+  function clearAllFilters() {
+    setFilterTenure("all"); setFilterType("all"); setFilterEpcVerified("all");
+    setFilterNewBuild("all"); setFilterMinPrice(""); setFilterMaxPrice("");
+    setFilterMinArea(""); setFilterMaxArea(""); setFilterMinRooms(""); setFilterMaxRooms("");
+    setFilterEpcRating(new Set());
+  }
+
   const byTier: Record<number, ComparableCandidate[]> = {};
   if (result) {
+    const filtered = filterComps(result.comparables);
     if (sortBy === "default") {
-      for (const c of result.comparables) {
+      for (const c of filtered) {
         if (!byTier[c.geographic_tier]) byTier[c.geographic_tier] = [];
         byTier[c.geographic_tier].push(c);
       }
     } else {
       // When sorted, show all in a single flat list (tier grouping would break sort order)
-      byTier[0] = sortComps(result.comparables);
+      byTier[0] = sortComps(filtered);
     }
   }
 
   const activeCount = result
     ? result.comparables.filter(c => !rejected.has(c.transaction_id ?? c.address)).length
     : 0;
+
+  const filteredTotal = result ? filterComps(result.comparables).length : 0;
 
   return (
     <div className="space-y-5">
@@ -554,8 +621,18 @@ export default function ComparableSearch({
           {/* Metadata bar */}
           <div className="flex flex-wrap items-center gap-3 text-xs text-[#94A3B8]">
             <span>
-              <span className="font-semibold text-[#E2E8F0]">{activeCount}</span> of{" "}
-              <span className="font-semibold">{result.comparables.length}</span> comparables
+              {activeFilterCount > 0 ? (
+                <>
+                  <span className="font-semibold text-[#FF2D78]">{filteredTotal}</span>
+                  <span className="text-[#94A3B8]/70"> of </span>
+                  <span className="font-semibold text-[#E2E8F0]">{result.comparables.length}</span> shown
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-[#E2E8F0]">{activeCount}</span> of{" "}
+                  <span className="font-semibold">{result.comparables.length}</span> comparables
+                </>
+              )}
               {result.search_metadata.target_met
                 ? <span className="ml-1 text-[#39FF14] font-medium">(target met)</span>
                 : <span className="ml-1 text-[#FFB800] font-medium">(below target)</span>}
@@ -574,73 +651,328 @@ export default function ComparableSearch({
             )}
           </div>
 
-          {/* Sort buttons + Adopt All */}
+          {/* ── Integrated Sort & Filter toolbar ── */}
           {result.comparables.length > 0 && (
-            <div className="flex items-center justify-between gap-3">
-              {/* Sort buttons */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
-                {([
-                  ["default", "Tier"],
-                  ["date",    "Date"],
-                  ["price",   "Price"],
-                  ["size",    "Size"],
-                  ["psf",     "£/sqft"],
-                ] as [typeof sortBy, string][]).map(([key, label]) => {
-                  const active = sortBy === key;
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => {
-                        if (active && key !== "default") {
-                          setSortDir(d => d === "desc" ? "asc" : "desc");
-                        } else {
-                          setSortBy(key);
-                          setSortDir(key === "date" ? "desc" : key === "default" ? "desc" : "desc");
-                        }
-                      }}
-                      className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                        active
-                          ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                          : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
-                      }`}
-                    >
-                      {label}
-                      {active && key !== "default" && (
-                        <span className="ml-1">{sortDir === "asc" ? "↑" : "↓"}</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+            <div className="space-y-0">
+              {/* Toolbar row */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  {/* Sort buttons */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
+                    {([
+                      ["default", "Tier"],
+                      ["date",    "Date"],
+                      ["price",   "Price"],
+                      ["size",    "Size"],
+                      ["psf",     "£/sqft"],
+                    ] as [typeof sortBy, string][]).map(([key, label]) => {
+                      const active = sortBy === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => {
+                            if (active && key !== "default") {
+                              setSortDir(d => d === "desc" ? "asc" : "desc");
+                            } else {
+                              setSortBy(key);
+                              setSortDir(key === "date" ? "desc" : key === "default" ? "desc" : "desc");
+                            }
+                          }}
+                          className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
+                            active
+                              ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
+                              : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
+                          }`}
+                        >
+                          {label}
+                          {active && key !== "default" && (
+                            <span className="ml-1">{sortDir === "asc" ? "↑" : "↓"}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
 
-              {/* Adopt All / Unadopt All */}
-              {onAdoptAll && (() => {
-                const nonRejected = result.comparables.filter(c => !rejected.has(c.transaction_id ?? c.address));
-                const unadopted = nonRejected.filter(c => !adoptedIds.has(c.transaction_id ?? c.address));
-                const adopted = nonRejected.filter(c => adoptedIds.has(c.transaction_id ?? c.address));
-                const allAdopted = unadopted.length === 0 && adopted.length > 0;
-                return allAdopted ? (
+                  {/* Divider */}
+                  <div className="h-5 w-px bg-[#334155]" />
+
+                  {/* Filter toggle */}
                   <button
-                    onClick={() => onUnadoptAll?.(adopted)}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors bg-[#FF3131]/15 text-[#FF3131] border border-[#FF3131]/30 hover:bg-[#FF3131]/25"
-                  >
-                    Unadopt All ({adopted.length})
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => onAdoptAll(unadopted)}
-                    disabled={nonRejected.length === 0}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
-                      nonRejected.length === 0
-                        ? "bg-[#1E293B] text-[#94A3B8]/50 cursor-not-allowed border border-[#334155]/50"
-                        : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30 hover:bg-[#39FF14]/25"
+                    onClick={() => setFiltersOpen(v => !v)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md border transition-colors ${
+                      filtersOpen || activeFilterCount > 0
+                        ? "bg-[#FF2D78]/15 text-[#FF2D78] border-[#FF2D78]/30"
+                        : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
                     }`}
                   >
-                    Adopt All ({unadopted.length})
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
+                    Filter
+                    {activeFilterCount > 0 && (
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold bg-[#FF2D78] text-white">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                    <svg className={`w-3 h-3 transition-transform ${filtersOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                   </button>
-                );
-              })()}
+                </div>
+
+                {/* Adopt All / Unadopt All */}
+                {onAdoptAll && (() => {
+                  const nonRejected = result.comparables.filter(c => !rejected.has(c.transaction_id ?? c.address));
+                  const unadopted = nonRejected.filter(c => !adoptedIds.has(c.transaction_id ?? c.address));
+                  const adopted = nonRejected.filter(c => adoptedIds.has(c.transaction_id ?? c.address));
+                  const allAdopted = unadopted.length === 0 && adopted.length > 0;
+                  return allAdopted ? (
+                    <button
+                      onClick={() => onUnadoptAll?.(adopted)}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors bg-[#FF3131]/15 text-[#FF3131] border border-[#FF3131]/30 hover:bg-[#FF3131]/25"
+                    >
+                      Unadopt All ({adopted.length})
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => onAdoptAll(unadopted)}
+                      disabled={nonRejected.length === 0}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
+                        nonRejected.length === 0
+                          ? "bg-[#1E293B] text-[#94A3B8]/50 cursor-not-allowed border border-[#334155]/50"
+                          : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30 hover:bg-[#39FF14]/25"
+                      }`}
+                    >
+                      Adopt All ({unadopted.length})
+                    </button>
+                  );
+                })()}
+              </div>
+
+              {/* ── Filter panel (collapsible) ── */}
+              {filtersOpen && (
+                <div className="mt-2 rounded-xl border border-[#334155] bg-[#0A0E1A] p-4 space-y-4">
+                  {/* Row 1: Toggle filters */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {/* Tenure */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Tenure</label>
+                      <div className="flex gap-1">
+                        {(["all", "freehold", "leasehold"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterTenure(v)}
+                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                              filterTenure === v
+                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
+                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                            }`}
+                          >{v}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Property type */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Type</label>
+                      <div className="flex gap-1">
+                        {(["all", "flat", "house"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterType(v)}
+                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                              filterType === v
+                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
+                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                            }`}
+                          >{v}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* EPC verified */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">EPC Verified</label>
+                      <div className="flex gap-1">
+                        {(["all", "yes", "no"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterEpcVerified(v)}
+                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                              filterEpcVerified === v
+                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
+                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                            }`}
+                          >{v}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* New build */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">New Build</label>
+                      <div className="flex gap-1">
+                        {(["all", "yes", "no"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterNewBuild(v)}
+                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                              filterNewBuild === v
+                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
+                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                            }`}
+                          >{v}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Range filters */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    {/* Price range */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Price Range (£)</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" placeholder="Min" value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)}
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[#475569] text-xs">–</span>
+                        <input type="number" placeholder="Max" value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)}
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                      </div>
+                    </div>
+
+                    {/* Floor area range */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Floor Area (m²)</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" placeholder="Min" value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)}
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[#475569] text-xs">–</span>
+                        <input type="number" placeholder="Max" value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)}
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                      </div>
+                    </div>
+
+                    {/* Rooms range */}
+                    <div>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Hab. Rooms</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" placeholder="Min" value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} min="0" max="20"
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[#475569] text-xs">–</span>
+                        <input type="number" placeholder="Max" value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} min="0" max="20"
+                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 3: EPC rating multi-select */}
+                  <div>
+                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">EPC Rating</label>
+                    <div className="flex gap-1">
+                      {["A", "B", "C", "D", "E", "F", "G"].map(r => {
+                        const sel = filterEpcRating.has(r);
+                        const ratingColor: Record<string, string> = {
+                          A: "#39FF14", B: "#4ADE80", C: "#FBBF24", D: "#F97316", E: "#EA580C", F: "#FF3131", G: "#FF3131",
+                        };
+                        return (
+                          <button key={r} onClick={() => setFilterEpcRating(prev => {
+                            const next = new Set(prev);
+                            if (next.has(r)) next.delete(r); else next.add(r);
+                            return next;
+                          })}
+                            className={`w-8 h-7 text-[11px] font-bold rounded-md border transition-colors ${
+                              sel
+                                ? `border-[${ratingColor[r]}]/50 text-[${ratingColor[r]}]`
+                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                            }`}
+                            style={sel ? { backgroundColor: `${ratingColor[r]}20`, color: ratingColor[r], borderColor: `${ratingColor[r]}80` } : undefined}
+                          >{r}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Active filters summary & clear */}
+                  {activeFilterCount > 0 && (
+                    <div className="flex items-center justify-between pt-2 border-t border-[#334155]/50">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {filterTenure !== "all" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            {filterTenure}
+                            <button onClick={() => setFilterTenure("all")} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {filterType !== "all" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            {filterType}
+                            <button onClick={() => setFilterType("all")} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {filterEpcVerified !== "all" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            EPC {filterEpcVerified === "yes" ? "verified" : "unverified"}
+                            <button onClick={() => setFilterEpcVerified("all")} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {filterNewBuild !== "all" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            {filterNewBuild === "yes" ? "new build" : "not new build"}
+                            <button onClick={() => setFilterNewBuild("all")} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinPrice || filterMaxPrice) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            £{filterMinPrice || "0"}–£{filterMaxPrice || "∞"}
+                            <button onClick={() => { setFilterMinPrice(""); setFilterMaxPrice(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinArea || filterMaxArea) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            {filterMinArea || "0"}–{filterMaxArea || "∞"} m²
+                            <button onClick={() => { setFilterMinArea(""); setFilterMaxArea(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinRooms || filterMaxRooms) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            {filterMinRooms || "0"}–{filterMaxRooms || "∞"} rooms
+                            <button onClick={() => { setFilterMinRooms(""); setFilterMaxRooms(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {filterEpcRating.size > 0 && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                            EPC {[...filterEpcRating].sort().join(", ")}
+                            <button onClick={() => setFilterEpcRating(new Set())} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                      </div>
+                      <button onClick={clearAllFilters}
+                        className="text-[10px] font-medium text-[#94A3B8] hover:text-[#FF2D78] transition-colors shrink-0 ml-2"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Active filter pills (shown when panel is collapsed) */}
+              {!filtersOpen && activeFilterCount > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {filterTenure !== "all" && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                      {filterTenure} <button onClick={() => setFilterTenure("all")} className="hover:text-white">×</button>
+                    </span>
+                  )}
+                  {filterType !== "all" && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                      {filterType} <button onClick={() => setFilterType("all")} className="hover:text-white">×</button>
+                    </span>
+                  )}
+                  {filterEpcVerified !== "all" && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                      EPC {filterEpcVerified === "yes" ? "verified" : "unverified"} <button onClick={() => setFilterEpcVerified("all")} className="hover:text-white">×</button>
+                    </span>
+                  )}
+                  {activeFilterCount > 3 && (
+                    <span className="text-[10px] text-[#94A3B8]">+{activeFilterCount - 3} more</span>
+                  )}
+                  <button onClick={clearAllFilters}
+                    className="text-[10px] font-medium text-[#94A3B8] hover:text-[#FF2D78] transition-colors ml-1"
+                  >
+                    Clear all
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -848,7 +1180,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             )}
           </span>
         )}
-        {/* (2) Build year and age */}
+        {/* (2) Build year, era, and age */}
         {comp.build_year != null && (
           <span>
             Built {comp.build_year}
@@ -859,6 +1191,9 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
               <span className="text-[#94A3B8]/70"> ({buildAge} yrs)</span>
             )}
           </span>
+        )}
+        {comp.building_era && (
+          <span className="capitalize">{comp.building_era}</span>
         )}
         {comp.new_build && (
           <span className="bg-[#7B2FBE]/20 text-[#818CF8] px-1.5 py-0.5 rounded-full font-medium">

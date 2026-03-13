@@ -53,6 +53,7 @@ CSV_COLS = [
 _sb = None
 _epc_download_lock = asyncio.Lock()       # only one EPC download at a time
 _epc_downloading: set[str] = set()        # outward codes currently downloading
+_epc_events: dict[str, asyncio.Event] = {}  # outward → Event (set when download done)
 
 def _get_sb():
     global _sb
@@ -817,13 +818,19 @@ def _ingest_epc(outward: str, db_rows: list[dict]) -> None:
 async def ensure_epc_cache(outward: str) -> None:
     """Download + cache all EPC records for an outward code if not fresh.
     Uses a global lock so only one EPC download runs at a time,
-    preventing traffic spikes on the EPC API."""
+    preventing traffic spikes on the EPC API.
+    Concurrent callers for the same outward code block until the download
+    finishes (instead of silently skipping)."""
     outward = outward.strip().upper()
 
-    # Skip if already downloading or fresh
+    # If another coroutine is already downloading this code, wait for it
     if outward in _epc_downloading:
-        logging.warning("EPC cache: %s already downloading, skipping", outward)
-        return
+        evt = _epc_events.get(outward)
+        if evt:
+            logging.warning("EPC cache: %s already downloading, waiting …", outward)
+            await evt.wait()
+            return
+        # Event missing (shouldn't happen) — fall through to lock
     fresh = await asyncio.to_thread(_is_epc_cache_fresh_sync, outward)
     if fresh:
         logging.warning("EPC cache: %s is fresh, skipping download", outward)
@@ -842,10 +849,14 @@ async def ensure_epc_cache(outward: str) -> None:
         if fresh:
             return
         _epc_downloading.add(outward)
+        _epc_events[outward] = asyncio.Event()
         try:
             await _do_epc_download(outward, email, api_key)
         finally:
             _epc_downloading.discard(outward)
+            evt = _epc_events.pop(outward, None)
+            if evt:
+                evt.set()  # wake all waiters
 
 
 async def _do_epc_download(outward: str, email: str, api_key: str) -> None:

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import ReactDOM from "react-dom";
 import dynamic from "next/dynamic";
 import { EpcBadge } from "./components/EpcBadge";
 import { HpiBarChart } from "./components/HpiBarChart";
@@ -55,6 +56,22 @@ interface BrownfieldSite {
   hazardous_substances: boolean;
 }
 
+interface NearbyPlanningApp {
+  lpa_name: string | null;
+  site_name: string | null;
+  decision_date: string | null;
+  lpa_app_no: string | null;
+  decision: string | null;
+  application_type: string | null;
+  application_type_full: string | null;
+  postcode: string | null;
+  description: string | null;
+  street_name: string | null;
+  status: string | null;
+  valid_date: string | null;
+  distance_m: number | null;
+}
+
 interface PropertyResult {
   uprn: string | null;
   postcode: string | null;
@@ -101,6 +118,8 @@ interface PropertyResult {
   ground_running_sand: string | null;
   ground_soluble_rocks: string | null;
   brownfield: BrownfieldSite[];
+  nearby_planning: NearbyPlanningApp[];
+  nearby_planning_london_only: boolean;
   tenure: string | null;
   lease_commencement: string | null;
   lease_term_years: number | null;
@@ -158,7 +177,17 @@ const PROP_CARD_DEFAULTS: Record<string, CardSizeKey> = {
   coal:         "1x1",
   ground:       "2x1",
   asbestos:     "1x1",
+  planning:     "3x1",
 };
+
+function planningDecisionStyle(decision: string | null): { bg: string; text: string } {
+  if (!decision) return { bg: "bg-[#FFB800]/10", text: "text-[#FFB800]" };
+  const d = decision.toLowerCase();
+  if (d.includes("approv") || d.includes("grant")) return { bg: "bg-[#39FF14]/10", text: "text-[#39FF14]" };
+  if (d.includes("refus")) return { bg: "bg-[#FF3131]/10", text: "text-[#FF3131]" };
+  if (d.includes("withdraw")) return { bg: "bg-[#94A3B8]/10", text: "text-[#94A3B8]" };
+  return { bg: "bg-[#FFB800]/10", text: "text-[#FFB800]" };
+}
 
 const FLOOD_STYLE: Record<string, string> = {
   "Very Low": "bg-[#39FF14]/10 text-[#39FF14]",
@@ -482,6 +511,77 @@ export default function Home() {
   const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "wider", "hpi", "adopted", "report_typing", "semv", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
+  const compClusterTabs: TabKey[] = ["comparables", "wider", "adopted"];
+  const [compDropdownOpen, setCompDropdownOpen] = useState(false);
+  const compDropdownRef = useRef<HTMLDivElement>(null);
+  const compBtnRef = useRef<HTMLButtonElement>(null);
+  const [compDropdownPos, setCompDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const compCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openCompDropdown = useCallback(() => {
+    if (compCloseTimer.current) { clearTimeout(compCloseTimer.current); compCloseTimer.current = null; }
+    if (compBtnRef.current) {
+      const r = compBtnRef.current.getBoundingClientRect();
+      setCompDropdownPos({ top: r.bottom + 4, left: r.left });
+    }
+    setCompDropdownOpen(true);
+  }, []);
+  const closeCompDropdown = useCallback(() => {
+    compCloseTimer.current = setTimeout(() => setCompDropdownOpen(false), 150);
+  }, []);
+  const tabScrollRef = useRef<HTMLDivElement>(null);
+  const leftFadeRef = useRef<HTMLDivElement>(null);
+  const rightFadeRef = useRef<HTMLDivElement>(null);
+  const tabScrollRaf = useRef<number | null>(null);
+  const tabScrollSpeed = useRef(0);
+  const stopTabScroll = useCallback(() => {
+    if (tabScrollRaf.current) { cancelAnimationFrame(tabScrollRaf.current); tabScrollRaf.current = null; }
+    tabScrollSpeed.current = 0;
+  }, []);
+  const startTabScroll = useCallback((direction: "left" | "right") => {
+    stopTabScroll();
+    const sign = direction === "left" ? -1 : 1;
+    const maxSpeed = 27;
+    const accel = 0.9;
+    const tick = () => {
+      tabScrollSpeed.current = Math.min(tabScrollSpeed.current + accel, maxSpeed);
+      tabScrollRef.current?.scrollBy({ left: sign * tabScrollSpeed.current });
+      tabScrollRaf.current = requestAnimationFrame(tick);
+    };
+    tabScrollRaf.current = requestAnimationFrame(tick);
+  }, [stopTabScroll]);
+
+  // Show/hide gradient fade hover zones based on scroll position
+  const updateFades = useCallback(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const showLeft = el.scrollLeft > 8;
+    const showRight = el.scrollLeft < el.scrollWidth - el.clientWidth - 8;
+    if (leftFadeRef.current) {
+      leftFadeRef.current.style.opacity = showLeft ? "1" : "0";
+      leftFadeRef.current.style.pointerEvents = showLeft ? "auto" : "none";
+    }
+    if (rightFadeRef.current) {
+      rightFadeRef.current.style.opacity = showRight ? "1" : "0";
+      rightFadeRef.current.style.pointerEvents = showRight ? "auto" : "none";
+    }
+  }, []);
+
+  // Auto-scroll active tab into view
+  useEffect(() => {
+    const el = tabScrollRef.current;
+    if (!el) return;
+    const btn = el.querySelector(`[data-tab="${activeTab}"]`) as HTMLElement;
+    if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [activeTab]);
+
+  // Update fades on mount, resize, and tab order changes
+  useEffect(() => {
+    // Wait one frame for DOM layout to stabilise before measuring scroll overflow
+    const raf = requestAnimationFrame(() => updateFades());
+    window.addEventListener("resize", updateFades);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", updateFades); stopTabScroll(); };
+  }, [tabOrder, updateFades, stopTabScroll]);
+
   type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
   const [adoptedSortPostcode, setAdoptedSortPostcode] = useState<AdoptedSortKey>("default");
   const [adoptedSortDirPostcode, setAdoptedSortDirPostcode] = useState<"asc" | "desc">("desc");
@@ -1462,61 +1562,131 @@ export default function Home() {
             }
           `}</style>
 
-          {/* Tab bar — drag to reorder */}
-          <div className="flex items-end border-b border-[#334155] mb-6 no-print">
-            {/* ── Section tabs only ── */}
-            {tabOrder.map((tab) => {
-              const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "House Price Index", comparables: "Direct Comparables", wider: "Wider Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
-              const active = activeTab === tab;
-              const badge = tab === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
-              return (
-                <button
-                  key={tab}
-                  draggable
-                  onDragStart={(e) => {
-                    dragTabRef.current = tab;
-                    e.dataTransfer.effectAllowed = "move";
-                    if (e.currentTarget) {
-                      e.dataTransfer.setDragImage(e.currentTarget, e.currentTarget.offsetWidth / 2, e.currentTarget.offsetHeight / 2);
-                    }
-                  }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const from = dragTabRef.current;
-                    if (!from || from === tab) return;
-                    setTabOrder(prev => {
-                      const next = [...prev];
-                      const fromIdx = next.indexOf(from);
-                      const toIdx = next.indexOf(tab);
-                      if (fromIdx === -1 || toIdx === -1) return prev;
-                      next.splice(fromIdx, 1);
-                      next.splice(toIdx, 0, from);
-                      return next;
-                    });
-                    dragTabRef.current = null;
-                  }}
-                  onDragEnd={() => { dragTabRef.current = null; }}
-                  onClick={() => setActiveTab(tab)}
-                  className={`mr-1 px-5 py-2.5 text-sm font-medium rounded-t-lg border -mb-px transition-colors cursor-grab active:cursor-grabbing ${
-                    active
-                      ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
-                      : "border-transparent text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
-                  }`}
-                  style={active ? { borderBottomColor: "#111827" } : undefined}
-                >
-                  {labels[tab]}
-                  {badge !== null && (
-                    <span className="ml-1.5 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[#39FF14] text-[#0A0E1A]">
-                      {badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          {/* Tab bar — scrollable, drag to reorder */}
+          <div className="relative mb-6 no-print">
+            {/* Left hover-to-scroll zone — subtle translucent cyan hint */}
+            <div ref={leftFadeRef} className="pointer-events-none absolute left-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to right, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("left")} onMouseLeave={stopTabScroll} />
+
+            {/* Scrollable tab strip */}
+            <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[#334155] scrollbar-hide scroll-smooth" onScroll={updateFades}>
+              {(() => {
+                const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
+                const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", adopted: "Adopted" };
+                let compClusterRendered = false;
+                return tabOrder.map((tab) => {
+                  // ── Comparables cluster: render a single dropdown button in place of first comp tab ──
+                  if (compClusterTabs.includes(tab)) {
+                    if (compClusterRendered) return null; // skip 2nd & 3rd
+                    compClusterRendered = true;
+                    const isCompActive = compClusterTabs.includes(activeTab);
+                    const adoptedBadge = adoptedComparables.length > 0 ? adoptedComparables.length : null;
+                    const activeCompLabel = isCompActive ? compShortLabels[activeTab] : null;
+                    return (
+                      <div key="comp-cluster" className="relative flex-shrink-0 mr-1 -mb-px" onMouseEnter={openCompDropdown} onMouseLeave={closeCompDropdown}>
+                        <button
+                          ref={compBtnRef}
+                          data-tab={isCompActive ? activeTab : "comparables"}
+                          onClick={() => { if (!isCompActive) { setActiveTab("comparables"); setCompDropdownOpen(false); } }}
+                          className={`flex items-center gap-1 whitespace-nowrap px-5 py-2.5 text-sm font-medium rounded-t-lg border transition-colors ${
+                            isCompActive
+                              ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
+                              : "border-transparent text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                          }`}
+                          style={isCompActive ? { borderBottomColor: "#111827" } : undefined}
+                        >
+                          Comparable
+                          {adoptedBadge !== null && (
+                            <span className="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[#39FF14] text-[#0A0E1A]">
+                              {adoptedBadge}
+                            </span>
+                          )}
+                          <svg className={`w-3.5 h-3.5 ml-1 transition-transform ${compDropdownOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                        </button>
+                        {compDropdownOpen && ReactDOM.createPortal(
+                          <div
+                            ref={compDropdownRef}
+                            onMouseEnter={openCompDropdown}
+                            onMouseLeave={closeCompDropdown}
+                            className="fixed min-w-[200px] rounded-lg border border-[#334155] bg-[#111827] shadow-lg shadow-black/40 py-1"
+                            style={{ top: compDropdownPos.top, left: compDropdownPos.left, zIndex: 9999 }}
+                          >
+                            {compClusterTabs.map(ct => {
+                              const isActive = activeTab === ct;
+                              const badge = ct === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
+                              return (
+                                <button
+                                  key={ct}
+                                  onClick={() => { setActiveTab(ct); setCompDropdownOpen(false); }}
+                                  className={`w-full text-left px-4 py-2 text-sm transition-colors flex items-center justify-between ${
+                                    isActive ? "text-[#00F0FF] bg-[#00F0FF]/10" : "text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                                  }`}
+                                >
+                                  {labels[ct]}
+                                  {badge !== null && (
+                                    <span className="ml-2 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[#39FF14] text-[#0A0E1A]">
+                                      {badge}
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>,
+                          document.body
+                        )}
+                      </div>
+                    );
+                  }
+                  // ── Regular tab button ──
+                  const active = activeTab === tab;
+                  return (
+                    <button
+                      key={tab}
+                      data-tab={tab}
+                      draggable
+                      onDragStart={(e) => {
+                        dragTabRef.current = tab;
+                        e.dataTransfer.effectAllowed = "move";
+                        if (e.currentTarget) {
+                          e.dataTransfer.setDragImage(e.currentTarget, e.currentTarget.offsetWidth / 2, e.currentTarget.offsetHeight / 2);
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const from = dragTabRef.current;
+                        if (!from || from === tab) return;
+                        setTabOrder(prev => {
+                          const next = [...prev];
+                          const fromIdx = next.indexOf(from);
+                          const toIdx = next.indexOf(tab);
+                          if (fromIdx === -1 || toIdx === -1) return prev;
+                          next.splice(fromIdx, 1);
+                          next.splice(toIdx, 0, from);
+                          return next;
+                        });
+                        dragTabRef.current = null;
+                      }}
+                      onDragEnd={() => { dragTabRef.current = null; }}
+                      onClick={() => setActiveTab(tab)}
+                      className={`flex-shrink-0 whitespace-nowrap mr-1 px-5 py-2.5 text-sm font-medium rounded-t-lg border -mb-px transition-colors cursor-grab active:cursor-grabbing ${
+                        active
+                          ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
+                          : "border-transparent text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                      }`}
+                      style={active ? { borderBottomColor: "#111827" } : undefined}
+                    >
+                      {labels[tab]}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Right hover-to-scroll zone — subtle translucent cyan hint */}
+            <div ref={rightFadeRef} className="pointer-events-none absolute right-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to left, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("right")} onMouseLeave={stopTabScroll} />
           </div>
 
           {/* ── Action bar: case controls + customise ──────────────────────────── */}
@@ -1887,22 +2057,32 @@ export default function Home() {
                       <dd>
                         {epcConfig && epcScore != null ? (
                           result.epc_url ? (
-                            <a href={result.epc_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
-                              <span style={{
-                                display: "inline-flex", alignItems: "center", gap: "6px",
-                                padding: "3px 10px 3px 4px", borderRadius: "999px",
-                                border: `1.5px solid ${epcConfig.color}`, backgroundColor: `${epcConfig.color}1a`,
-                                cursor: "pointer",
-                              }}>
+                            <span className="inline-flex items-center gap-2">
+                              <a href={result.epc_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
                                 <span style={{
-                                  display: "flex", alignItems: "center", justifyContent: "center",
-                                  width: "24px", height: "24px", borderRadius: "50%",
-                                  backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
-                                  fontWeight: 700, fontSize: "13px",
-                                }}>{epcConfig.band}</span>
-                                <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore} · View ↗</span>
-                              </span>
-                            </a>
+                                  display: "inline-flex", alignItems: "center", gap: "6px",
+                                  padding: "3px 10px 3px 4px", borderRadius: "999px",
+                                  border: `1.5px solid ${epcConfig.color}`, backgroundColor: `${epcConfig.color}1a`,
+                                  cursor: "pointer",
+                                }}>
+                                  <span style={{
+                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                    width: "24px", height: "24px", borderRadius: "50%",
+                                    backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
+                                    fontWeight: 700, fontSize: "13px",
+                                  }}>{epcConfig.band}</span>
+                                  <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore}</span>
+                                  <span style={{ fontSize: "10px", fontWeight: 500, color: "#94A3B8" }}>View certificate ↗</span>
+                                </span>
+                              </a>
+                              <button
+                                onClick={() => downloadEpc(result.epc_url!)}
+                                className="inline-flex items-center gap-1 text-[10px] text-[#94A3B8] hover:text-[#00F0FF] transition-colors"
+                                title="Save EPC as PDF"
+                              >
+                                📄 Save as PDF
+                              </button>
+                            </span>
                           ) : (
                             <span style={{
                               display: "inline-flex", alignItems: "center", gap: "6px",
@@ -2169,6 +2349,7 @@ export default function Home() {
               <div className="px-6 py-4 border-b border-[#334155]/60">
                 <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Conservation Area</h2>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">Planning Data — Historic England designation</p>
+                <p className="text-xs text-[#FFB800]/60 mt-1">⚠ planning.data.gov.uk coverage: ~135/340 councils (40%). Verify with local authority.</p>
               </div>
               {(result.conservation_areas ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-4">
@@ -2366,6 +2547,7 @@ export default function Home() {
               <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
                 <h3 className="text-xs font-orbitron text-[#00F0FF] tracking-[3px] uppercase">Listed Buildings</h3>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">Historic England NHLE — within 50 m</p>
+                <p className="text-xs text-[#FFB800]/60 mt-1">⚠ planning.data.gov.uk outlines: 74 providers, partial coverage. NHLE point data is authoritative.</p>
               </div>
               {(result.listed_buildings ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-3 border-b border-[#334155]/60">
@@ -2541,6 +2723,75 @@ export default function Home() {
             })()}
             </PropCard>
 
+            {/* Nearby Planning Applications card */}
+            <PropCard id="planning" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
+            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full flex flex-col">
+              <div className="px-6 py-4 border-b border-[#334155]/60">
+                <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Nearby Planning Applications</h2>
+                <p className="text-xs text-[#94A3B8]/70 mt-0.5">GLA Planning London Datahub — within 500 m</p>
+              </div>
+              {result.nearby_planning_london_only && result.region !== "London" ? (
+                <div className="flex items-center gap-2 px-6 py-4">
+                  <span className="inline-block w-2 h-2 rounded-full bg-[#67E8F9] shrink-0" />
+                  <p className="text-sm text-[#94A3B8]">Planning application data available for London properties only</p>
+                </div>
+              ) : (result.nearby_planning ?? []).length === 0 ? (
+                <div className="flex items-center gap-2 px-6 py-4">
+                  <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
+                  <p className="text-sm text-[#94A3B8]">No recent applications within 500 m</p>
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto max-h-[420px]">
+                  <ul className="divide-y divide-[#334155]/60">
+                    {(result.nearby_planning ?? []).map((app, i) => {
+                      const ds = planningDecisionStyle(app.decision);
+                      const desc = app.description
+                        ? app.description.length > 120 ? app.description.slice(0, 120) + "…" : app.description
+                        : "No description";
+                      const decDate = app.decision_date
+                        ? (() => {
+                            const parts = app.decision_date.split("/");
+                            if (parts.length === 3) {
+                              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                              const mIdx = parseInt(parts[1], 10) - 1;
+                              return `${months[mIdx] ?? parts[1]} ${parts[2]}`;
+                            }
+                            return app.decision_date;
+                          })()
+                        : null;
+                      return (
+                        <li key={app.lpa_app_no || i} className="px-6 py-3 hover:bg-[#1E293B]/50 transition-colors">
+                          <div className="flex items-start gap-3">
+                            <span className={`shrink-0 mt-0.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${ds.bg} ${ds.text}`}>
+                              {app.decision ?? "Pending"}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm text-[#E2E8F0] leading-snug">{desc}</p>
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
+                                {app.street_name && (
+                                  <span className="text-xs text-[#94A3B8]">{app.street_name}</span>
+                                )}
+                                {app.distance_m != null && (
+                                  <span className="text-xs text-[#94A3B8]/60">{app.distance_m} m</span>
+                                )}
+                                {decDate && (
+                                  <span className="text-xs text-[#94A3B8]/60">{decDate}</span>
+                                )}
+                                {app.application_type && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#334155]/60 text-[#94A3B8]/80">{app.application_type}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+            </PropCard>
+
             {/* Asbestos Risk card */}
             <PropCard id="asbestos" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
             {(() => {
@@ -2649,6 +2900,10 @@ export default function Home() {
 
           {/* ── Tab 2: Same Building Sales ───────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "comparables" ? undefined : "none" }}>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#00F0FF]" />
+              Direct Comparables
+            </h2>
             <ComparableSearch
               key={`building-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
               mode="building"
@@ -2696,9 +2951,15 @@ export default function Home() {
 
           {/* ── Tab: Wider Comparables ───────────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "wider" ? undefined : "none" }}>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#00F0FF]" />
+              Wider Comparables
+            </h2>
             <ComparableSearch
               key={`wider-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
               mode="outward"
+              initialResult={outwardSearchResult}
+              onSearchResult={setOutwardSearchResult}
               locked={!buildingSearchDone}
               excludeIds={buildingSearchIds}
               excludeAddressKeys={buildingSearchAddressKeys}
@@ -2739,6 +3000,13 @@ export default function Home() {
 
           {/* ── Tab 4: Adopted Comparables ───────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "adopted" ? undefined : "none" }}>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
+              Adopted Comparables
+              {adoptedComparables.length > 0 && (
+                <span className="ml-1 text-[#39FF14]">({adoptedComparables.length})</span>
+              )}
+            </h2>
             {adoptedComparables.length === 0 ? (
               <div className="text-center py-16 text-[#94A3B8]/70 space-y-2">
                 <p className="text-4xl">📋</p>
@@ -2893,14 +3161,14 @@ export default function Home() {
                   <span className="font-semibold text-[#F5E6C8]">{adoptedComparables.length}</span> comparable{adoptedComparables.length !== 1 ? "s" : ""} adopted
                 </p>
 
-                {/* ── Same Postcode group (tiers 1-2) ─────────────────── */}
+                {/* ── Adopted comparables grouped by tier ─────────────────── */}
                 {adoptedPostcodeComps.length > 0 && (() => {
                   const sorted = sortAdoptedComps(adoptedPostcodeComps, adoptedSortPostcode, adoptedSortDirPostcode);
                   return (
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">
-                          Same Postcode ({adoptedPostcodeComps.length})
+                          All Adopted ({adoptedPostcodeComps.length})
                         </span>
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
@@ -2924,7 +3192,6 @@ export default function Home() {
                       </div>
                       {adoptedSortPostcode === "default" ? (
                         Object.entries(adoptedByTier)
-                          .filter(([t]) => Number(t) <= 2)
                           .sort(([a], [b]) => Number(a) - Number(b))
                           .map(([tierStr, comps]) => {
                             const tier = Number(tierStr);
