@@ -110,6 +110,7 @@ export default function SignupPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="email"
               className="w-full px-4 py-2.5 rounded-lg outline-none transition-colors"
               style={inputStyle}
               onFocus={(e) => e.target.style.borderColor = '#4a9eff'}
@@ -127,6 +128,7 @@ export default function SignupPage() {
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
+              autoComplete="new-password"
               className="w-full px-4 py-2.5 rounded-lg outline-none transition-colors"
               style={inputStyle}
               onFocus={(e) => e.target.style.borderColor = '#4a9eff'}
@@ -143,6 +145,7 @@ export default function SignupPage() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
+              autoComplete="new-password"
               className="w-full px-4 py-2.5 rounded-lg outline-none transition-colors"
               style={inputStyle}
               onFocus={(e) => e.target.style.borderColor = '#4a9eff'}

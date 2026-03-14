@@ -13,17 +13,20 @@ All external RSS fetches run in parallel via asyncio.gather().
 """
 
 import asyncio
+import csv
+import io
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from routers.auth import get_current_user
+from routers.auth import get_current_user, require_admin
 from routers.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,10 @@ async def _fetch_feed(
     try:
         resp = await client.get(feed_url, timeout=10.0)
         resp.raise_for_status()
+        # Reject oversized feeds (>5MB) to prevent XML bomb attacks
+        if len(resp.content) > 5 * 1024 * 1024:
+            logger.warning("News feed too large [%s]: %d bytes", source_name, len(resp.content))
+            return []
         raw_xml = resp.text
     except Exception as exc:
         logger.warning("News feed fetch failed [%s]: %s", source_name, exc)
@@ -396,6 +403,313 @@ async def start_market_refresh() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Macro indicator auto-refresh — ONS + Bank of England free APIs
+# ---------------------------------------------------------------------------
+
+# ONS time-series JSON endpoints (no API key required)
+_ONS_SERIES = {
+    "cpi": {
+        "url": "https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7g7/mm23/data",
+        "period": "months",
+        "label": "CPI",
+        "format_value": lambda v: f"{v}%",
+        "format_change": lambda c: f"{c:+.1f}%",
+    },
+    "unemployment": {
+        "url": "https://www.ons.gov.uk/employmentandlabourmarket/peoplenotinwork/unemployment/timeseries/mgsx/lms/data",
+        "period": "months",
+        "label": "Unemployment",
+        "format_value": lambda v: f"{v}%",
+        "format_change": lambda c: f"{c:+.1f}%",
+    },
+    "gdp_growth": {
+        "url": "https://www.ons.gov.uk/economy/grossdomesticproductgdp/timeseries/ihyq/pn2/data",
+        "period": "quarters",
+        "label": "GDP Growth",
+        "format_value": lambda v: f"{v}%",
+        "format_change": lambda c: f"{c:+.1f}%",
+    },
+}
+
+# Bank of England Statistical Interactive Database (CSV, no key)
+_BOE_SERIES = {
+    "base_rate": {
+        "code": "IUDBEDR",
+        "label": "Base Rate",
+        "format_value": lambda v: f"{v:.2f}%",
+        "format_change": lambda c: f"{c:+.2f}%",
+    },
+    "gilt_10y": {
+        "code": "IUDMNZC",
+        "label": "10Y Gilt",
+        "format_value": lambda v: f"{v:.2f}%",
+        "format_change": lambda c: f"{c:+.2f}%",
+    },
+}
+
+# Land Registry UK HPI REST endpoint
+_UKHPI_REST = "https://landregistry.data.gov.uk/data/ukhpi/region/united-kingdom/month"
+
+
+async def _fetch_ons_series(client: httpx.AsyncClient, key: str, cfg: dict) -> Optional[dict]:
+    """Fetch one ONS time-series and return an indicator dict."""
+    try:
+        resp = await client.get(cfg["url"], timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json()
+        entries = data.get(cfg["period"], [])
+        if not entries:
+            return None
+
+        # Find last two entries with numeric values
+        valid = []
+        for e in reversed(entries):
+            val = e.get("value", "").strip()
+            if val and val not in ("", "."):
+                try:
+                    valid.append((e, float(val)))
+                except ValueError:
+                    continue
+            if len(valid) >= 2:
+                break
+
+        if not valid:
+            return None
+
+        latest_entry, latest_val = valid[0]
+        # Build last_updated date from entry fields
+        year = latest_entry.get("year", "")
+        month = latest_entry.get("month", "")
+        quarter = latest_entry.get("quarter", "")
+        if year and month:
+            # ONS months: "January", "February", etc.
+            try:
+                dt = datetime.strptime(f"{year} {month}", "%Y %B")
+                last_updated = dt.strftime("%Y-%m-%d")
+            except ValueError:
+                last_updated = f"{year}-01-01"
+        elif year and quarter:
+            q_map = {"Q1": "03", "Q2": "06", "Q3": "09", "Q4": "12"}
+            m = q_map.get(quarter, "01")
+            last_updated = f"{year}-{m}-01"
+        else:
+            last_updated = None
+
+        change = None
+        direction = "neutral"
+        if len(valid) >= 2:
+            prev_val = valid[1][1]
+            change = round(latest_val - prev_val, 2)
+            if change > 0:
+                direction = "up"
+            elif change < 0:
+                direction = "down"
+
+        return {
+            "indicator_key": key,
+            "label": cfg["label"],
+            "value": cfg["format_value"](latest_val),
+            "change_amount": cfg["format_change"](change) if change is not None else None,
+            "direction": direction,
+            "last_updated": last_updated,
+        }
+    except Exception as exc:
+        logger.warning("ONS fetch failed [%s]: %s", key, exc)
+        return None
+
+
+async def _fetch_boe_series(client: httpx.AsyncClient, key: str, cfg: dict) -> Optional[dict]:
+    """Fetch one BoE series (CSV) and return an indicator dict."""
+    try:
+        url = (
+            "https://www.bankofengland.co.uk/boeapps/database/"
+            "_iadb-fromshowcolumns.asp?csv.x=yes"
+            f"&Datefrom=01/Jan/2024&Dateto=01/Jan/2028"
+            f"&SeriesCodes={cfg['code']}&CSVF=CN&UsingCodes=Y"
+        )
+        # BoE blocks non-browser User-Agents with 403
+        resp = await client.get(
+            url,
+            timeout=15.0,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        resp.raise_for_status()
+        text = resp.text
+
+        # Parse CSV — BoE format: DATE,SERIES,VALUE (header + data rows)
+        rows = []
+        reader = csv.reader(io.StringIO(text))
+        for row in reader:
+            if len(row) >= 3:
+                date_str, val_str = row[0].strip(), row[2].strip()
+            elif len(row) >= 2:
+                date_str, val_str = row[0].strip(), row[1].strip()
+            else:
+                continue
+            try:
+                val = float(val_str)
+                dt = datetime.strptime(date_str, "%d %b %Y")
+                rows.append((dt, val))
+            except (ValueError, TypeError):
+                continue
+
+        if not rows:
+            return None
+
+        rows.sort(key=lambda x: x[0])
+        latest_dt, latest_val = rows[-1]
+
+        # For base rate, find the last rate *change* (not just last day)
+        if key == "base_rate":
+            # Walk backwards to find previous different value
+            prev_val = latest_val
+            change_date = latest_dt
+            for dt, val in reversed(rows):
+                if val != latest_val:
+                    prev_val = val
+                    break
+            change = round(latest_val - prev_val, 4)
+        else:
+            # For gilt: compare to previous trading day
+            if len(rows) >= 2:
+                prev_val = rows[-2][1]
+                change = round(latest_val - prev_val, 4)
+            else:
+                prev_val = latest_val
+                change = 0.0
+
+        direction = "up" if change > 0 else ("down" if change < 0 else "neutral")
+
+        return {
+            "indicator_key": key,
+            "label": cfg["label"],
+            "value": cfg["format_value"](latest_val),
+            "change_amount": cfg["format_change"](change) if change != 0 else "—",
+            "direction": direction,
+            "last_updated": latest_dt.strftime("%Y-%m-%d"),
+        }
+    except Exception as exc:
+        logger.warning("BoE fetch failed [%s]: %s", key, exc)
+        return None
+
+
+async def _fetch_avg_house_price(client: httpx.AsyncClient) -> Optional[dict]:
+    """Fetch UK average house price from Land Registry UK HPI REST API."""
+    try:
+        # Fetch the 2 most recent months from the REST endpoint
+        now = datetime.now(timezone.utc)
+        months = []
+        for offset in range(0, 6):  # Try last 6 months to find 2 with data
+            y = now.year if now.month - offset > 0 else now.year - 1
+            m = (now.month - offset - 1) % 12 + 1
+            months.append(f"{y:04d}-{m:02d}")
+
+        prices = []
+        for month_str in months:
+            if len(prices) >= 2:
+                break
+            url = f"{_UKHPI_REST}/{month_str}.json"
+            try:
+                resp = await client.get(url, timeout=10.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("result", {}).get("primaryTopic", None)
+                    if items:
+                        avg = items.get("averagePrice", None)
+                        if avg is not None:
+                            prices.append((month_str, float(avg)))
+            except Exception:
+                continue
+
+        if not prices:
+            return None
+
+        latest_month, latest_price = prices[0]
+        prev_price = prices[1][1] if len(prices) >= 2 else latest_price
+
+        change = round(latest_price - prev_price)
+        direction = "up" if change > 0 else ("down" if change < 0 else "neutral")
+
+        price_k = round(latest_price / 1000)
+        change_k = round(abs(change) / 1000, 1)
+        sign = "+" if change >= 0 else "−"
+        change_str = f"{sign}£{change_k}k" if change != 0 else "—"
+
+        return {
+            "indicator_key": "avg_house_price",
+            "label": "Avg House Price",
+            "value": f"£{price_k}k",
+            "change_amount": change_str,
+            "direction": direction,
+            "last_updated": f"{latest_month}-01",
+        }
+    except Exception as exc:
+        logger.warning("UK HPI REST fetch failed: %s", exc)
+        return None
+
+
+async def refresh_macro_indicators() -> dict:
+    """Fetch latest macro indicators from ONS + BoE + Land Registry and upsert."""
+    supabase = _get_supabase()
+    if supabase is None:
+        return {"status": "skipped", "reason": "supabase_not_configured"}
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": _USER_AGENT},
+        follow_redirects=True,
+    ) as client:
+        tasks = []
+        # ONS series
+        for key, cfg in _ONS_SERIES.items():
+            tasks.append(_fetch_ons_series(client, key, cfg))
+        # BoE series
+        for key, cfg in _BOE_SERIES.items():
+            tasks.append(_fetch_boe_series(client, key, cfg))
+        # House price
+        tasks.append(_fetch_avg_house_price(client))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    updated = 0
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("Macro indicator task raised: %s", result)
+            continue
+        if result is None:
+            continue
+        try:
+            supabase.table("macro_indicators").upsert(
+                result, on_conflict="indicator_key"
+            ).execute()
+            updated += 1
+            logger.info("Macro indicator updated: %s = %s", result["indicator_key"], result["value"])
+        except Exception as exc:
+            logger.error("Macro indicator upsert failed [%s]: %s", result.get("indicator_key"), exc)
+
+    logger.info("Macro indicator refresh complete — %d/%d updated", updated, len(results))
+    return {"status": "ok", "updated": updated}
+
+
+_macro_task: asyncio.Task | None = None
+
+
+async def start_macro_refresh() -> None:
+    """Refresh macro indicators immediately then every 6 hours."""
+    global _macro_task
+
+    async def _loop():
+        while True:
+            try:
+                await refresh_macro_indicators()
+            except Exception as exc:
+                logger.error("Macro indicator background refresh error: %s", exc)
+            await asyncio.sleep(6 * 3600)  # 6 hours
+
+    _macro_task = asyncio.create_task(_loop())
+    logger.info("Macro indicator background refresh task started")
+
+
+# ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
 
@@ -458,10 +772,11 @@ async def get_articles(
             query = query.eq("category", category)
 
         if search and search.strip():
-            # Case-insensitive keyword search on title OR summary
-            term = search.strip()
-            logger.info("NEWS SEARCH: term=%r, category=%r", term, category)
-            query = query.or_(f"title.ilike.%{term}%,summary.ilike.%{term}%")
+            # Sanitise: strip PostgREST filter syntax characters to prevent injection
+            term = re.sub(r"[^a-zA-Z0-9 \-'&]", "", search.strip())[:100]
+            if term:
+                logger.info("NEWS SEARCH: term=%r, category=%r", term, category)
+                query = query.or_(f"title.ilike.%{term}%,summary.ilike.%{term}%")
 
         resp = query.execute()
         logger.info("NEWS SEARCH RESULT: %d articles returned (search=%r)", len(resp.data or []), search)
@@ -492,10 +807,18 @@ async def get_ticker(_user=Depends(get_current_user)):
 
 
 @router.post("/refresh")
-async def trigger_refresh(user=Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def trigger_refresh(request: Request, user=Depends(require_admin)):
     """Manually trigger an RSS refresh. Admin users only."""
-    # TODO(terry): add is_admin check once admin flag is available on JWT
     result = await run_refresh()
+    return result
+
+
+@router.post("/refresh-macro")
+@limiter.limit("5/minute")
+async def trigger_macro_refresh(request: Request, user=Depends(require_admin)):
+    """Manually trigger a macro indicator refresh. Admin users only."""
+    result = await refresh_macro_indicators()
     return result
 
 

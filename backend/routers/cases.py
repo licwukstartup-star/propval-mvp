@@ -10,14 +10,13 @@ Status flow (enforced):
   (back to draft allowed from in_progress only — for rework)
 """
 
-import os
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from supabase import create_client
 
-from .auth import get_current_user
+from .auth import get_current_user, get_user_supabase
+from .rate_limit import limiter
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
@@ -35,20 +34,8 @@ STATUS_FLOW: dict[str, list[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Supabase client (lazy, service-role)
+# Supabase client — user-scoped (RLS enforced via anon key + user JWT)
 # ---------------------------------------------------------------------------
-_supabase = None
-
-
-def _sb():
-    global _supabase
-    if _supabase is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if not url or not key:
-            raise HTTPException(500, "Supabase not configured")
-        _supabase = create_client(url, key)
-    return _supabase
 
 
 def _generate_display_name(
@@ -69,13 +56,12 @@ def _generate_display_name(
     return " | ".join(parts)
 
 
-def _next_case_sequence(uprn: str | None) -> int:
+def _next_case_sequence(sb, uprn: str | None) -> int:
     """Get the next case_sequence number for a UPRN."""
     if not uprn:
         return 1
     resp = (
-        _sb()
-        .table("cases")
+        sb.table("cases")
         .select("case_sequence")
         .eq("uprn", uprn)
         .order("case_sequence", desc=True)
@@ -128,12 +114,14 @@ class UpdateCaseRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.post("")
-async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def save_case(request: Request, body: SaveCaseRequest, user: dict = Depends(get_current_user)):
     """Create a new case. Display name is system-generated."""
     if body.case_type not in CASE_TYPES:
         raise HTTPException(400, f"Invalid case_type. Allowed: {CASE_TYPES}")
 
-    case_seq = _next_case_sequence(body.uprn)
+    sb = get_user_supabase(user)
+    case_seq = _next_case_sequence(sb, body.uprn)
     display_name = _generate_display_name(
         body.address, body.case_type, body.valuation_basis, body.valuation_date,
     )
@@ -162,35 +150,27 @@ async def save_case(body: SaveCaseRequest, user: dict = Depends(get_current_user
         "report_content": body.report_content,
         "ui_state": body.ui_state or {},
     }
-    resp = _sb().table("cases").insert(row).execute()
+    resp = sb.table("cases").insert(row).execute()
     return resp.data[0]
 
 
 @router.get("")
-async def list_cases(user: dict = Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def list_cases(request: Request, user: dict = Depends(get_current_user)):
     """List all cases for the current user (summary only)."""
-    q = (
-        _sb()
-        .table("cases")
-        .select(
-            "id, display_name, title, address, postcode, uprn, "
-            "case_type, status, valuation_date, case_sequence, "
-            "valuation_basis, firm_reference, created_at, updated_at"
-        )
-        .eq("surveyor_id", user["id"])
+    sb = get_user_supabase(user)
+    cols = (
+        "id, display_name, title, address, postcode, uprn, "
+        "case_type, status, valuation_date, case_sequence, "
+        "valuation_basis, firm_reference, created_at, updated_at"
     )
+    q = sb.table("cases").select(cols).eq("surveyor_id", user["id"])
     try:
         resp = q.eq("is_deleted", False).order("updated_at", desc=True).execute()
     except Exception:
         # is_deleted column may not exist yet — fall back without filter
         resp = (
-            _sb()
-            .table("cases")
-            .select(
-                "id, display_name, title, address, postcode, uprn, "
-                "case_type, status, valuation_date, case_sequence, "
-                "valuation_basis, firm_reference, created_at, updated_at"
-            )
+            sb.table("cases").select(cols)
             .eq("surveyor_id", user["id"])
             .order("updated_at", desc=True)
             .execute()
@@ -199,11 +179,12 @@ async def list_cases(user: dict = Depends(get_current_user)):
 
 
 @router.get("/{case_id}")
-async def get_case(case_id: str, user: dict = Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def get_case(request: Request, case_id: str, user: dict = Depends(get_current_user)):
     """Retrieve a full saved case."""
+    sb = get_user_supabase(user)
     resp = (
-        _sb()
-        .table("cases")
+        sb.table("cases")
         .select("*")
         .eq("id", case_id)
         .eq("surveyor_id", user["id"])
@@ -215,14 +196,15 @@ async def get_case(case_id: str, user: dict = Depends(get_current_user)):
 
 
 @router.patch("/{case_id}")
+@limiter.limit("30/minute")
 async def update_case(
-    case_id: str, body: UpdateCaseRequest, user: dict = Depends(get_current_user)
+    request: Request, case_id: str, body: UpdateCaseRequest, user: dict = Depends(get_current_user)
 ):
     """Update a saved case. Enforces status flow and issued immutability."""
+    sb = get_user_supabase(user)
     # Fetch current case first
     current = (
-        _sb()
-        .table("cases")
+        sb.table("cases")
         .select("status, case_type")
         .eq("id", case_id)
         .eq("surveyor_id", user["id"])
@@ -279,7 +261,7 @@ async def update_case(
     # Regenerate display_name if valuation fields changed
     if any(k in updates for k in ("valuation_basis", "valuation_date")):
         # Fetch full case to get address/case_type
-        full = _sb().table("cases").select("address, case_type, valuation_basis, valuation_date").eq("id", case_id).execute()
+        full = sb.table("cases").select("address, case_type, valuation_basis, valuation_date").eq("id", case_id).execute()
         if full.data:
             c = full.data[0]
             updates["display_name"] = _generate_display_name(
@@ -291,8 +273,7 @@ async def update_case(
             updates["title"] = updates["display_name"]
 
     resp = (
-        _sb()
-        .table("cases")
+        sb.table("cases")
         .update(updates)
         .eq("id", case_id)
         .eq("surveyor_id", user["id"])
@@ -304,12 +285,13 @@ async def update_case(
 
 
 @router.delete("/{case_id}")
-async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def delete_case(request: Request, case_id: str, user: dict = Depends(get_current_user)):
     """Delete a saved case. Cannot delete issued cases."""
+    sb = get_user_supabase(user)
     # Check status first
     current = (
-        _sb()
-        .table("cases")
+        sb.table("cases")
         .select("status")
         .eq("id", case_id)
         .eq("surveyor_id", user["id"])
@@ -326,8 +308,7 @@ async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
 
     try:
         resp = (
-            _sb()
-            .table("cases")
+            sb.table("cases")
             .update({"is_deleted": True, "updated_at": "now()"})
             .eq("id", case_id)
             .eq("surveyor_id", user["id"])
@@ -336,8 +317,7 @@ async def delete_case(case_id: str, user: dict = Depends(get_current_user)):
     except Exception:
         # is_deleted column may not exist yet — hard delete instead
         resp = (
-            _sb()
-            .table("cases")
+            sb.table("cases")
             .delete()
             .eq("id", case_id)
             .eq("surveyor_id", user["id"])

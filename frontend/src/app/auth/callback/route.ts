@@ -6,8 +6,9 @@ export async function GET(request: Request) {
   const code = searchParams.get('code')
   const next = searchParams.get('next') ?? '/'
 
-  // Prevent open redirect — only allow relative paths starting with /
-  const safePath = (next.startsWith('/') && !next.startsWith('//')) ? next : '/'
+  // Prevent open redirect — only allow simple relative paths
+  const isSafePath = /^\/[a-zA-Z0-9\-_/?.=&%]*$/.test(next) && !next.startsWith('//')
+  const safePath = isSafePath ? next : '/'
 
   if (code) {
     const supabase = await createClient()

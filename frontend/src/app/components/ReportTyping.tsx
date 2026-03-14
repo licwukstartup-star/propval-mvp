@@ -382,6 +382,7 @@ export default function ReportTyping({ result, adoptedComparables, session, repo
         </div>
         {text && !editing ? (
           <div>
+            <p className="text-[9px] italic mb-1.5" style={{ color: "#FFB800" }}>AI-Assisted Draft — Requires Professional Review</p>
             <p className="text-xs leading-relaxed" style={{ color: "#E2E8F0" }}>{text}</p>
             <div className="flex gap-2 mt-2">
               <button onClick={() => setAiEditing(prev => ({ ...prev, [sectionKey]: true }))}

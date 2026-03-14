@@ -4,31 +4,12 @@ Phase 1: one template per surveyor (single firm).
 Future: migrate to firm_id with shared access across firm members.
 """
 
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from supabase import create_client
 
-from .auth import get_current_user
+from .auth import get_current_user, get_user_supabase
 
 router = APIRouter(prefix="/api/firm-templates", tags=["firm-templates"])
-
-# ---------------------------------------------------------------------------
-# Supabase client (lazy, service-role)
-# ---------------------------------------------------------------------------
-_supabase = None
-
-
-def _sb():
-    global _supabase
-    if _supabase is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if not url or not key:
-            raise HTTPException(500, "Supabase not configured")
-        _supabase = create_client(url, key)
-    return _supabase
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +137,9 @@ class FirmTemplateUpdate(BaseModel):
 @router.get("")
 async def get_firm_template(user=Depends(get_current_user)):
     uid = user["id"]
+    sb = get_user_supabase(user)
     resp = (
-        _sb()
-        .table("firm_templates")
+        sb.table("firm_templates")
         .select("*")
         .eq("surveyor_id", uid)
         .execute()
@@ -178,6 +159,7 @@ async def upsert_firm_template(
     user=Depends(get_current_user),
 ):
     uid = user["id"]
+    sb = get_user_supabase(user)
     # Build update dict from non-None fields only
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
@@ -185,8 +167,7 @@ async def upsert_firm_template(
 
     # Check if template exists
     existing = (
-        _sb()
-        .table("firm_templates")
+        sb.table("firm_templates")
         .select("id")
         .eq("surveyor_id", uid)
         .execute()
@@ -195,8 +176,7 @@ async def upsert_firm_template(
     if existing.data:
         # Update existing
         resp = (
-            _sb()
-            .table("firm_templates")
+            sb.table("firm_templates")
             .update(updates)
             .eq("surveyor_id", uid)
             .execute()
@@ -205,8 +185,7 @@ async def upsert_firm_template(
         # Insert new
         updates["surveyor_id"] = uid
         resp = (
-            _sb()
-            .table("firm_templates")
+            sb.table("firm_templates")
             .insert(updates)
             .execute()
         )

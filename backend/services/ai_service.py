@@ -232,9 +232,11 @@ async def generate_property_narrative(
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 _GEMINI_URL,
-                params={"key": api_key},
                 json=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
             )
         latency_ms = int((time.monotonic() - start) * 1000)
 

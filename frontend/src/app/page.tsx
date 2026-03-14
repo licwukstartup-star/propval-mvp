@@ -7,6 +7,8 @@ import { EpcBadge } from "./components/EpcBadge";
 import { HpiBarChart } from "./components/HpiBarChart";
 import { HpiIndexChart } from "./components/HpiIndexChart";
 import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard } from "@/components/ComparableSearch";
+import ManualComparableForm from "@/components/ManualComparableForm";
+import AdditionalComparable from "@/components/AdditionalComparable";
 
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 import { useAuth } from "@/components/AuthProvider";
@@ -506,12 +508,12 @@ export default function Home() {
   const [enrichSlowDone, setEnrichSlowDone] = useState(false);
   const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "wider" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
+  type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "wider", "hpi", "adopted", "report_typing", "semv", "report"];
+  const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "wider", "additional", "hpi", "adopted", "report_typing", "semv", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
   const dragTabRef = useRef<TabKey | null>(null);
-  const compClusterTabs: TabKey[] = ["comparables", "wider", "adopted"];
+  const compClusterTabs: TabKey[] = ["comparables", "wider", "additional", "adopted"];
   const [compDropdownOpen, setCompDropdownOpen] = useState(false);
   const compDropdownRef = useRef<HTMLDivElement>(null);
   const compBtnRef = useRef<HTMLButtonElement>(null);
@@ -591,6 +593,7 @@ export default function Home() {
   const [buildingSearchResult, setBuildingSearchResult] = useState<SearchResponse | null>(null);
   const [outwardSearchResult, setOutwardSearchResult] = useState<SearchResponse | null>(null);
   const [adoptedComparables, setAdoptedComparables] = useState<ComparableCandidate[]>([]);
+  const [showManualForm, setShowManualForm] = useState(false);
   const [hpiCorrelation, setHpiCorrelation] = useState(100);
   const [sizeElasticity, setSizeElasticity] = useState(15); // β in percent (0–50)
   const [valuationDate, setValuationDate] = useState("");
@@ -829,6 +832,215 @@ export default function Home() {
     mapTileLayer,
   };
 
+  // ---------------------------------------------------------------------------
+  // Snapshot API helpers (Option E: UPRN Timeline)
+  // ---------------------------------------------------------------------------
+
+  /** Convert a case_comps API row (with nested property_snapshots) → ComparableCandidate */
+  function caseCompToCandidate(cc: Record<string, unknown>): ComparableCandidate {
+    const snap = (cc.property_snapshots ?? {}) as Record<string, unknown>;
+    return {
+      transaction_id: (snap.source_ref as string) ?? null,
+      address:        snap.address as string,
+      postcode:       snap.postcode as string,
+      outward_code:   snap.outward_code as string,
+      saon:           (snap.saon as string) ?? null,
+      tenure:         (snap.tenure as string) ?? null,
+      property_type:  (snap.property_type as string) ?? null,
+      house_sub_type: (snap.house_sub_type as string) ?? null,
+      bedrooms:       (snap.bedrooms as number) ?? null,
+      building_name:  (snap.building_name as string) ?? null,
+      building_era:   (snap.building_era as string) ?? null,
+      build_year:     (snap.build_year as number) ?? null,
+      build_year_estimated: (snap.build_year_estimated as boolean) ?? false,
+      floor_area_sqm: (snap.floor_area_sqm as number) ?? null,
+      price:          snap.price as number,
+      transaction_date: snap.transaction_date as string,
+      new_build:      (snap.new_build as boolean) ?? false,
+      transaction_category: (snap.transaction_category as string) ?? null,
+      geographic_tier: (cc.geographic_tier as number) ?? 0,
+      tier_label:     (cc.tier_label as string) ?? "",
+      spec_relaxations: (cc.spec_relaxations as string[]) ?? [],
+      time_window_months: 0,
+      epc_matched:    !!(snap.epc_rating),
+      epc_rating:     (snap.epc_rating as string) ?? null,
+      epc_score:      (snap.epc_score as number) ?? null,
+      months_ago:     null,
+      lease_remaining: null,
+      snapshot_id:    snap.id as string,
+      case_comp_id:   cc.id as string,
+      source:         snap.source as string,
+    };
+  }
+
+  /** Build the POST body for /api/snapshots/adopt from a ComparableCandidate */
+  function candidateToAdoptBody(comp: ComparableCandidate, caseId: string) {
+    // Determine source: if it has a transaction_id and no explicit source, it's from HMLR PPD
+    const source = comp.source ?? (comp.transaction_id ? "hmlr_ppd" : "manual");
+    return {
+      case_id: caseId,
+      source,
+      source_ref: comp.transaction_id ?? undefined,
+      address: comp.address,
+      postcode: comp.postcode,
+      outward_code: comp.outward_code,
+      saon: comp.saon ?? undefined,
+      tenure: comp.tenure ?? undefined,
+      property_type: comp.property_type ?? undefined,
+      house_sub_type: comp.house_sub_type ?? undefined,
+      bedrooms: comp.bedrooms ?? undefined,
+      building_name: comp.building_name ?? undefined,
+      building_era: comp.building_era ?? undefined,
+      build_year: comp.build_year ?? undefined,
+      build_year_estimated: comp.build_year_estimated,
+      floor_area_sqm: comp.floor_area_sqm ?? undefined,
+      price: comp.price,
+      transaction_date: comp.transaction_date,
+      new_build: comp.new_build,
+      transaction_category: comp.transaction_category ?? undefined,
+      epc_rating: comp.epc_rating ?? undefined,
+      epc_score: comp.epc_score ?? undefined,
+      geographic_tier: comp.geographic_tier,
+      tier_label: comp.tier_label,
+      spec_relaxations: comp.spec_relaxations?.length ? comp.spec_relaxations : undefined,
+    };
+  }
+
+  /** Adopt a comp via the snapshot API. Returns the comp with snapshot_id/case_comp_id attached. */
+  async function adoptCompAPI(comp: ComparableCandidate, caseId: string): Promise<ComparableCandidate | null> {
+    if (!session?.access_token) return null;
+    try {
+      const res = await fetch(`${API_BASE}/api/snapshots/adopt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(candidateToAdoptBody(comp, caseId)),
+      });
+      if (res.status === 409) return { ...comp }; // already adopted — keep in state
+      if (!res.ok) { console.error("adoptCompAPI failed:", res.status); return null; }
+      const data = await res.json();
+      return { ...comp, snapshot_id: data.snapshot_id, case_comp_id: data.case_comp?.id };
+    } catch (e) { console.error("adoptCompAPI error:", e); return null; }
+  }
+
+  /** Unadopt a comp via the snapshot API (soft-delete). */
+  async function unadoptCompAPI(comp: ComparableCandidate): Promise<boolean> {
+    if (!session?.access_token || !comp.case_comp_id) return false;
+    try {
+      const res = await fetch(`${API_BASE}/api/case-comps/${comp.case_comp_id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      return res.ok;
+    } catch (e) { console.error("unadoptCompAPI error:", e); return false; }
+  }
+
+  /** Load adopted comps from the case-comps API. Returns null on failure (caller should fall back). */
+  async function loadCompsFromAPI(caseId: string): Promise<ComparableCandidate[] | null> {
+    if (!session?.access_token) return null;
+    try {
+      const res = await fetch(`${API_BASE}/api/case-comps?case_id=${caseId}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.comps?.length) return null; // no comps in API — fall back to JSON blob
+      return (data.comps as Record<string, unknown>[]).map(caseCompToCandidate);
+    } catch { return null; }
+  }
+
+  /** Bulk-sync local-only comps (no case_comp_id) to the API after first save. */
+  async function syncLocalCompsToAPI(comps: ComparableCandidate[], caseId: string): Promise<ComparableCandidate[]> {
+    const results: ComparableCandidate[] = [];
+    for (const comp of comps) {
+      if (comp.case_comp_id) { results.push(comp); continue; } // already synced
+      const synced = await adoptCompAPI(comp, caseId);
+      results.push(synced ?? comp); // keep original if API fails
+    }
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Adopt / unadopt handlers (API-backed when case exists, local-only otherwise)
+  // ---------------------------------------------------------------------------
+
+  /** Toggle-adopt a single comparable. */
+  const handleAdopt = useCallback(async (comp: ComparableCandidate) => {
+    const k = comp.transaction_id ?? comp.address;
+    setAdoptedComparables(prev => {
+      const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
+      if (exists) {
+        // Unadopt — fire API in background
+        const existing = prev.find(c => (c.transaction_id ?? c.address) === k);
+        if (existing?.case_comp_id && currentCaseId) unadoptCompAPI(existing);
+        return prev.filter(c => (c.transaction_id ?? c.address) !== k);
+      }
+      return [...prev, comp];
+    });
+    // If adopting (not toggling off) and case exists, persist to API
+    const alreadyAdopted = adoptedComparables.some(c => (c.transaction_id ?? c.address) === k);
+    if (!alreadyAdopted && currentCaseId) {
+      const synced = await adoptCompAPI(comp, currentCaseId);
+      if (synced) {
+        setAdoptedComparables(prev =>
+          prev.map(c => (c.transaction_id ?? c.address) === k ? { ...c, snapshot_id: synced.snapshot_id, case_comp_id: synced.case_comp_id } : c)
+        );
+      }
+    }
+  }, [currentCaseId, adoptedComparables, session?.access_token]);
+
+  /** Batch-adopt multiple comparables. */
+  const handleAdoptAll = useCallback(async (comps: ComparableCandidate[]) => {
+    const existing = new Set(adoptedComparables.map(c => c.transaction_id ?? c.address));
+    const newComps = comps.filter(c => !existing.has(c.transaction_id ?? c.address));
+    if (!newComps.length) return;
+    setAdoptedComparables(prev => [...prev, ...newComps]);
+    // Persist new comps to API in background
+    if (currentCaseId) {
+      for (const comp of newComps) {
+        const synced = await adoptCompAPI(comp, currentCaseId);
+        if (synced) {
+          const k = comp.transaction_id ?? comp.address;
+          setAdoptedComparables(prev =>
+            prev.map(c => (c.transaction_id ?? c.address) === k ? { ...c, snapshot_id: synced.snapshot_id, case_comp_id: synced.case_comp_id } : c)
+          );
+        }
+      }
+    }
+  }, [currentCaseId, adoptedComparables, session?.access_token]);
+
+  /** Batch-unadopt multiple comparables. */
+  const handleUnadoptAll = useCallback(async (comps: ComparableCandidate[]) => {
+    const toRemove = new Set(comps.map(c => c.transaction_id ?? c.address));
+    // Fire API calls for any that have case_comp_id
+    if (currentCaseId) {
+      for (const comp of comps) {
+        const existing = adoptedComparables.find(c => (c.transaction_id ?? c.address) === (comp.transaction_id ?? comp.address));
+        if (existing?.case_comp_id) unadoptCompAPI(existing);
+      }
+    }
+    setAdoptedComparables(prev => prev.filter(c => !toRemove.has(c.transaction_id ?? c.address)));
+  }, [currentCaseId, adoptedComparables, session?.access_token]);
+
+  /** Unadopt a single comp (used in Adopted tab). */
+  const handleUnadoptOne = useCallback(async (comp: ComparableCandidate) => {
+    if (comp.case_comp_id && currentCaseId) unadoptCompAPI(comp);
+    setAdoptedComparables(prev => prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address)));
+  }, [currentCaseId, session?.access_token]);
+
+  /** Add a manual/additional comparable. */
+  const handleAddManual = useCallback(async (comp: ComparableCandidate) => {
+    setAdoptedComparables(prev => [...prev, comp]);
+    if (currentCaseId) {
+      const synced = await adoptCompAPI(comp, currentCaseId);
+      if (synced) {
+        const k = comp.transaction_id ?? comp.address;
+        setAdoptedComparables(prev =>
+          prev.map(c => (c.transaction_id ?? c.address) === k ? { ...c, snapshot_id: synced.snapshot_id, case_comp_id: synced.case_comp_id } : c)
+        );
+      }
+    }
+  }, [currentCaseId, session?.access_token]);
+
   async function saveCase(silent = false) {
     if (!result || !session?.access_token) return;
     if (!silent) setSavingCase(true);
@@ -847,8 +1059,13 @@ export default function Home() {
       });
       if (!res.ok) throw new Error("Save failed");
       const saved = await res.json();
+      const isNewCase = !currentCaseId;
       setCurrentCaseId(saved.id);
       setShowSaveDialog(false);
+      // Sync local-only comps to snapshot API after first save (new case gets an ID)
+      if (isNewCase && adoptedComparables.length > 0) {
+        syncLocalCompsToAPI(adoptedComparables, saved.id).then(synced => setAdoptedComparables(synced));
+      }
       if (pendingExitRef.current) {
         doResetHome();
         return;
@@ -922,7 +1139,9 @@ export default function Home() {
       loadedAtRef.current = Date.now();  // suppress auto-save during state restoration
       setResult(snapshot);
       setEnrichSlowDone(true);  // saved case already enriched
-      setAdoptedComparables(data.comparables ?? []);
+      // Try loading comps from case-comps API (Option E), fall back to JSON blob
+      const apiComps = await loadCompsFromAPI(data.id);
+      setAdoptedComparables(apiComps ?? data.comparables ?? []);
       // Restore saved AI narrative if available (no auto-generation)
       if (data.ai_narrative && (data.ai_narrative.location_summary || data.ai_narrative.property_overview || data.ai_narrative.market_context)) {
         setAiNarrative(data.ai_narrative);
@@ -1351,6 +1570,7 @@ export default function Home() {
   }
 
   const ADOPTED_TIER_STYLE: Record<number, { pill: string; header: string; icon: string }> = {
+    0: { pill: "bg-[#FF2D78]/15 text-[#FF2D78]",  header: "bg-[#FF2D78]/5  border-[#FF2D78]/30", icon: "✏️" },
     1: { pill: "bg-[#39FF14]/15 text-[#39FF14]",  header: "bg-[#39FF14]/5  border-[#39FF14]/30", icon: "🏢" },
     2: { pill: "bg-[#00F0FF]/15 text-[#00F0FF]",   header: "bg-[#00F0FF]/5  border-[#00F0FF]/30",  icon: "🏘️" },
     3: { pill: "bg-[#FFB800]/15 text-[#FFB800]",  header: "bg-[#FFB800]/5  border-[#FFB800]/30", icon: "📍" },
@@ -1570,8 +1790,8 @@ export default function Home() {
             {/* Scrollable tab strip */}
             <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[#334155] scrollbar-hide scroll-smooth" onScroll={updateFades}>
               {(() => {
-                const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
-                const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", adopted: "Adopted" };
+                const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", additional: "Additional Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
+                const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", additional: "Additional", adopted: "Adopted" };
                 let compClusterRendered = false;
                 return tabOrder.map((tab) => {
                   // ── Comparables cluster: render a single dropdown button in place of first comp tab ──
@@ -2914,20 +3134,9 @@ export default function Home() {
                 setBuildingSearchAddressKeys(addressKeys);
                 setBuildingSearchDone(true);
               }}
-              onAdopt={(comp) => setAdoptedComparables(prev => {
-                const k = comp.transaction_id ?? comp.address;
-                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
-                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
-              })}
-              onAdoptAll={(comps) => setAdoptedComparables(prev => {
-                const existing = new Set(prev.map(c => c.transaction_id ?? c.address));
-                const newComps = comps.filter(c => !existing.has(c.transaction_id ?? c.address));
-                return [...prev, ...newComps];
-              })}
-              onUnadoptAll={(comps) => setAdoptedComparables(prev => {
-                const toRemove = new Set(comps.map(c => c.transaction_id ?? c.address));
-                return prev.filter(c => !toRemove.has(c.transaction_id ?? c.address));
-              })}
+              onAdopt={handleAdopt}
+              onAdoptAll={handleAdoptAll}
+              onUnadoptAll={handleUnadoptAll}
               adoptedIds={adoptedIds}
               valuationDate={valuationDate}
               onValuationDateChange={setValuationDate}
@@ -2963,20 +3172,9 @@ export default function Home() {
               locked={!buildingSearchDone}
               excludeIds={buildingSearchIds}
               excludeAddressKeys={buildingSearchAddressKeys}
-              onAdopt={(comp) => setAdoptedComparables(prev => {
-                const k = comp.transaction_id ?? comp.address;
-                const exists = prev.some(c => (c.transaction_id ?? c.address) === k);
-                return exists ? prev.filter(c => (c.transaction_id ?? c.address) !== k) : [...prev, comp];
-              })}
-              onAdoptAll={(comps) => setAdoptedComparables(prev => {
-                const existing = new Set(prev.map(c => c.transaction_id ?? c.address));
-                const newComps = comps.filter(c => !existing.has(c.transaction_id ?? c.address));
-                return [...prev, ...newComps];
-              })}
-              onUnadoptAll={(comps) => setAdoptedComparables(prev => {
-                const toRemove = new Set(comps.map(c => c.transaction_id ?? c.address));
-                return prev.filter(c => !toRemove.has(c.transaction_id ?? c.address));
-              })}
+              onAdopt={handleAdopt}
+              onAdoptAll={handleAdoptAll}
+              onUnadoptAll={handleUnadoptAll}
               adoptedIds={adoptedIds}
               valuationDate={valuationDate}
               onValuationDateChange={setValuationDate}
@@ -2998,20 +3196,47 @@ export default function Home() {
             />
           </div>
 
+          {/* ── Tab: Additional Comparables ────────────────────────────────── */}
+          <div className="pb-8" style={{ display: activeTab === "additional" ? undefined : "none" }}>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#FF2D78]" />
+              Additional Comparables
+            </h2>
+            <AdditionalComparable
+              onAdopt={(comp) => handleAddManual({ ...comp, source: "additional" })}
+              adoptedIds={adoptedIds}
+              valuationDate={valuationDate}
+            />
+          </div>
+
           {/* ── Tab 4: Adopted Comparables ───────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "adopted" ? undefined : "none" }}>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
-              Adopted Comparables
-              {adoptedComparables.length > 0 && (
-                <span className="ml-1 text-[#39FF14]">({adoptedComparables.length})</span>
-              )}
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] flex items-center gap-2">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
+                Adopted Comparables
+                {adoptedComparables.length > 0 && (
+                  <span className="ml-1 text-[#39FF14]">({adoptedComparables.length})</span>
+                )}
+              </h2>
+              <button
+                onClick={() => setShowManualForm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20 transition-colors"
+              >
+                <span>✏️</span> Add Manual
+              </button>
+            </div>
             {adoptedComparables.length === 0 ? (
-              <div className="text-center py-16 text-[#94A3B8]/70 space-y-2">
+              <div className="text-center py-16 text-[#94A3B8]/70 space-y-3">
                 <p className="text-4xl">📋</p>
                 <p className="text-sm font-medium text-[#94A3B8]">No comparables adopted yet</p>
-                <p className="text-xs text-[#94A3B8]/70">Click <span className="font-semibold text-[#F5E6C8]">Adopt</span> on any comparable in the search tabs to add it here.</p>
+                <p className="text-xs text-[#94A3B8]/70">Click <span className="font-semibold text-[#F5E6C8]">Adopt</span> on any comparable in the search tabs, or add your own:</p>
+                <button
+                  onClick={() => setShowManualForm(true)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20 transition-colors"
+                >
+                  <span>✏️</span> Add Manual Comparable
+                </button>
               </div>
             ) : (
               <div className="space-y-4">
@@ -3211,7 +3436,7 @@ export default function Home() {
                                     const globalIdx = adoptedComparables.indexOf(comp);
                                     return (
                                       <CompCard key={comp.transaction_id ?? idx} comp={comp} valuationYear={valuationYear} isAdopted={true}
-                                        onAdopt={() => setAdoptedComparables(prev => prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address)))}
+                                        onAdopt={() => handleUnadoptOne(comp)}
                                         onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
                                     );
                                   })}
@@ -3233,7 +3458,7 @@ export default function Home() {
                               const globalIdx = adoptedComparables.indexOf(comp);
                               return (
                                 <CompCard key={comp.transaction_id ?? idx} comp={comp} valuationYear={valuationYear} isAdopted={true}
-                                  onAdopt={() => setAdoptedComparables(prev => prev.filter(c => (c.transaction_id ?? c.address) !== (comp.transaction_id ?? comp.address)))}
+                                  onAdopt={() => handleUnadoptOne(comp)}
                                   onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
                               );
                             })}
@@ -3245,6 +3470,17 @@ export default function Home() {
                 })()}
 
               </div>
+            )}
+
+            {/* Manual comparable form modal */}
+            {showManualForm && (
+              <ManualComparableForm
+                onAdd={(comp) => handleAddManual({ ...comp, source: "manual" })}
+                onClose={() => setShowManualForm(false)}
+                subjectPostcode={result?.postcode}
+                subjectTenure={result?.tenure}
+                subjectPropertyType={result?.property_type}
+              />
             )}
           </div>
 
@@ -3564,7 +3800,7 @@ export default function Home() {
 
       {/* ── Save Case dialog ────────────────────────────────────────────────── */}
       {showSaveDialog && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}>
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60" onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}>
           <div className="bg-[#111827] border border-[#334155] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
             <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">New Case</h2>
             <p className="text-sm text-[#E2E8F0] mb-1 truncate">{result?.address}</p>
@@ -3652,7 +3888,7 @@ export default function Home() {
           archived: "bg-[#334155] text-[#94A3B8]",
         };
         return (
-        <div className="fixed inset-0 z-[60] flex justify-end" onClick={() => setShowCasesPanel(false)}>
+        <div className="fixed inset-0 z-[9999] flex justify-end" onClick={() => setShowCasesPanel(false)}>
           <div className="bg-[#0A0E1A] border-l border-[#334155] w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-5 border-b border-[#334155]">
               <div>

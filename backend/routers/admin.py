@@ -2,10 +2,11 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from supabase import create_client
 
 from .auth import get_current_user, require_admin
+from .rate_limit import limiter
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -19,7 +20,8 @@ def _admin_sb():
 
 
 @router.get("/users")
-async def list_users(user: dict = Depends(require_admin)):
+@limiter.limit("30/minute")
+async def list_users(request: Request, user: dict = Depends(require_admin)):
     """List all registered users. Admin only."""
     admin_client = _admin_sb()
     response = admin_client.auth.admin.list_users()
@@ -39,7 +41,8 @@ async def list_users(user: dict = Depends(require_admin)):
 
 
 @router.get("/ai-usage")
-async def ai_usage_stats(user: dict = Depends(require_admin)):
+@limiter.limit("30/minute")
+async def ai_usage_stats(request: Request, user: dict = Depends(require_admin)):
     """AI usage metering dashboard data. Admin only."""
     sb = _admin_sb()
 

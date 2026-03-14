@@ -38,6 +38,9 @@ tmp_*.json
 # IDE
 .vscode/
 
+# Database backups (contain production data — never commit)
+backups/
+
 # Generated output
 Output Reports/
 

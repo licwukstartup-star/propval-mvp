@@ -65,6 +65,10 @@ export interface ComparableCandidate {
   epc_score:            number | null;
   months_ago:           number | null;
   lease_remaining:      string | null;
+  // Option E: UPRN Timeline snapshot fields (populated after API persist)
+  snapshot_id?:         string;
+  case_comp_id?:        string;
+  source?:              string;   // hmlr_ppd | epc | additional | csv_import | manual | user_override
 }
 
 interface SearchMetadata {
@@ -288,6 +292,9 @@ export default function ComparableSearch({
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Search failed.");
+      // Unlock wider comparables even when building search errors —
+      // otherwise the user is stuck with no way to proceed.
+      if (isBuilding && onSearchComplete) onSearchComplete([], []);
     } finally {
       setLoading(false);
     }

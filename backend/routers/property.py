@@ -244,7 +244,7 @@ PLANNING_DATA_URL = "https://www.planning.data.gov.uk/entity.json"
 
 # GLA Planning London Datahub — Elasticsearch 7.9 (guest API, no registration)
 PLD_API_URL = "https://planningdata.london.gov.uk/api-guest"
-PLD_API_KEY = "be2rmRnt&"
+PLD_API_KEY = os.getenv("PLD_API_KEY", "")
 
 # EA flood risk — NaFRA2 (Jan 2025) via environment.data.gov.uk WMS (public, no auth)
 NAFRA2_RS_WMS = "https://environment.data.gov.uk/spatialdata/nafra2-risk-of-flooding-from-rivers-and-sea/wms"
@@ -292,6 +292,8 @@ def extract_postcode(address: str) -> str | None:
 def normalise_postcode(postcode: str) -> str:
     """Ensure postcode has an infix space: 'SM12EG' → 'SM1 2EG'."""
     pc = postcode.strip().upper().replace(" ", "")
+    if len(pc) < 5 or len(pc) > 8:
+        return postcode.strip().upper()
     return pc[:-3] + " " + pc[-3:]
 
 
@@ -1930,7 +1932,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                 status_code=500, detail="EPC API credentials are not configured."
             )
 
-        logging.debug(f"postcode={postcode}, epc_email_set={bool(epc_email)}, key_len={len(epc_api_key)}")
+        logging.debug("postcode=%s, epc_credentials_configured=True", postcode)
 
         # Phase 1: EPC, Land Registry and coordinates — all concurrent.
         import time as _t; _t0 = _t.monotonic()
@@ -2488,13 +2490,15 @@ async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get
     try:
         pdf_bytes = await asyncio.to_thread(_render_epc_pdf, cert_url + "?print=true")
         rrn = cert_url.replace(_EPC_CERT_BASE, "")
+        # Sanitise RRN for safe Content-Disposition filename
+        safe_rrn = re.sub(r"[^a-zA-Z0-9\-]", "", rrn)[:80] or "unknown"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="epc-{rrn}.pdf"'},
+            headers={"Content-Disposition": f'attachment; filename="epc-{safe_rrn}.pdf"'},
         )
     except Exception:
-        traceback.print_exc()
+        logging.exception("EPC PDF generation failed for %s", cert_url)
         raise HTTPException(status_code=500, detail="PDF generation failed")
 
 

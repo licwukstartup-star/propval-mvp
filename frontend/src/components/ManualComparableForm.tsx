@@ -1,0 +1,211 @@
+"use client";
+import { useState } from "react";
+import type { ComparableCandidate } from "./ComparableSearch";
+
+interface Props {
+  onAdd: (comp: ComparableCandidate) => void;
+  onClose: () => void;
+  subjectPostcode?: string | null;
+  subjectTenure?: string | null;
+  subjectPropertyType?: string | null;
+}
+
+export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, subjectTenure, subjectPropertyType }: Props) {
+  const [address, setAddress] = useState("");
+  const [postcode, setPostcode] = useState(subjectPostcode ?? "");
+  const [price, setPrice] = useState("");
+  const [transactionDate, setTransactionDate] = useState("");
+  const [tenure, setTenure] = useState(subjectTenure ?? "");
+  const [propertyType, setPropertyType] = useState(subjectPropertyType ?? "");
+  const [houseSubType, setHouseSubType] = useState("");
+  const [bedrooms, setBedrooms] = useState("");
+  const [floorAreaSqm, setFloorAreaSqm] = useState("");
+  const [epcRating, setEpcRating] = useState("");
+  const [newBuild, setNewBuild] = useState(false);
+  const [source, setSource] = useState("");
+
+  const canSubmit = address.trim() && postcode.trim() && price && transactionDate && tenure;
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+
+    const outward = postcode.trim().split(" ")[0] || postcode.trim().slice(0, -3).trim();
+    const priceNum = parseInt(price.replace(/,/g, ""), 10);
+    if (isNaN(priceNum) || priceNum <= 0) return;
+
+    const now = new Date();
+    const txDate = new Date(transactionDate);
+    const monthsAgo = (now.getFullYear() - txDate.getFullYear()) * 12 + (now.getMonth() - txDate.getMonth());
+
+    const comp: ComparableCandidate = {
+      transaction_id: null,
+      address: address.trim(),
+      postcode: postcode.trim().toUpperCase(),
+      outward_code: outward.toUpperCase(),
+      saon: null,
+      tenure: tenure || null,
+      property_type: propertyType || null,
+      house_sub_type: houseSubType || null,
+      bedrooms: bedrooms ? parseInt(bedrooms, 10) : null,
+      building_name: null,
+      building_era: null,
+      build_year: null,
+      build_year_estimated: false,
+      floor_area_sqm: floorAreaSqm ? parseFloat(floorAreaSqm) : null,
+      price: priceNum,
+      transaction_date: transactionDate,
+      new_build: newBuild,
+      transaction_category: null,
+      geographic_tier: 0,
+      tier_label: source.trim() ? `Manual — ${source.trim()}` : "Manual",
+      spec_relaxations: [],
+      time_window_months: 0,
+      epc_matched: false,
+      epc_rating: epcRating || null,
+      epc_score: null,
+      months_ago: monthsAgo,
+      lease_remaining: null,
+    };
+
+    onAdd(comp);
+    onClose();
+  }
+
+  const inputCls = "w-full rounded-lg border border-[#334155] bg-[#0A0E1A] px-3 py-2 text-sm text-[#E2E8F0] placeholder-[#475569] focus:border-[#00F0FF] focus:outline-none focus:ring-1 focus:ring-[#00F0FF]/30 transition-colors";
+  const labelCls = "block text-xs font-medium text-[#94A3B8] uppercase tracking-wide mb-1";
+  const selectCls = `${inputCls} appearance-none`;
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="relative w-full max-w-lg mx-4 rounded-2xl border border-[#334155] bg-[#111827] shadow-2xl shadow-black/50 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#334155] bg-[#0A0E1A]">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">✏️</span>
+            <h3 className="font-orbitron font-bold text-sm tracking-widest text-[#00F0FF] uppercase">Add Manual Comparable</h3>
+          </div>
+          <button onClick={onClose} className="text-[#94A3B8] hover:text-[#E2E8F0] transition-colors text-xl leading-none">&times;</button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+
+          {/* Address */}
+          <div>
+            <label className={labelCls}>Address <span className="text-[#FF2D78]">*</span></label>
+            <input type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="e.g. Flat 4, 10 Marsh Wall" className={inputCls} autoFocus />
+          </div>
+
+          {/* Postcode + Price row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Postcode <span className="text-[#FF2D78]">*</span></label>
+              <input type="text" value={postcode} onChange={e => setPostcode(e.target.value)} placeholder="E14 9SJ" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Price (£) <span className="text-[#FF2D78]">*</span></label>
+              <input type="text" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value.replace(/[^0-9,]/g, ""))} placeholder="450,000" className={inputCls} />
+            </div>
+          </div>
+
+          {/* Date + Tenure row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Transaction Date <span className="text-[#FF2D78]">*</span></label>
+              <input type="date" value={transactionDate} onChange={e => setTransactionDate(e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Tenure <span className="text-[#FF2D78]">*</span></label>
+              <select value={tenure} onChange={e => setTenure(e.target.value)} className={selectCls}>
+                <option value="">Select…</option>
+                <option value="freehold">Freehold</option>
+                <option value="leasehold">Leasehold</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Property type + Sub-type row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Property Type</label>
+              <select value={propertyType} onChange={e => setPropertyType(e.target.value)} className={selectCls}>
+                <option value="">Select…</option>
+                <option value="flat">Flat</option>
+                <option value="house">House</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>House Sub-Type</label>
+              <select value={houseSubType} onChange={e => setHouseSubType(e.target.value)} className={selectCls} disabled={propertyType !== "house"}>
+                <option value="">Select…</option>
+                <option value="detached">Detached</option>
+                <option value="semi-detached">Semi-Detached</option>
+                <option value="terraced">Terraced</option>
+                <option value="end-terrace">End-Terrace</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Bedrooms + Floor area row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Bedrooms</label>
+              <input type="number" min={0} max={20} value={bedrooms} onChange={e => setBedrooms(e.target.value)} placeholder="2" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Floor Area (m²)</label>
+              <input type="number" min={0} step="0.1" value={floorAreaSqm} onChange={e => setFloorAreaSqm(e.target.value)} placeholder="65" className={inputCls} />
+            </div>
+          </div>
+
+          {/* EPC + New build row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>EPC Rating</label>
+              <select value={epcRating} onChange={e => setEpcRating(e.target.value)} className={selectCls}>
+                <option value="">Unknown</option>
+                {["A", "B", "C", "D", "E", "F", "G"].map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={newBuild} onChange={e => setNewBuild(e.target.checked)} className="rounded border-[#334155] bg-[#0A0E1A] text-[#00F0FF] focus:ring-[#00F0FF]/30" />
+                <span className="text-sm text-[#E2E8F0]">New Build</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Source */}
+          <div>
+            <label className={labelCls}>Source</label>
+            <input type="text" value={source} onChange={e => setSource(e.target.value)} placeholder="e.g. Agent particulars, Rightmove, personal knowledge" className={inputCls} />
+            <p className="mt-1 text-[10px] text-[#475569]">Optional — helps you remember where this comp came from</p>
+          </div>
+
+        </form>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#334155] bg-[#0A0E1A]">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-[#94A3B8] hover:text-[#E2E8F0] transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit as any}
+            disabled={!canSubmit}
+            className={`px-5 py-2 text-sm font-semibold rounded-lg transition-all ${
+              canSubmit
+                ? "bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/90 shadow-lg shadow-[#00F0FF]/20"
+                : "bg-[#334155] text-[#475569] cursor-not-allowed"
+            }`}
+          >
+            Add Comparable
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

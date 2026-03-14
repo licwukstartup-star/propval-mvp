@@ -5,26 +5,39 @@ import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from supabase import create_client
 
 security = HTTPBearer()
 
-# Cache for JWKS keys — refresh every 24 hours
+# Cache for JWKS keys — refresh every 6 hours
 _jwks_cache: dict | None = None
 _jwks_fetched_at: float = 0
-_JWKS_TTL = 86400  # 24 hours
+_JWKS_TTL = 21600  # 6 hours
 
 
 def _get_jwks() -> dict:
-    """Fetch and cache the JWKS from Supabase (TTL: 24h)."""
+    """Fetch and cache the JWKS from Supabase (TTL: 6h).
+
+    If the fetch fails and we have a cached copy, return it with a warning.
+    If no cached copy exists, raise — we cannot verify tokens without keys.
+    """
     global _jwks_cache, _jwks_fetched_at
     if _jwks_cache is not None and (time.monotonic() - _jwks_fetched_at) < _JWKS_TTL:
         return _jwks_cache
     supabase_url = os.getenv("SUPABASE_URL", "")
-    resp = httpx.get(f"{supabase_url}/auth/v1/.well-known/jwks.json", timeout=10)
-    resp.raise_for_status()
-    _jwks_cache = resp.json()
-    _jwks_fetched_at = time.monotonic()
-    return _jwks_cache
+    try:
+        resp = httpx.get(f"{supabase_url}/auth/v1/.well-known/jwks.json", timeout=10)
+        resp.raise_for_status()
+        _jwks_cache = resp.json()
+        _jwks_fetched_at = time.monotonic()
+        return _jwks_cache
+    except Exception:
+        if _jwks_cache is not None:
+            return _jwks_cache
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch signing keys — authentication unavailable",
+        )
 
 
 async def get_current_user(
@@ -34,23 +47,27 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        # Read the token header to determine the algorithm
-        header = jwt.get_unverified_header(token)
-        alg = header.get("alg", "HS256")
+        # Try HS256 first (Supabase default on free tier).
+        # This avoids "algorithm confusion" (RFC 8725 §3.1) where an attacker
+        # crafts alg=HS256 and signs with a leaked public key.
+        # We never branch on the unverified header for HS256 — we just try it.
+        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+        payload = None
 
-        if alg == "HS256":
-            # Legacy: symmetric verification with JWT secret
-            jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
-            if not jwt_secret:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="JWT secret not configured",
+        if jwt_secret:
+            try:
+                payload = jwt.decode(
+                    token, jwt_secret, algorithms=["HS256"], audience="authenticated",
                 )
-            payload = jwt.decode(
-                token, jwt_secret, algorithms=["HS256"], audience="authenticated",
-            )
-        elif alg in ("ES256", "RS256"):
-            # Asymmetric: verify with JWKS public key (whitelist allowed algorithms)
+            except JWTError:
+                pass  # not HS256 — try asymmetric below
+
+        if payload is None:
+            # Asymmetric verification — only now read the unverified header
+            header = jwt.get_unverified_header(token)
+            alg = header.get("alg")
+            if alg not in ("ES256", "RS256"):
+                raise JWTError(f"Unsupported algorithm: {alg}")
             jwks = _get_jwks()
             kid = header.get("kid")
             key = None
@@ -63,8 +80,6 @@ async def get_current_user(
             payload = jwt.decode(
                 token, key, algorithms=["ES256", "RS256"], audience="authenticated",
             )
-        else:
-            raise JWTError(f"Unsupported algorithm: {alg}")
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -85,7 +100,25 @@ async def get_current_user(
         "id": payload.get("sub"),
         "email": payload.get("email"),
         "role": role,
+        "access_token": token,
     }
+
+
+def get_user_supabase(user: dict):
+    """Create a Supabase client scoped to the user's session.
+
+    Uses the anon key + the user's JWT so Row Level Security (RLS) is
+    enforced server-side.  Use this for ALL user-scoped data (cases,
+    firm_templates, etc.).  Reserve service-role clients for admin-only
+    or system-level operations (property library, caches, news).
+    """
+    url = os.getenv("SUPABASE_URL")
+    anon_key = os.getenv("SUPABASE_ANON_KEY")
+    if not url or not anon_key:
+        raise HTTPException(500, "Supabase not configured")
+    client = create_client(url, anon_key)
+    client.postgrest.auth(user["access_token"])
+    return client
 
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:

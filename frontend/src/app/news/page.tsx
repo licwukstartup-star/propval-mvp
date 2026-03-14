@@ -552,7 +552,7 @@ export default function NewsPage() {
             <LiveMarketTicker quotes={marketQuotes} />
           )}
 
-          {/* ── Static macro indicators strip ── */}
+          {/* ── Macro indicators strip (auto-refreshed every 6h) ── */}
           <div
             className="rounded-xl mb-4 overflow-x-auto"
             style={{
@@ -728,7 +728,7 @@ export default function NewsPage() {
               className="text-xs font-semibold uppercase tracking-widest mb-3"
               style={{ color: "#555570", fontFamily: "var(--font-mono)" }}
             >
-              Active Sources — Refreshed Twice Daily (06:00 &amp; 18:00 UTC)
+              News Sources — Auto-refreshed every 12 hours
             </p>
             <div className="flex flex-wrap gap-x-6 gap-y-2 mb-4">
               {[
@@ -746,6 +746,7 @@ export default function NewsPage() {
                 { name: "PropertyWire", cat: "property" as const },
                 { name: "BBC Economy", cat: "macro" as const },
                 { name: "Bank Underground", cat: "macro" as const },
+                { name: "House of Commons Library", cat: "macro" as const },
                 { name: "GOV.UK MHCLG", cat: "rics" as const },
                 { name: "Valuation Office Agency", cat: "rics" as const },
                 { name: "HM Land Registry", cat: "rics" as const },
@@ -775,6 +776,24 @@ export default function NewsPage() {
                 { label: "Gilt ETFs", colour: "#FFB800" },
                 { label: "FTSE 100 Index", colour: "#7B2FBE" },
                 { label: "GBP/USD FX", colour: "#ff8800" },
+              ].map(g => (
+                <div key={g.label} className="flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: g.colour }} />
+                  <span className="text-xs" style={{ color: "#555570" }}>{g.label}</span>
+                </div>
+              ))}
+            </div>
+            <p
+              className="text-xs font-semibold uppercase tracking-widest mt-4 mb-2"
+              style={{ color: "#555570", fontFamily: "var(--font-mono)" }}
+            >
+              Economic Indicators — ONS · Bank of England · HM Land Registry · Auto-refreshed every 6 hours
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 mb-4">
+              {[
+                { label: "CPI / Unemployment / GDP", colour: "#ffaa00" },
+                { label: "Base Rate / 10Y Gilt", colour: "#00f0ff" },
+                { label: "Avg House Price", colour: "#39FF14" },
               ].map(g => (
                 <div key={g.label} className="flex items-center gap-1.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: g.colour }} />

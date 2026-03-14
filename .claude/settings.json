@@ -1,29 +1,43 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git add *)",
-      "Bash(git status)",
-      "Bash(git diff *)",
-      "Bash(git log *)",
-      "Bash(git branch *)",
-      "Bash(npm run *)",
-      "Bash(npm test)",
-      "Bash(npm install *)",
-      "Bash(npm uninstall *)",
+      "Edit",
+      "Write",
+      "WebFetch",
+      "WebSearch",
+      "Bash(git *)",
+      "Bash(npm *)",
       "Bash(npx *)",
-      "Bash(py -3.11 *)",
+      "Bash(py *)",
       "Bash(python *)",
-      "Bash(pip install *)",
+      "Bash(pip *)",
+      "Bash(node *)",
       "Bash(netstat *)",
       "Bash(tasklist *)",
+      "Bash(taskkill *)",
+      "Bash(pkill *)",
       "Bash(mkdir *)",
       "Bash(ls *)",
       "Bash(find *)",
-      "Bash(sleep *)"
+      "Bash(rm *)",
+      "Bash(cat *)",
+      "Bash(curl *)",
+      "Bash(sleep *)",
+      "Bash(cd *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(gh *)",
+      "Bash(cmd *)",
+      "Bash(powershell *)",
+      "Bash(wmic *)",
+      "Bash(xargs *)",
+      "Bash(echo *)"
     ],
     "deny": [
       "Edit(.env*)",
-      "Write(.env*)"
+      "Write(.env*)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
     ]
   },
   "hooks": {

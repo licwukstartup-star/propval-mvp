@@ -49,7 +49,7 @@ router = APIRouter(prefix="/api/comparables", tags=["comparables"])
 EPC_API_BASE         = "https://epc.opendatacommunities.org/api/v1/domestic/search"
 EPC_CONCURRENT       = 10     # max parallel EPC calls
 EPC_CALL_TIMEOUT     = 4.0    # EPC API is fast; short timeout avoids blocking
-TOTAL_TIMEOUT        = 90.0   # total orchestrator timeout
+TOTAL_TIMEOUT        = 75.0   # total orchestrator timeout (must be < 90s middleware hard cap)
 MAX_ADJACENT_CODES   = 2      # keep tier 4 fast
 
 FLAT_TIER_LABELS     = {1: "Same building", 2: "Same development",
@@ -1697,6 +1697,192 @@ async def cache_status(_user: dict = Depends(get_current_user)):
         }
 
     return await asyncio.to_thread(_status)
+
+
+# ---------------------------------------------------------------------------
+# Address Lookup — find PPD transactions for a specific address (Additional Comparable tab)
+# ---------------------------------------------------------------------------
+
+class AddressLookupRequest(BaseModel):
+    postcode: str = Field(..., max_length=10)
+    address:  str = Field(..., max_length=256)
+    uprn:     str | None = None
+
+
+@router.post("/address-lookup")
+@limiter.limit("20/minute")
+async def address_lookup(request: Request, req: AddressLookupRequest, _user: dict = Depends(get_current_user)):
+    """Find all PPD transactions for a specific address and enrich with EPC data.
+
+    Used by the 'Additional Comparable' tab to let valuers search for any
+    property by postcode, then adopt its transactions as comparables.
+    """
+    t0 = time.monotonic()
+    pc = req.postcode.strip().upper()
+    outward = pc.split()[0] if " " in pc else pc[:-3].strip()
+    if not outward:
+        return {"transactions": [], "duration_ms": 0}
+
+    # Warm PPD + EPC caches in parallel
+    await asyncio.gather(
+        ppd_cache.ensure_cache(outward),
+        ppd_cache._ensure_epc_background(outward),
+        return_exceptions=True,
+    )
+
+    # Query PPD for this postcode
+    def _query() -> list[dict]:
+        sb = ppd_cache._get_sb()
+        q = (sb.table("price_paid_cache")
+             .select("*")
+             .eq("outward_code", outward)
+             .eq("postcode", pc)
+             .order("deed_date", desc=True))
+        all_rows: list[dict] = []
+        offset = 0
+        while True:
+            batch = q.range(offset, offset + 999).execute()
+            rows = batch.data or []
+            all_rows.extend(rows)
+            if len(rows) < 1000:
+                break
+            offset += 1000
+        return all_rows
+
+    ppd_rows = await asyncio.to_thread(_query)
+
+    # Fuzzy-match to the selected address to find the specific property
+    target_addr = _normalise_addr(req.address)
+    matched_rows = []
+    for r in ppd_rows:
+        ppd_addr = _normalise_addr(" ".join(filter(None, [
+            r.get("saon", ""), r.get("paon", ""), r.get("street", ""),
+        ])))
+        # Try exact match first, then fuzzy
+        if ppd_addr == target_addr:
+            matched_rows.append(r)
+        elif fuzz.token_sort_ratio(ppd_addr, target_addr) >= 75:
+            matched_rows.append(r)
+
+    # EPC enrichment
+    epc_match: dict[str, dict] = {}
+    try:
+        epc_rows = await ppd_cache.query_epc_outward(outward)
+        if epc_rows:
+            epc_match = await asyncio.to_thread(_match_ppd_to_epc, matched_rows, epc_rows)
+    except Exception:
+        logging.exception("Address lookup EPC enrichment failed (non-fatal)")
+
+    # Also try to get EPC data directly for the address (for properties with no PPD)
+    epc_direct: dict | None = None
+    try:
+        epc_rows_all = await ppd_cache.query_epc_outward(outward)
+        if epc_rows_all:
+            for e in epc_rows_all:
+                epc_addr = _normalise_addr(" ".join(filter(None, [
+                    e.get("address1", ""), e.get("address2", ""), e.get("address3", ""),
+                ])))
+                if epc_addr == target_addr or fuzz.token_sort_ratio(epc_addr, target_addr) >= 75:
+                    epc_direct = e
+                    break
+    except Exception:
+        pass
+
+    # Format as ComparableCandidate-shaped dicts
+    transactions = []
+    now = date.today()
+    for r in matched_rows:
+        saon = r.get("saon", "")
+        paon = r.get("paon", "")
+        street = r.get("street", "")
+        address = " ".join(filter(None, [saon, paon, street])).title()
+        tid = r.get("transaction_id", "")
+        deed_date = r.get("deed_date", "")
+        price = r.get("price_paid", 0)
+
+        # Property type mapping
+        pt_code = r.get("property_type", "")
+        prop_type = "flat" if pt_code == "F" else "house" if pt_code in ("D", "S", "T") else None
+        sub_type = {"D": "detached", "S": "semi-detached", "T": "terraced"}.get(pt_code)
+        tenure = "freehold" if r.get("estate_type") == "F" else "leasehold" if r.get("estate_type") == "L" else None
+
+        # Calculate months ago
+        months_ago = None
+        if deed_date:
+            try:
+                tx = date.fromisoformat(deed_date)
+                months_ago = (now.year - tx.year) * 12 + (now.month - tx.month)
+            except ValueError:
+                pass
+
+        comp: dict = {
+            "transaction_id":       tid or None,
+            "address":              address,
+            "postcode":             r.get("postcode", pc),
+            "outward_code":         outward,
+            "saon":                 saon or None,
+            "tenure":               tenure,
+            "property_type":        prop_type,
+            "house_sub_type":       sub_type,
+            "bedrooms":             None,
+            "building_name":        None,
+            "building_era":         None,
+            "build_year":           None,
+            "build_year_estimated": False,
+            "floor_area_sqm":       None,
+            "price":                price,
+            "transaction_date":     deed_date,
+            "new_build":            r.get("new_build", "") == "Y",
+            "transaction_category": r.get("transaction_category"),
+            "geographic_tier":      0,
+            "tier_label":           "Additional",
+            "spec_relaxations":     [],
+            "time_window_months":   0,
+            "epc_matched":          False,
+            "epc_rating":           None,
+            "epc_score":            None,
+            "months_ago":           months_ago,
+            "lease_remaining":      None,
+        }
+
+        # Merge EPC enrichment if available
+        epc = epc_match.get(tid)
+        if epc:
+            comp["bedrooms"]      = epc.get("bedrooms")
+            comp["floor_area_sqm"] = epc.get("floor_area_sqm")
+            comp["epc_rating"]    = epc.get("epc_rating")
+            comp["epc_score"]     = epc.get("epc_score")
+            comp["build_year"]    = epc.get("build_year")
+            comp["epc_matched"]   = True
+
+        transactions.append(comp)
+
+    # Build EPC summary for the address (even if no PPD transactions)
+    epc_summary = None
+    if epc_direct:
+        epc_summary = {
+            "floor_area_sqm":  epc_direct.get("floor_area"),
+            "bedrooms":        epc_direct.get("number_rooms"),
+            "epc_rating":      epc_direct.get("energy_rating"),
+            "epc_score":       epc_direct.get("energy_score"),
+            "build_year":      epc_direct.get("construction_year"),
+            "property_type":   epc_direct.get("property_type"),
+            "built_form":      epc_direct.get("built_form"),
+            "tenure":          epc_direct.get("tenure"),
+        }
+
+    duration = int((time.monotonic() - t0) * 1000)
+    logging.warning("Address lookup %s '%s': %d transactions (%d EPC-enriched) in %dms",
+                    pc, req.address[:40], len(transactions),
+                    sum(1 for t in transactions if t.get("epc_matched")), duration)
+
+    return {
+        "postcode":      pc,
+        "address":       req.address,
+        "transactions":  transactions,
+        "epc_summary":   epc_summary,
+        "duration_ms":   duration,
+    }
 
 
 def _epc_cache_to_api_format(cache_rows: list[dict]) -> list[dict]:

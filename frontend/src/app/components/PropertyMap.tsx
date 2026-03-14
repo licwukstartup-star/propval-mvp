@@ -153,6 +153,23 @@ function useMapReady() {
 
 // ── Sub-component: fullscreen toggle ──────────────────────────────────────────
 
+/** Fixes grey/missing tiles when map mounts inside a hidden (display:none) container */
+function InvalidateSizeOnVisible() {
+  const map = useMap();
+  useEffect(() => {
+    // Immediate + delayed invalidation covers both instant and animated tab reveals
+    map.invalidateSize();
+    const t1 = setTimeout(() => map.invalidateSize(), 150);
+    const t2 = setTimeout(() => map.invalidateSize(), 400);
+
+    // ResizeObserver catches any later container size changes
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(map.getContainer());
+    return () => { clearTimeout(t1); clearTimeout(t2); ro.disconnect(); };
+  }, [map]);
+  return null;
+}
+
 function FullscreenControl() {
   const map = useMap();
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -510,24 +527,28 @@ function ComparableClusterLayer({
 
       marker.bindPopup(
         `<div style="font-family:system-ui;min-width:180px">
-          <div style="font-size:10px;color:#FF2D78;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:6px">
-            Comparable ${i + 1}
+          <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px">
+            <span style="font-size:9px;color:#FF2D78;text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Comp ${i + 1}</span>
+            <span style="font-weight:700;font-size:11px;color:#E2E8F0">${price}</span>
+            ${psf ? `<span style="font-size:10px;color:#67E8F9;font-weight:600">${psf}</span>` : ""}
+            <span style="font-size:10px;color:#94A3B8">${comp.transaction_date.slice(0, 7)}</span>
           </div>
-          <div style="font-weight:600;font-size:12px;margin-bottom:8px;line-height:1.4;color:#E2E8F0">
-            ${comp.address}
-          </div>
-          <div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
-            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Price</span>
-            <span style="font-weight:700;color:#E2E8F0">${price}</span>
-          </div>
-          ${psf ? `<div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
-            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Rate</span>
-            <span style="font-weight:600;color:#67E8F9">${psf}</span>
-          </div>` : ""}
-          <div style="margin-bottom:${onRemoveRef.current ? 8 : 0}px;display:flex;align-items:center;gap:6px">
-            <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Date</span>
-            <span style="color:#E2E8F0">${comp.transaction_date.slice(0, 7)}</span>
-          </div>
+          <div style="font-size:11px;line-height:1.3;color:#E2E8F0;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${comp.address}</div>
+          ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
+            ? `<iframe
+                width="100%" style="aspect-ratio:16/10;border:none;border-radius:6px;margin-bottom:${onRemoveRef.current ? 6 : 0}px"
+                loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                src="https://www.google.com/maps/embed/v1/streetview?location=${coords.lat},${coords.lon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
+              </iframe>`
+            : `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${coords.lat},${coords.lon}" target="_blank" rel="noopener noreferrer" style="
+                display:inline-flex;align-items:center;gap:4px;margin-top:4px;margin-bottom:${onRemoveRef.current ? 8 : 0}px;
+                font-size:10px;font-weight:700;color:#FFB800;text-decoration:none;
+                text-transform:uppercase;letter-spacing:0.06em;
+              ">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                Street View
+              </a>`
+          }
           ${onRemoveRef.current ? `<button id="${removeId}" style="
             width:100%;padding:5px 0;font-size:10px;font-weight:700;
             text-transform:uppercase;letter-spacing:0.06em;
@@ -535,7 +556,7 @@ function ComparableClusterLayer({
             border-radius:4px;cursor:pointer;
           ">Remove Comparable</button>` : ""}
         </div>`,
-        { className: "propval-popup", minWidth: 200 }
+        { className: "propval-popup", minWidth: 470 }
       );
 
       if (onRemoveRef.current) {
@@ -568,23 +589,35 @@ function ComparableClusterLayer({
       popupAnchor: [0, -16],
     });
     const subjectMarker = L.marker([subjectLat, subjectLon], { icon: sIcon, zIndexOffset: 10000 });
-    const floodHtml = subjectFloodRisk
-      ? `<div style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">Flood</span>
-          <span style="font-weight:600;color:${subjectFloodRisk === "High" ? "#FF3131" : subjectFloodRisk === "Medium" ? "#FFB800" : "#39FF14"};font-size:13px">${subjectFloodRisk}</span>
-        </div>` : "";
-    const epcHtml = subjectEpc
-      ? `<div style="margin-bottom:4px;display:flex;align-items:center;gap:6px">
-          <span style="font-size:10px;color:#94A3B8;text-transform:uppercase">EPC</span>
-          <span style="font-weight:700;color:#39FF14;font-size:13px">${subjectEpc}</span>
-        </div>` : "";
+    const floodBadge = subjectFloodRisk
+      ? `<span style="font-size:10px;font-weight:600;color:${subjectFloodRisk === "High" ? "#FF3131" : subjectFloodRisk === "Medium" ? "#FFB800" : "#39FF14"}">${subjectFloodRisk}</span>` : "";
+    const epcBadge = subjectEpc
+      ? `<span style="font-size:10px;font-weight:700;color:#39FF14">${subjectEpc}</span>` : "";
+    const badges = [epcBadge, floodBadge].filter(Boolean).join('<span style="color:#334155;margin:0 4px">·</span>');
     subjectMarker.bindPopup(
       `<div style="font-family:system-ui;min-width:200px">
-        <div style="font-size:10px;color:#00F0FF;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:6px">Subject Property</div>
-        <div style="font-weight:700;font-size:13px;margin-bottom:8px;line-height:1.4;color:#E2E8F0">${subjectAddress}</div>
-        ${epcHtml}${floodHtml}
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px">
+          <span style="font-size:9px;color:#00F0FF;text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Subject</span>
+          ${badges}
+        </div>
+        <div style="font-size:11px;line-height:1.3;color:#E2E8F0;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${subjectAddress}</div>
+        ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
+          ? `<iframe
+              width="100%" style="aspect-ratio:16/10;border:none;border-radius:6px"
+              loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+              src="https://www.google.com/maps/embed/v1/streetview?location=${subjectLat},${subjectLon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
+            </iframe>`
+          : `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${subjectLat},${subjectLon}" target="_blank" rel="noopener noreferrer" style="
+              display:inline-flex;align-items:center;gap:4px;margin-top:8px;
+              font-size:10px;font-weight:700;color:#FFB800;text-decoration:none;
+              text-transform:uppercase;letter-spacing:0.06em;
+            ">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+              Street View
+            </a>`
+        }
       </div>`,
-      { className: "propval-popup", minWidth: 220 }
+      { className: "propval-popup", minWidth: 500 }
     );
     cluster.addLayer(subjectMarker);
 
@@ -1435,6 +1468,7 @@ export default function PropertyMap({
           maxZoom={19}
         />
 
+        <InvalidateSizeOnVisible />
         <CustomScaleBar />
         <FitBounds subject={[subjectLat, subjectLon]} compCoords={compCoords} />
         {/* Fullscreen control moved to floating top-left row */}

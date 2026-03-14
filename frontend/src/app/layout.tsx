@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { Orbitron, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import AuthProvider from "@/components/AuthProvider";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import Navbar from "@/components/Navbar";
+import CookieConsent from "@/components/CookieConsent";
 
 const orbitron = Orbitron({
   subsets: ["latin"],
@@ -31,7 +33,10 @@ export default function RootLayout({
       <body className={`${orbitron.variable} ${jetbrainsMono.variable}`}>
         <AuthProvider>
           <Navbar />
-          {children}
+          <ErrorBoundary>
+            {children}
+          </ErrorBoundary>
+          <CookieConsent />
         </AuthProvider>
       </body>
     </html>

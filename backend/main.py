@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,6 +18,7 @@ from routers import comparables as comparables_router
 from routers import firm_templates as firm_templates_router
 from routers import news as news_router
 from routers import property as property_router
+from routers import snapshots as snapshots_router
 from routers.property import _load_green_belt_polygons
 from routers.rate_limit import limiter
 from services.inspire import InspireService
@@ -33,6 +35,7 @@ async def lifespan(app: FastAPI):
     app.state.inspire = await asyncio.to_thread(InspireService.load)
     await news_router.start_background_refresh()
     await news_router.start_market_refresh()
+    await news_router.start_macro_refresh()
     yield
 
 
@@ -43,15 +46,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    body = await request.body()
-    logging.error("422 Validation error on %s\nBody: %s\nErrors: %s",
-                  request.url.path, body.decode()[:2000], exc.errors())
+    logging.error("422 Validation error on %s — %s",
+                  request.url.path, exc.errors())
     return JSONResponse(status_code=422, content={"detail": "Invalid request data"})
 
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
@@ -86,8 +88,31 @@ app.include_router(cases_router.router)
 app.include_router(admin_router.router)
 app.include_router(firm_templates_router.router)
 app.include_router(news_router.router)
+app.include_router(snapshots_router.router)
 
+
+_health_sb = None
 
 @app.get("/health")
-def health_check():
-    return {"status": "ok"}
+async def health_check():
+    """Health check with database connectivity verification."""
+    global _health_sb
+    checks = {"api": "ok"}
+    try:
+        if _health_sb is None:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "")
+            key = os.getenv("SUPABASE_ANON_KEY", "")
+            if url and key:
+                _health_sb = create_client(url, key)
+            else:
+                checks["database"] = "not_configured"
+                return {"status": "ok", "checks": checks}
+        _health_sb.table("news_articles").select("id", count="exact").limit(1).execute()
+        checks["database"] = "ok"
+    except Exception as exc:
+        logging.warning("Health check DB probe failed: %s", exc)
+        checks["database"] = "unreachable"
+        _health_sb = None  # reset on failure so next call retries connection
+        return JSONResponse(status_code=503, content={"status": "degraded", "checks": checks})
+    return {"status": "ok", "checks": checks}
