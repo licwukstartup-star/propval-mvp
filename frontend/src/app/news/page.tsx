@@ -521,7 +521,7 @@ export default function NewsPage() {
 
           {/* ── Section header ── */}
           <div className="flex items-center gap-3 mb-4">
-            <span className="relative flex h-2.5 w-2.5">
+            <span className="relative flex h-2.5 w-2.5" aria-hidden="true">
               <span
                 className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
                 style={{ backgroundColor: "#00f0ff" }}

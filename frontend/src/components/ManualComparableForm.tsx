@@ -23,16 +23,27 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
   const [epcRating, setEpcRating] = useState("");
   const [newBuild, setNewBuild] = useState(false);
   const [source, setSource] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
 
   const canSubmit = address.trim() && postcode.trim() && price && transactionDate && tenure;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setFormError(null);
     if (!canSubmit) return;
 
-    const outward = postcode.trim().split(" ")[0] || postcode.trim().slice(0, -3).trim();
+    const pcTrimmed = postcode.trim().toUpperCase();
+    if (!/^[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}$/i.test(pcTrimmed)) {
+      setFormError("Please enter a valid UK postcode (e.g. E14 9SJ).");
+      return;
+    }
+
+    const outward = pcTrimmed.split(" ")[0] || pcTrimmed.slice(0, -3).trim();
     const priceNum = parseInt(price.replace(/,/g, ""), 10);
-    if (isNaN(priceNum) || priceNum <= 0) return;
+    if (isNaN(priceNum) || priceNum <= 0) {
+      setFormError("Price must be a positive number.");
+      return;
+    }
 
     const now = new Date();
     const txDate = new Date(transactionDate);
@@ -77,18 +88,21 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
   const selectCls = `${inputCls} appearance-none`;
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose} role="presentation">
       <div
         className="relative w-full max-w-lg mx-4 rounded-2xl border border-[#334155] bg-[#111827] shadow-2xl shadow-black/50 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manual-comp-title"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#334155] bg-[#0A0E1A]">
           <div className="flex items-center gap-2">
-            <span className="text-lg">✏️</span>
-            <h3 className="font-orbitron font-bold text-sm tracking-widest text-[#00F0FF] uppercase">Add Manual Comparable</h3>
+            <span className="text-lg" aria-hidden="true">✏️</span>
+            <h3 id="manual-comp-title" className="font-orbitron font-bold text-sm tracking-widest text-[#00F0FF] uppercase">Add Manual Comparable</h3>
           </div>
-          <button onClick={onClose} className="text-[#94A3B8] hover:text-[#E2E8F0] transition-colors text-xl leading-none">&times;</button>
+          <button onClick={onClose} aria-label="Close dialog" className="text-[#94A3B8] hover:text-[#E2E8F0] transition-colors text-xl leading-none">&times;</button>
         </div>
 
         {/* Form */}
@@ -96,8 +110,8 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
 
           {/* Address */}
           <div>
-            <label className={labelCls}>Address <span className="text-[#FF2D78]">*</span></label>
-            <input type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="e.g. Flat 4, 10 Marsh Wall" className={inputCls} autoFocus />
+            <label htmlFor="mc-address" className={labelCls}>Address <span className="text-[#FF2D78]">*</span></label>
+            <input id="mc-address" type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="e.g. Flat 4, 10 Marsh Wall" className={inputCls} autoFocus />
           </div>
 
           {/* Postcode + Price row */}
@@ -187,6 +201,13 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
           </div>
 
         </form>
+
+        {/* Validation error */}
+        {formError && (
+          <div className="mx-6 mb-0 mt-1 rounded-lg px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#FF313118", color: "#FF3131", border: "1px solid #FF313133" }}>
+            {formError}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#334155] bg-[#0A0E1A]">

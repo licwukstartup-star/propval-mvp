@@ -69,6 +69,7 @@ export interface ComparableCandidate {
   snapshot_id?:         string;
   case_comp_id?:        string;
   source?:              string;   // hmlr_ppd | epc | additional | csv_import | manual | user_override
+  [key: string]:        unknown;
 }
 
 interface SearchMetadata {
@@ -1259,7 +1260,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             </span>
             <span className="text-[#475569]">|</span>
             <span className="text-[#94A3B8]">
-              Adj PSF: <span className="font-medium text-[#F5E6C8]">
+              Adj PSF: <span className="font-medium text-[#E2E8F0]">
                 {sizeAdjPsf != null ? `£${sizeAdjPsf.toLocaleString("en-GB")}` : "—"}
               </span>
             </span>

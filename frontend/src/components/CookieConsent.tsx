@@ -24,9 +24,8 @@ export default function CookieConsent() {
     <div className="fixed bottom-0 inset-x-0 z-50 p-4" style={{ backgroundColor: "#111827EE", borderTop: "1px solid #334155" }}>
       <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <p className="text-xs leading-relaxed" style={{ color: "#E2E8F0" }}>
-          This site uses <strong>essential cookies only</strong> (authentication). No tracking or analytics cookies are set.
-          By continuing to use PropVal, you acknowledge this.{" "}
-          <a href="/privacy" className="underline" style={{ color: "#00F0FF" }}>Privacy Policy</a>
+          This site uses <strong>essential cookies only</strong> for authentication. No tracking, analytics, or third-party cookies are set.
+          Your data is stored securely and never shared. By continuing to use PropVal you acknowledge this.
         </p>
         <button
           onClick={accept}

@@ -352,7 +352,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
           {lookupResult.transactions.length > 0 && (
             <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
               <div className="px-4 py-2.5 border-b border-[#334155] bg-[#0A0E1A]">
-                <p className="text-[10px] font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">
+                <p className="text-[11px] font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">
                   HMLR Transactions ({lookupResult.transactions.length}) — click to pre-fill
                 </p>
               </div>
@@ -366,7 +366,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
                       className="w-full text-left px-4 py-2.5 flex items-center gap-4 hover:bg-[#1E293B] transition-colors group"
                     >
                       <span className="text-xs text-[#94A3B8] tabular-nums w-24">{tx.transaction_date}</span>
-                      <span className="text-sm font-semibold text-[#F5E6C8] tabular-nums">
+                      <span className="text-sm font-semibold text-[#E2E8F0] tabular-nums">
                         {tx.price ? `£${tx.price.toLocaleString()}` : "—"}
                       </span>
                       <span className="text-xs text-[#94A3B8]">
@@ -394,7 +394,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
           {/* Editable form */}
           <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
             <div className="px-4 py-2.5 border-b border-[#334155] bg-[#0A0E1A] flex items-center justify-between">
-              <p className="text-[10px] font-orbitron font-bold tracking-widest text-[#FF2D78] uppercase">
+              <p className="text-[11px] font-orbitron font-bold tracking-widest text-[#FF2D78] uppercase">
                 Comparable Details — edit as needed
               </p>
               {lookupResult.epc_summary && (

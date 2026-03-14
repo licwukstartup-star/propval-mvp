@@ -85,5 +85,6 @@ export const PROP_CARD_DEFAULTS: Record<string, CardSizeKey> = {
   coal:         "1x1",
   ground:       "2x1",
   asbestos:     "1x1",
+  connectivity: "2x1",
   planning:     "3x1",
 };

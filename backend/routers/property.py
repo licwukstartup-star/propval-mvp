@@ -157,6 +157,8 @@ _SOURCE_TTL: dict[str, int] = {
     "brownfield":          30 * 86400,   # 30 days (planning)
     "council_tax":        365 * 86400,   # 365 days
     "nearby_planning":      7 * 86400,   # 7 days (applications update daily)
+    "broadband":           180 * 86400,  # 180 days (Ofcom data updates annually)
+    "mobile":              180 * 86400,  # 180 days (Ofcom data updates annually)
 }
 _DEFAULT_TTL = 86400  # 24 hours fallback
 
@@ -2283,41 +2285,174 @@ async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Dep
 # ---------------------------------------------------------------------------
 # Slow enrichment — council tax + planning flood zone (deferred from main search)
 # ---------------------------------------------------------------------------
+# Ofcom Connected Nations — broadband & mobile coverage
+# ---------------------------------------------------------------------------
+
+_OFCOM_API_KEY = os.getenv("OFCOM_API_KEY", "")
+_OFCOM_BB_URL = "https://api-proxy.ofcom.org.uk/broadband/coverage"
+_OFCOM_MOB_URL = "https://api-proxy.ofcom.org.uk/mobile/coverage"
+
+
+async def _fetch_ofcom_broadband(postcode: str, uprn: str | None) -> dict | None:
+    """Fetch Ofcom broadband coverage for a postcode, return UPRN-matched record."""
+    if not _OFCOM_API_KEY:
+        return None
+    pc = postcode.replace(" ", "").upper()
+    client = _get_http_client()
+    try:
+        resp = await client.get(
+            f"{_OFCOM_BB_URL}/{pc}",
+            headers={"Ocp-Apim-Subscription-Key": _OFCOM_API_KEY},
+            timeout=8.0,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        rows = resp.json()
+        if not isinstance(rows, list) or not rows:
+            return None
+        # Match by UPRN if available
+        if uprn:
+            for row in rows:
+                if str(row.get("UPRN", "")) == str(uprn):
+                    return _normalise_bb(row)
+        # Fallback: return best (highest max speed) or first
+        best = max(rows, key=lambda r: r.get("MaxPredictedDown", 0) or 0)
+        result = _normalise_bb(best)
+        result["uprn_matched"] = False
+        return result
+    except Exception as exc:
+        logging.warning("Ofcom broadband fetch failed (non-fatal): %s", exc)
+        return None
+
+
+def _normalise_bb(row: dict) -> dict:
+    """Normalise an Ofcom broadband response row to a clean dict."""
+    return {
+        "max_download": row.get("MaxPredictedDown"),
+        "max_upload": row.get("MaxPredictedUp"),
+        "basic_download": row.get("MaxBbPredictedDown"),
+        "basic_upload": row.get("MaxBbPredictedUp"),
+        "superfast_download": row.get("MaxSfbbPredictedDown"),
+        "superfast_upload": row.get("MaxSfbbPredictedUp"),
+        "ultrafast_download": row.get("MaxUfbbPredictedDown"),
+        "ultrafast_upload": row.get("MaxUfbbPredictedUp"),
+        "uprn_matched": True,
+    }
+
+
+async def _fetch_ofcom_mobile(postcode: str, uprn: str | None) -> dict | None:
+    """Fetch Ofcom mobile coverage for a postcode, return UPRN-matched record."""
+    if not _OFCOM_API_KEY:
+        return None
+    pc = postcode.replace(" ", "").upper()
+    client = _get_http_client()
+    try:
+        resp = await client.get(
+            f"{_OFCOM_MOB_URL}/{pc}",
+            headers={"Ocp-Apim-Subscription-Key": _OFCOM_API_KEY},
+            timeout=8.0,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        # Mobile API nests results inside Availability array
+        rows = data if isinstance(data, list) else (data.get("Availability") or [])
+        if not rows:
+            return None
+        # Match by UPRN if available
+        if uprn:
+            for row in rows:
+                if str(row.get("UPRN", "")) == str(uprn):
+                    return _normalise_mob(row)
+        # Fallback: first row
+        result = _normalise_mob(rows[0])
+        result["uprn_matched"] = False
+        return result
+    except Exception as exc:
+        logging.warning("Ofcom mobile fetch failed (non-fatal): %s", exc)
+        return None
+
+
+_MOB_OPERATORS = {
+    "EE": "EE",
+    "H3": "Three",
+    "TF": "O2",
+    "VO": "Vodafone",
+}
+
+
+def _normalise_mob(row: dict) -> dict:
+    """Normalise an Ofcom mobile response row to a clean dict per operator."""
+    operators = {}
+    for code, name in _MOB_OPERATORS.items():
+        operators[name] = {
+            "voice_outdoor": row.get(f"{code}VoiceOutdoor"),
+            "voice_indoor": row.get(f"{code}VoiceIndoor"),
+            "data_outdoor": row.get(f"{code}DataOutdoor"),
+            "data_indoor": row.get(f"{code}DataIndoor"),
+        }
+    return {"operators": operators, "uprn_matched": True}
+
+
+# ---------------------------------------------------------------------------
 
 class SlowEnrichRequest(BaseModel):
     postcode: str
     address: str
     lat: float | None = None
     lon: float | None = None
+    uprn: str | None = None
 
 @router.post("/enrich-slow")
 @limiter.limit("20/minute")
 async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = Depends(get_current_user)):
     t0 = time.monotonic()
-    has_coords = body.lat is not None and body.lon is not None
-    ct_coro = _fetch_council_tax_band(body.postcode, body.address)
-    pf_coro = _fetch_planning_flood_zone(body.lat, body.lon) if has_coords else asyncio.sleep(0)
-    fl_coro = _fetch_flood_risk(body.lat, body.lon) if has_coords else asyncio.sleep(0)
-
     try:
-        ct_r, pf_r, fl_r = await asyncio.wait_for(
-            asyncio.gather(ct_coro, pf_coro, fl_coro, return_exceptions=True),
-            timeout=30.0,
-        )
-    except asyncio.TimeoutError:
-        logging.error("⏱ enrich-slow TIMEOUT (>30s)")
-        ct_r, pf_r, fl_r = None, None, None
+        has_coords = body.lat is not None and body.lon is not None
+        ct_coro = _fetch_council_tax_band(body.postcode, body.address)
+        pf_coro = _fetch_planning_flood_zone(body.lat, body.lon) if has_coords else asyncio.sleep(0)
+        fl_coro = _fetch_flood_risk(body.lat, body.lon) if has_coords else asyncio.sleep(0)
+        bb_coro = _fetch_ofcom_broadband(body.postcode, body.uprn)
+        mob_coro = _fetch_ofcom_mobile(body.postcode, body.uprn)
 
-    ct = ct_r if isinstance(ct_r, str) else None
-    pf = pf_r if isinstance(pf_r, str) else None
-    flood = fl_r if isinstance(fl_r, dict) else {"rivers_sea_risk": None, "surface_water_risk": None}
-    logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s in %.0fms", ct, pf, flood.get("rivers_sea_risk"), (time.monotonic() - t0) * 1000)
-    return {
-        "council_tax_band": ct,
-        "planning_flood_zone": pf,
-        "rivers_sea_risk": flood.get("rivers_sea_risk"),
-        "surface_water_risk": flood.get("surface_water_risk"),
-    }
+        try:
+            ct_r, pf_r, fl_r, bb_r, mob_r = await asyncio.wait_for(
+                asyncio.gather(ct_coro, pf_coro, fl_coro, bb_coro, mob_coro, return_exceptions=True),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            logging.error("⏱ enrich-slow TIMEOUT (>30s)")
+            ct_r, pf_r, fl_r, bb_r, mob_r = None, None, None, None, None
+
+        ct = ct_r if isinstance(ct_r, str) else None
+        pf = pf_r if isinstance(pf_r, str) else None
+        flood = fl_r if isinstance(fl_r, dict) else {"rivers_sea_risk": None, "surface_water_risk": None}
+        broadband = bb_r if isinstance(bb_r, dict) else None
+        mobile = mob_r if isinstance(mob_r, dict) else None
+        logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s bb=%s mob=%s in %.0fms",
+                        ct, pf, flood.get("rivers_sea_risk"),
+                        "ok" if broadband else "none", "ok" if mobile else "none",
+                        (time.monotonic() - t0) * 1000)
+        return {
+            "council_tax_band": ct,
+            "planning_flood_zone": pf,
+            "rivers_sea_risk": flood.get("rivers_sea_risk"),
+            "surface_water_risk": flood.get("surface_water_risk"),
+            "broadband": broadband,
+            "mobile": mobile,
+        }
+    except Exception as exc:
+        logging.exception("enrich-slow unexpected error: %s", exc)
+        return {
+            "council_tax_band": None,
+            "planning_flood_zone": None,
+            "rivers_sea_risk": None,
+            "surface_water_risk": None,
+            "broadband": None,
+            "mobile": None,
+        }
 
 
 class HpiRequest(BaseModel):

@@ -204,11 +204,20 @@ async def run_refresh() -> dict:
         logger.warning("News refresh: no articles fetched from any source")
         return {"status": "ok", "upserted": 0}
 
+    # Deduplicate by URL (RSS feeds can return the same article twice)
+    seen_urls: set[str] = set()
+    unique_articles: list[dict] = []
+    for article in all_articles:
+        url = article["url"]
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique_articles.append(article)
+
     # Upsert in batches of 50 (Supabase limit)
     upserted = 0
     batch_size = 50
-    for i in range(0, len(all_articles), batch_size):
-        batch = all_articles[i: i + batch_size]
+    for i in range(0, len(unique_articles), batch_size):
+        batch = unique_articles[i: i + batch_size]
         try:
             supabase.table("news_articles").upsert(
                 batch,
@@ -298,80 +307,115 @@ _market_task: asyncio.Task | None = None
 
 
 async def _fetch_market_data() -> list[dict]:
-    """Fetch all market quotes via yfinance using batch downloads (2 requests total)."""
+    """Fetch all market quotes via yfinance.
+
+    Strategy: try batch yf.download() first. If it returns empty/None
+    (common in yfinance ≥1.2), fall back to individual Ticker.history()
+    calls which are more stable across versions.
+    """
     def _sync_fetch() -> list[dict]:
         import yfinance as yf
         import pandas as pd
 
         symbols = [sym for sym, *_ in _MARKET_SYMBOLS]
         meta = {sym: (name, cat, cur) for sym, name, cat, cur in _MARKET_SYMBOLS}
-        symbols_str = " ".join(symbols)
         n = len(symbols)
 
-        def _get_series(df: "pd.DataFrame", field: str, sym: str) -> "pd.Series | None":
-            """Extract a symbol's column from a possibly MultiIndex DataFrame."""
-            try:
-                if isinstance(df.columns, pd.MultiIndex):
-                    return df[field][sym].dropna()
-                else:
-                    return df[field].dropna()
-            except KeyError:
-                return None
+        # --- Attempt 1: batch download ---
+        def _try_batch() -> list[dict]:
+            symbols_str = " ".join(symbols)
 
-        try:
-            # Batch request 1: intraday 2-min bars → current price (~15-min delayed)
+            def _get_series(df, field, sym):
+                try:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        return df[field][sym].dropna()
+                    else:
+                        return df[field].dropna()
+                except (KeyError, TypeError):
+                    return None
+
             intraday = yf.download(
                 symbols_str, period="1d", interval="2m",
                 auto_adjust=True, progress=False,
             )
-            # Batch request 2: daily bars → previous close for change calculation
             daily = yf.download(
                 symbols_str, period="5d", interval="1d",
                 auto_adjust=True, progress=False,
             )
-        except Exception as exc:
-            logger.error("yfinance batch download failed: %s", exc)
-            return []
+            # Check if download returned usable data
+            if intraday is None or daily is None:
+                return []
+            if hasattr(intraday, 'empty') and intraday.empty and hasattr(daily, 'empty') and daily.empty:
+                return []
 
+            results = []
+            for sym in symbols:
+                name, category, currency = meta[sym]
+                try:
+                    intra_close = _get_series(intraday, "Close", sym)
+                    daily_close = _get_series(daily, "Close", sym)
+
+                    if intra_close is not None and len(intra_close) > 0:
+                        price = float(intra_close.iloc[-1])
+                    elif daily_close is not None and len(daily_close) > 0:
+                        price = float(daily_close.iloc[-1])
+                    else:
+                        continue
+
+                    if daily_close is not None and len(daily_close) >= 2:
+                        prev_close = float(daily_close.iloc[-2])
+                    else:
+                        prev_close = price
+
+                    change = round(price - prev_close, 4)
+                    change_pct = round((change / prev_close) * 100, 2) if prev_close else None
+
+                    results.append({
+                        "symbol": sym, "name": name, "category": category,
+                        "price": round(price, 4), "change": change,
+                        "change_pct": change_pct, "currency": currency, "stale": False,
+                    })
+                except Exception as exc:
+                    logger.warning("yfinance batch parse failed [%s]: %s", sym, exc)
+            return results
+
+        try:
+            batch_results = _try_batch()
+            if batch_results:
+                logger.info("Market ticker (batch): %d/%d quotes", len(batch_results), n)
+                return batch_results
+        except Exception as exc:
+            logger.warning("yfinance batch download failed, falling back to individual: %s", exc)
+
+        # --- Attempt 2: individual Ticker.history() calls ---
+        logger.info("Market ticker: falling back to individual ticker fetches")
         results = []
         for sym in symbols:
             name, category, currency = meta[sym]
             try:
-                intra_close = _get_series(intraday, "Close", sym)
-                daily_close = _get_series(daily, "Close", sym)
-
-                # Current price: prefer latest intraday bar, fall back to daily
-                if intra_close is not None and len(intra_close) > 0:
-                    price = float(intra_close.iloc[-1])
-                elif daily_close is not None and len(daily_close) > 0:
-                    price = float(daily_close.iloc[-1])
-                else:
-                    logger.warning("yfinance no data [%s]", sym)
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period="5d")
+                if hist is None or hist.empty:
+                    continue
+                close = hist["Close"].dropna()
+                if len(close) == 0:
                     continue
 
-                # Previous close: second-to-last daily bar
-                if daily_close is not None and len(daily_close) >= 2:
-                    prev_close = float(daily_close.iloc[-2])
-                else:
-                    prev_close = price
+                price = float(close.iloc[-1])
+                prev_close = float(close.iloc[-2]) if len(close) >= 2 else price
 
                 change = round(price - prev_close, 4)
                 change_pct = round((change / prev_close) * 100, 2) if prev_close else None
 
                 results.append({
-                    "symbol": sym,
-                    "name": name,
-                    "category": category,
-                    "price": round(price, 4),
-                    "change": change,
-                    "change_pct": change_pct,
-                    "currency": currency,
-                    "stale": False,
+                    "symbol": sym, "name": name, "category": category,
+                    "price": round(price, 4), "change": change,
+                    "change_pct": change_pct, "currency": currency, "stale": False,
                 })
             except Exception as exc:
-                logger.warning("yfinance parse failed [%s]: %s", sym, exc)
+                logger.warning("yfinance individual fetch failed [%s]: %s", sym, exc)
 
-        logger.info("Market ticker fetched: %d/%d quotes", len(results), n)
+        logger.info("Market ticker (individual): %d/%d quotes", len(results), n)
         return results
 
     return await asyncio.to_thread(_sync_fetch)

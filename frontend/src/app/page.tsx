@@ -996,7 +996,7 @@ export default function Home() {
       fetch(`${API_BASE}/api/property/enrich-slow`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon }),
+        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon, uprn: data.uprn }),
         signal: slowController.signal,
       }).then(r => r.ok ? r.json() : null).then(slow => {
         if (slow) setResult(prev => prev ? {
@@ -1005,6 +1005,8 @@ export default function Home() {
           planning_flood_zone: slow.planning_flood_zone ?? prev.planning_flood_zone,
           rivers_sea_risk: slow.rivers_sea_risk ?? prev.rivers_sea_risk,
           surface_water_risk: slow.surface_water_risk ?? prev.surface_water_risk,
+          broadband: slow.broadband ?? prev.broadband,
+          mobile: slow.mobile ?? prev.mobile,
         } : prev);
       }).catch(() => { setEnrichSlowError(true); }).finally(() => setEnrichSlowDone(true));
       // Backfill HPI if initial search returned null (timeout)
@@ -2621,6 +2623,111 @@ export default function Home() {
             })()}
             </PropCard>
 
+            {/* Connectivity (Broadband & Mobile) card */}
+            <PropCard id="connectivity" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
+              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
+                <div className="px-6 py-4 border-b border-[#334155]/60">
+                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Connectivity</h2>
+                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Ofcom Connected Nations · broadband & mobile coverage</p>
+                </div>
+                <div className="px-6 py-4 space-y-4">
+                  {!enrichSlowDone && !result.broadband && (
+                    <p className="text-sm text-[#94A3B8]/60 animate-pulse">Loading connectivity data...</p>
+                  )}
+                  {enrichSlowDone && !result.broadband && !result.mobile && (
+                    <p className="text-sm text-[#94A3B8]/60">No connectivity data available{!enrichSlowError ? " — Ofcom API key may not be configured" : ""}</p>
+                  )}
+
+                  {/* Broadband speeds */}
+                  {result.broadband && (() => {
+                    const bb = result.broadband;
+                    const maxDown = bb.max_download;
+                    const tier = maxDown != null
+                      ? maxDown >= 300 ? "Ultrafast" : maxDown >= 30 ? "Superfast" : maxDown >= 10 ? "Standard" : "Basic"
+                      : "Unknown";
+                    const tierColor = tier === "Ultrafast" ? "#39FF14" : tier === "Superfast" ? "#00F0FF" : tier === "Standard" ? "#FFB800" : tier === "Basic" ? "#FF3131" : "#94A3B8";
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-xs font-semibold text-[#94A3B8] uppercase tracking-wide">Broadband</span>
+                          <span className="px-2 py-0.5 rounded-full text-xs font-semibold" style={{ background: `${tierColor}15`, color: tierColor }}>
+                            {tier}
+                          </span>
+                          {!bb.uprn_matched && (
+                            <span className="text-[10px] text-[#FFB800]">postcode-level (UPRN not matched)</span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            ["Max download", bb.max_download, "Mbps"],
+                            ["Max upload", bb.max_upload, "Mbps"],
+                            ["Superfast ↓", bb.superfast_download, "Mbps"],
+                            ["Ultrafast ↓", bb.ultrafast_download, "Mbps"],
+                          ].map(([label, val, unit]) => (
+                            <div key={label as string} className="rounded-lg bg-[#1E293B] px-3 py-2">
+                              <p className="text-[10px] text-[#94A3B8] uppercase">{label as string}</p>
+                              <p className="text-sm font-semibold text-[#E2E8F0]">
+                                {val != null && (val as number) >= 0 ? `${val} ${unit}` : "N/A"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Mobile coverage */}
+                  {result.mobile && (() => {
+                    const mob = result.mobile;
+                    const coverageLabel = (v: number | null) =>
+                      v === 4 ? "Strong" : v === 3 ? "Limited" : v === 0 ? "None" : "—";
+                    const coverageColor = (v: number | null) =>
+                      v === 4 ? "#39FF14" : v === 3 ? "#FFB800" : v === 0 ? "#FF3131" : "#94A3B8";
+                    return (
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-xs font-semibold text-[#94A3B8] uppercase tracking-wide">Mobile Coverage</span>
+                          {!mob.uprn_matched && (
+                            <span className="text-[10px] text-[#FFB800]">postcode-level</span>
+                          )}
+                        </div>
+                        <div className="overflow-hidden rounded-lg border border-[#334155]">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="bg-[#1E293B]">
+                                <th className="px-3 py-2 text-left text-[#94A3B8] font-medium">Operator</th>
+                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Data (outdoor)</th>
+                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Data (indoor)</th>
+                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Voice</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {Object.entries(mob.operators).map(([name, cov], i) => (
+                                <tr key={name} className={i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"}>
+                                  <td className="px-3 py-2 font-medium text-[#E2E8F0]">{name}</td>
+                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.data_outdoor) }}>
+                                    {coverageLabel(cov.data_outdoor)}
+                                  </td>
+                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.data_indoor) }}>
+                                    {coverageLabel(cov.data_indoor)}
+                                  </td>
+                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.voice_indoor) }}>
+                                    {coverageLabel(cov.voice_indoor)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+                <div className="px-6 py-3 bg-[#1E293B] border-t border-[#334155]/60">
+                  <p className="text-[10px] text-[#94A3B8]/60">Source: Ofcom Connected Nations. Predicted coverage — actual speeds may vary. Updated annually.</p>
+                </div>
+              </div>
+            </PropCard>
 
             </div>
 

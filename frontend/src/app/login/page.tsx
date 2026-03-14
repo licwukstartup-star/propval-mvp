@@ -31,7 +31,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0a0e1a' }}>
-      <div className="w-full max-w-md p-8 rounded-xl" style={{ backgroundColor: '#111827', border: '1px solid #1f2937' }}>
+      <div className="w-full max-w-md p-8 rounded-xl" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
         <h1
           className="text-3xl font-bold text-center mb-8 font-[var(--font-orbitron)]"
           style={{ color: '#00F0FF' }}
@@ -53,11 +53,11 @@ export default function LoginPage() {
               className="w-full px-4 py-2.5 rounded-lg outline-none transition-colors"
               style={{
                 backgroundColor: '#0a0e1a',
-                border: '1px solid #1f2937',
-                color: '#e0e6f0',
+                border: '1px solid #334155',
+                color: '#E2E8F0',
               }}
-              onFocus={(e) => e.target.style.borderColor = '#4a9eff'}
-              onBlur={(e) => e.target.style.borderColor = '#1f2937'}
+              onFocus={(e) => e.target.style.borderColor = '#00F0FF'}
+              onBlur={(e) => e.target.style.borderColor = '#334155'}
             />
           </div>
 
@@ -74,16 +74,16 @@ export default function LoginPage() {
               className="w-full px-4 py-2.5 rounded-lg outline-none transition-colors"
               style={{
                 backgroundColor: '#0a0e1a',
-                border: '1px solid #1f2937',
-                color: '#e0e6f0',
+                border: '1px solid #334155',
+                color: '#E2E8F0',
               }}
-              onFocus={(e) => e.target.style.borderColor = '#4a9eff'}
-              onBlur={(e) => e.target.style.borderColor = '#1f2937'}
+              onFocus={(e) => e.target.style.borderColor = '#00F0FF'}
+              onBlur={(e) => e.target.style.borderColor = '#334155'}
             />
           </div>
 
           {error && (
-            <p className="text-sm" style={{ color: '#ef4444' }}>{error}</p>
+            <p className="text-sm" style={{ color: '#FF3131' }}>{error}</p>
           )}
 
           <button

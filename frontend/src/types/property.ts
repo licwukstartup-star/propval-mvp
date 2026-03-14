@@ -107,6 +107,26 @@ export interface PropertyResult {
   lease_expiry_date: string | null;
   sales: SaleRecord[];
   epc_matched: boolean;
+  broadband: {
+    max_download: number | null;
+    max_upload: number | null;
+    basic_download: number | null;
+    basic_upload: number | null;
+    superfast_download: number | null;
+    superfast_upload: number | null;
+    ultrafast_download: number | null;
+    ultrafast_upload: number | null;
+    uprn_matched: boolean;
+  } | null;
+  mobile: {
+    operators: Record<string, {
+      voice_outdoor: number | null;
+      voice_indoor: number | null;
+      data_outdoor: number | null;
+      data_indoor: number | null;
+    }>;
+    uprn_matched: boolean;
+  } | null;
   hpi: {
     local_authority: string;
     data_month: string;

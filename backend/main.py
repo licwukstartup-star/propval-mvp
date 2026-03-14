@@ -32,7 +32,11 @@ async def lifespan(app: FastAPI):
     """Download reference datasets once at startup before serving requests."""
     import asyncio
     _load_green_belt_polygons()
-    app.state.inspire = await asyncio.to_thread(InspireService.load)
+    try:
+        app.state.inspire = await asyncio.to_thread(InspireService.load)
+    except Exception as exc:
+        logging.warning("INSPIRE service failed to load — INSPIRE lookup will be unavailable: %s", exc)
+        app.state.inspire = None
     await news_router.start_background_refresh()
     await news_router.start_market_refresh()
     await news_router.start_macro_refresh()

@@ -1,5 +1,6 @@
 "use client"
 
+import { useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from './AuthProvider'
 
@@ -10,6 +11,11 @@ function saveBeforeNavigate() {
 export default function Navbar() {
   const { user, role, isAdmin, signOut } = useAuth()
   const router = useRouter()
+  const signOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => { if (signOutTimerRef.current) clearTimeout(signOutTimerRef.current); };
+  }, [])
 
   if (!user) return null
 
@@ -36,13 +42,13 @@ export default function Navbar() {
   const handleSignOut = () => {
     saveBeforeNavigate();
     // Small delay to let keepalive fetch fire before sign-out clears session
-    setTimeout(() => { signOut(); }, 100);
+    signOutTimerRef.current = setTimeout(() => { signOut(); }, 100);
   };
 
   return (
     <nav
       className="flex items-center justify-between px-6 py-3"
-      style={{ backgroundColor: '#111827', borderBottom: '1px solid #1f2937' }}
+      style={{ backgroundColor: '#111827', borderBottom: '1px solid #334155' }}
     >
       <a
         href="/"
@@ -57,12 +63,9 @@ export default function Navbar() {
         <a
           href="/news"
           onClick={handleNewsClick}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors"
-          style={{ borderColor: '#00f0ff33', color: '#8888aa' }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#00f0ff'; (e.currentTarget as HTMLElement).style.borderColor = '#00f0ff66'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#8888aa'; (e.currentTarget as HTMLElement).style.borderColor = '#00f0ff33'; }}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#00f0ff33] text-[#94A3B8] transition-colors hover:text-[#00f0ff] hover:border-[#00f0ff66]"
         >
-          <span className="relative flex h-1.5 w-1.5">
+          <span className="relative flex h-1.5 w-1.5" aria-hidden="true">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: '#00f0ff' }} />
             <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ backgroundColor: '#00f0ff' }} />
           </span>
@@ -70,10 +73,7 @@ export default function Navbar() {
         </a>
         <button
           onClick={() => { router.push('/'); setTimeout(() => window.dispatchEvent(new CustomEvent('open-my-cases')), 100); }}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg border transition-colors shadow-[0_0_8px_#00F0FF20]"
-          style={{ borderColor: '#00F0FF66', color: '#00F0FF' }}
-          onMouseEnter={e => { e.currentTarget.style.backgroundColor = '#00F0FF1a'; e.currentTarget.style.borderColor = '#00F0FF99'; }}
-          onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.borderColor = '#00F0FF66'; }}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg border border-[#00F0FF66] text-[#00F0FF] transition-all hover:shadow-[0_0_8px_#00F0FF20] hover:bg-[#00F0FF1a] hover:border-[#00F0FF99]"
         >
           My Cases
         </button>
@@ -105,6 +105,7 @@ export default function Navbar() {
 
         <button
           onClick={handleSignOut}
+          aria-label="Sign out of PropVal"
           className="text-sm px-3 py-1 rounded transition-colors hover:opacity-80"
           style={{ border: '1px solid #334155', color: '#94A3B8' }}
         >
