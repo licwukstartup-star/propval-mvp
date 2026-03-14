@@ -25,7 +25,9 @@ export default function CookieConsent() {
       <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <p className="text-xs leading-relaxed" style={{ color: "#E2E8F0" }}>
           This site uses <strong>essential cookies only</strong> for authentication. No tracking, analytics, or third-party cookies are set.
-          Your data is stored securely and never shared. By continuing to use PropVal you acknowledge this.
+          Your data is stored securely and never shared. See our{" "}
+          <a href="/privacy" style={{ color: "#00F0FF", textDecoration: "underline" }}>Privacy Policy</a>.
+          By continuing to use PropVal you acknowledge this.
         </p>
         <button
           onClick={accept}
