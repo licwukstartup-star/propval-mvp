@@ -2797,6 +2797,56 @@ export default function Home() {
               </div>
             </PropCard>
 
+            {/* Nearby Schools card */}
+            <PropCard id="schools" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
+              <div className="h-full rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 flex flex-col gap-3 overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Nearby Schools</h2>
+                  {result.nearby_schools && result.nearby_schools.length > 0 && (
+                    <span className="text-[10px] text-[var(--color-text-secondary)] ml-auto">{result.nearby_schools.length} within 1.5 km</span>
+                  )}
+                </div>
+                {!result.nearby_schools || result.nearby_schools.length === 0 ? (
+                  <div className="flex items-center justify-center flex-1">
+                    <p className="text-sm text-[var(--color-text-secondary)]/60">No schools found within 1.5 km</p>
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-y-auto">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="text-[var(--color-text-secondary)] border-b border-[var(--color-border)]">
+                          <th className="text-left py-1 font-semibold">School</th>
+                          <th className="text-left py-1 font-semibold">Phase</th>
+                          <th className="text-left py-1 font-semibold">Ages</th>
+                          <th className="text-left py-1 font-semibold">Ofsted</th>
+                          <th className="text-right py-1 font-semibold">Dist</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.nearby_schools.map((s, i) => {
+                          const ofstedColor = s.ofsted_rating === "Outstanding" ? "text-[#39FF14]"
+                            : s.ofsted_rating === "Good" ? "text-[#00F0FF]"
+                            : s.ofsted_rating === "Requires improvement" ? "text-[#FFB800]"
+                            : s.ofsted_rating === "Inadequate" ? "text-[#FF3131]"
+                            : "text-[var(--color-text-secondary)]/60";
+                          return (
+                            <tr key={s.urn || i} className={i % 2 === 0 ? "bg-[var(--color-surface)]" : ""}>
+                              <td className="py-1 pr-2 text-[var(--color-text-primary)] font-medium max-w-[160px] truncate" title={s.name}>{s.name}</td>
+                              <td className="py-1 pr-2 text-[var(--color-text-secondary)]">{s.phase}</td>
+                              <td className="py-1 pr-2 text-[var(--color-text-secondary)]">{s.low_age}\u2013{s.high_age}</td>
+                              <td className={`py-1 pr-2 font-semibold ${ofstedColor}`}>{s.ofsted_rating || "\u2014"}</td>
+                              <td className="py-1 text-right text-[var(--color-text-secondary)] font-mono">{s.distance_m < 1000 ? `${s.distance_m}m` : `${(s.distance_m / 1000).toFixed(1)}km`}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <p className="text-[10px] text-[var(--color-text-secondary)]/60 mt-2">Source: DfE Get Information About Schools (GIAS). Ofsted ratings are legacy grades where available.</p>
+                  </div>
+                )}
+              </div>
+            </PropCard>
+
             </div>
 
             </div>{/* /space-y-5 */}

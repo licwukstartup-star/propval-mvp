@@ -232,6 +232,97 @@ def _load_green_belt_polygons() -> None:
         _green_belt_polygons = []
 
 
+# ---------------------------------------------------------------------------
+# Schools — GIAS (Get Information About Schools) in-memory cache
+# Downloaded from DfE EduBase CSV at startup, queried by haversine proximity.
+# ---------------------------------------------------------------------------
+
+_GIAS_CSV_URL_TEMPLATE = "http://ea-edubase-api-prod.azurewebsites.net/edubase/edubasealldata{date}.csv"
+_schools_data: list[dict] = []  # [{name, type, phase, ..., lat, lon}, ...]
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine distance in metres between two WGS84 points."""
+    R = 6_371_000
+    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _load_schools_data() -> None:
+    """Download GIAS EduBase CSV and parse into in-memory list.
+
+    Called from main.py lifespan. Falls back silently on error.
+    The CSV is ~15 MB with ~40k rows (all schools in England).
+    Encoding is latin-1 (Windows-1252).
+    """
+    global _schools_data
+    import csv
+    import io
+    from datetime import date, timedelta
+
+    today_str = date.today().strftime("%Y%m%d")
+    url = _GIAS_CSV_URL_TEMPLATE.format(date=today_str)
+    try:
+        resp = httpx.get(url, timeout=60.0, follow_redirects=True)
+        if resp.status_code != 200:
+            yesterday_str = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+            url = _GIAS_CSV_URL_TEMPLATE.format(date=yesterday_str)
+            resp = httpx.get(url, timeout=60.0, follow_redirects=True)
+        resp.raise_for_status()
+        text = resp.content.decode("latin-1")
+        reader = csv.DictReader(io.StringIO(text))
+        schools = []
+        for row in reader:
+            status = row.get("EstablishmentStatus (name)", "")
+            if status != "Open":
+                continue
+            lat_str = row.get("Latitude", "")
+            lon_str = row.get("Longitude", "")
+            if not lat_str or not lon_str:
+                continue
+            try:
+                lat = float(lat_str)
+                lon = float(lon_str)
+            except ValueError:
+                continue
+            schools.append({
+                "urn": row.get("URN", ""),
+                "name": row.get("EstablishmentName", ""),
+                "type": row.get("TypeOfEstablishment (name)", ""),
+                "phase": row.get("PhaseOfEducation (name)", ""),
+                "low_age": int(row.get("StatutoryLowAge", "0") or "0"),
+                "high_age": int(row.get("StatutoryHighAge", "0") or "0"),
+                "ofsted_rating": row.get("OfstedRating (name)", "") or None,
+                "ofsted_date": row.get("OfstedLastInsp", "") or None,
+                "postcode": row.get("Postcode", ""),
+                "lat": lat,
+                "lon": lon,
+                "gender": row.get("Gender (name)", ""),
+                "religious_character": row.get("ReligiousCharacter (name)", "") or None,
+            })
+        _schools_data = schools
+        logging.info("GIAS Schools: loaded %d open schools from EduBase CSV", len(schools))
+    except Exception as exc:
+        logging.warning("GIAS Schools CSV download failed: %s. Schools lookup disabled.", exc)
+        _schools_data = []
+
+
+def _find_nearby_schools(lat: float, lon: float, radius_m: int = 1500, limit: int = 15) -> list[dict]:
+    """Return schools within radius_m of the given point, sorted by distance."""
+    if not _schools_data:
+        return []
+    results = []
+    for s in _schools_data:
+        d = _haversine_m(lat, lon, s["lat"], s["lon"])
+        if d <= radius_m:
+            results.append({**s, "distance_m": round(d)})
+    results.sort(key=lambda x: x["distance_m"])
+    return results[:limit]
+
+
 EPC_API_BASE = "https://epc.opendatacommunities.org/api/v1/domestic/search"
 SPARQL_ENDPOINT = "https://landregistry.data.gov.uk/landregistry/query"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -2120,6 +2211,9 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         planning_zone    = None
         council_tax_band = None
 
+        # Schools — pure in-memory lookup, no I/O
+        nearby_schools = _find_nearby_schools(location["lat"], location["lon"]) if location["lat"] else []
+
         # ── Phase 2.5: cert-page EPC scrape ───────────────────────────────────
         _t2 = _t.monotonic()
         # If the postcode search didn't return this property's EPC row but the
@@ -2260,6 +2354,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "hpi": hpi,
             "nearby_planning": nearby_planning.get("applications", []),
             "nearby_planning_london_only": nearby_planning.get("london_only", False),
+            "nearby_schools": nearby_schools,
             "degraded_sources": _degraded if _degraded else None,
         }
         logging.warning("⏱ Upsert+response: %.0fms | TOTAL: %.0fms", (_t.monotonic() - _t3) * 1000, (_t.monotonic() - _t0) * 1000)

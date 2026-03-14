@@ -53,6 +53,21 @@ export interface NearbyPlanningApp {
   distance_m: number | null;
 }
 
+export interface NearbySchool {
+  urn: string;
+  name: string;
+  type: string;
+  phase: string;
+  low_age: number;
+  high_age: number;
+  ofsted_rating: string | null;
+  ofsted_date: string | null;
+  postcode: string;
+  distance_m: number;
+  gender: string;
+  religious_character: string | null;
+}
+
 export interface PropertyResult {
   uprn: string | null;
   postcode: string | null;
@@ -102,6 +117,7 @@ export interface PropertyResult {
   brownfield: BrownfieldSite[];
   nearby_planning: NearbyPlanningApp[];
   nearby_planning_london_only: boolean;
+  nearby_schools: NearbySchool[];
   tenure: string | null;
   lease_commencement: string | null;
   lease_term_years: number | null;

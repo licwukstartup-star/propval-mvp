@@ -19,7 +19,7 @@ from routers import firm_templates as firm_templates_router
 from routers import news as news_router
 from routers import property as property_router
 from routers import snapshots as snapshots_router
-from routers.property import _load_green_belt_polygons
+from routers.property import _load_green_belt_polygons, _load_schools_data
 from routers.rate_limit import limiter
 from services.inspire import InspireService
 
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
     """Download reference datasets once at startup before serving requests."""
     import asyncio
     _load_green_belt_polygons()
+    await asyncio.to_thread(_load_schools_data)
     try:
         app.state.inspire = await asyncio.to_thread(InspireService.load)
     except Exception as exc:
