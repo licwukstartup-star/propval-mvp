@@ -4,8 +4,8 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import ReactDOM from "react-dom";
 import dynamic from "next/dynamic";
 import { EpcBadge } from "./components/EpcBadge";
-import { HpiBarChart } from "./components/HpiBarChart";
-import { HpiIndexChart } from "./components/HpiIndexChart";
+import PropCard from "./components/PropCard";
+import HpiAutoFetch from "./components/HpiAutoFetch";
 import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard } from "@/components/ComparableSearch";
 import ManualComparableForm from "@/components/ManualComparableForm";
 import AdditionalComparable from "@/components/AdditionalComparable";
@@ -15,475 +15,21 @@ import { useAuth } from "@/components/AuthProvider";
 import ReportTyping from "./components/ReportTyping";
 import ReportPreview from "./components/ReportPreview";
 import SEMVTab from "./components/SEMVTab";
+import HpiTab from "./components/HpiTab";
+import SaveCaseDialog from "./components/SaveCaseDialog";
+import MyCasesPanel from "./components/MyCasesPanel";
 
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+// Extracted modules
+import type { PropertyResult, CardSizeKey, TabKey, AdoptedSortKey, SavedCaseSummary, HpiTrendSlice, HpiValueKey } from "@/types/property";
+import { API_BASE, FULL_POSTCODE_RE } from "@/lib/constants";
+import { formatPrice, fmtDate, yearsMonths, fmtK, fmtPsf, fmtDateShort } from "@/lib/formatters";
+import { planningDecisionStyle, FLOOD_STYLE, GRADE_STYLE, ADOPTED_TIER_STYLE, CARD_SIZES_KEY, SIZE_PRESETS, PROP_CARD_DEFAULTS, appleFont, iosBlue, iosPurple, rptSection, rptH2, rptTable, rptTh, rptTdL, rptTdV, rptTdS, rptStripe } from "@/lib/styles";
+import { hpiKeyForComp, computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjustments";
 
 const PropertyMap = dynamic(() => import("./components/PropertyMap"), { ssr: false });
 import type { CrimeCluster } from "./components/PropertyMap";
 
-interface SaleRecord {
-  date: string;
-  price: number;
-  tenure: string;
-  property_type: string;
-  new_build: boolean;
-}
-
-interface ListedBuilding {
-  list_entry: number | null;
-  name: string;
-  grade: string;
-  url: string;
-}
-
-interface ConservationArea {
-  name: string;
-  reference: string;
-  designation_date: string;
-  documentation_url: string;
-}
-
-interface AncientWoodland {
-  name: string;
-  type: string;
-}
-
-interface BrownfieldSite {
-  name: string;
-  hectares: string | null;
-  ownership_status: string | null;
-  planning_status: string | null;
-  planning_type: string | null;
-  planning_date: string | null;
-  hazardous_substances: boolean;
-}
-
-interface NearbyPlanningApp {
-  lpa_name: string | null;
-  site_name: string | null;
-  decision_date: string | null;
-  lpa_app_no: string | null;
-  decision: string | null;
-  application_type: string | null;
-  application_type_full: string | null;
-  postcode: string | null;
-  description: string | null;
-  street_name: string | null;
-  status: string | null;
-  valid_date: string | null;
-  distance_m: number | null;
-}
-
-interface PropertyResult {
-  uprn: string | null;
-  postcode: string | null;
-  address: string;
-  energy_rating: string | null;
-  energy_score: number | null;
-  epc_url: string | null;
-  property_type: string | null;
-  built_form: string | null;
-  building_name: string | null;
-  paon_number: string | null;
-  saon: string | null;
-  street_name: string | null;
-  floor_area_m2: number | null;
-  construction_age_band: string | null;
-  num_rooms: number | null;
-  heating_type: string | null;
-  inspection_date: string | null;
-  council_tax_band: string | null;
-  lat: number | null;
-  lon: number | null;
-  coord_source: string | null;
-  inspire_lat: number | null;
-  inspire_lon: number | null;
-  admin_district: string | null;
-  region: string | null;
-  lsoa: string | null;
-  rivers_sea_risk: string | null;
-  surface_water_risk: string | null;
-  planning_flood_zone: string | null;
-  listed_buildings: ListedBuilding[];
-  conservation_areas: ConservationArea[];
-  sssi: string[];
-  aonb: string | null;
-  ancient_woodland: AncientWoodland[];
-  green_belt: boolean;
-  coal_mining_high_risk: boolean;
-  coal_mining_in_coalfield: boolean;
-  radon_risk: string | null;
-  ground_shrink_swell: string | null;
-  ground_landslides: string | null;
-  ground_compressible: string | null;
-  ground_collapsible: string | null;
-  ground_running_sand: string | null;
-  ground_soluble_rocks: string | null;
-  brownfield: BrownfieldSite[];
-  nearby_planning: NearbyPlanningApp[];
-  nearby_planning_london_only: boolean;
-  tenure: string | null;
-  lease_commencement: string | null;
-  lease_term_years: number | null;
-  lease_expiry_date: string | null;
-  sales: SaleRecord[];
-  epc_matched: boolean;
-  hpi: {
-    local_authority: string;
-    data_month: string;
-    avg_price: number | null;
-    avg_price_type: number | null;
-    annual_change_pct: number | null;
-    monthly_change_pct: number | null;
-    sales_volume: number | null;
-    trend: {
-      month: string;
-      avg_price: number | null;
-      avg_price_flat: number | null;
-      avg_price_detached: number | null;
-      avg_price_semi: number | null;
-      avg_price_terraced: number | null;
-      annual_change_pct: number | null;
-      monthly_change_pct: number | null;
-      annual_change_flat_pct: number | null;
-      annual_change_detached_pct: number | null;
-      annual_change_semi_pct: number | null;
-      annual_change_terraced_pct: number | null;
-      sales_volume: number | null;
-      hpi_all: number | null;
-      hpi_detached: number | null;
-      hpi_semi: number | null;
-      hpi_terraced: number | null;
-      hpi_flat: number | null;
-    }[];
-  } | null;
-}
-
-const CARD_SIZES_KEY = "propval-card-sizes-v1";
-
-type CardSizeKey = "1x1" | "2x1" | "3x1" | "1x2";
-
-const SIZE_PRESETS: { key: CardSizeKey; label: string; cols: number; rows: number }[] = [
-  { key: "1x1", label: "Small", cols: 1, rows: 1 },
-  { key: "2x1", label: "Wide",  cols: 2, rows: 1 },
-  { key: "3x1", label: "Full",  cols: 3, rows: 1 },
-  { key: "1x2", label: "Tall",  cols: 1, rows: 2 },
-];
-
-const PROP_CARD_DEFAULTS: Record<string, CardSizeKey> = {
-  epc:          "2x1",
-  tenure:       "1x1",
-  sales:        "3x1",
-  flood:        "1x1",
-  conservation: "1x1",
-  coal:         "1x1",
-  ground:       "2x1",
-  asbestos:     "1x1",
-  planning:     "3x1",
-};
-
-function planningDecisionStyle(decision: string | null): { bg: string; text: string } {
-  if (!decision) return { bg: "bg-[#FFB800]/10", text: "text-[#FFB800]" };
-  const d = decision.toLowerCase();
-  if (d.includes("approv") || d.includes("grant")) return { bg: "bg-[#39FF14]/10", text: "text-[#39FF14]" };
-  if (d.includes("refus")) return { bg: "bg-[#FF3131]/10", text: "text-[#FF3131]" };
-  if (d.includes("withdraw")) return { bg: "bg-[#94A3B8]/10", text: "text-[#94A3B8]" };
-  return { bg: "bg-[#FFB800]/10", text: "text-[#FFB800]" };
-}
-
-const FLOOD_STYLE: Record<string, string> = {
-  "Very Low": "bg-[#39FF14]/10 text-[#39FF14]",
-  "Low":      "bg-[#39FF14]/10 text-[#39FF14]",
-  "Medium":   "bg-[#FFB800]/10 text-[#FFB800]",
-  "High":     "bg-[#FF3131]/10 text-[#FF3131]",
-};
-
-const GRADE_STYLE: Record<string, string> = {
-  "I":   "bg-[#FF3131]/15 text-[#FF3131]",
-  "II*": "bg-[#FFB800]/15 text-[#FFB800]",
-  "II":  "bg-[#00F0FF]/15 text-[#00F0FF]",
-};
-
-
-function formatPrice(p: number) {
-  return "£" + p.toLocaleString("en-GB");
-}
-
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
-}
-
-function yearsMonths(from: Date, to: Date): string {
-  let y = to.getFullYear() - from.getFullYear();
-  let m = to.getMonth() - from.getMonth();
-  if (m < 0) { y--; m += 12; }
-  const parts: string[] = [];
-  if (y > 0) parts.push(`${y} yr${y !== 1 ? "s" : ""}`);
-  if (m > 0) parts.push(`${m} mo`);
-  return parts.length ? parts.join(" ") : "< 1 month";
-}
-
-function fmtK(n: number): string {
-  if (n >= 1_000_000) return `£${(n / 1_000_000).toFixed(2)}m`;
-  return `£${Math.round(n / 1000)}k`;
-}
-function fmtPsf(n: number): string {
-  return `£${Math.round(n)}/sqft`;
-}
-function fmtDateShort(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-}
-
-// ── HPI time-adjustment helpers ──────────────────────────────────────────────
-type HpiValueKey = "hpi_all" | "hpi_flat" | "hpi_semi" | "hpi_detached" | "hpi_terraced";
-
-type HpiTrendSlice = {
-  month: string;
-  hpi_all: number | null;
-  hpi_flat: number | null;
-  hpi_semi: number | null;
-  hpi_detached: number | null;
-  hpi_terraced: number | null;
-};
-
-function hpiKeyForComp(comp: ComparableCandidate): HpiValueKey {
-  const pt = (comp.property_type ?? "").toLowerCase();
-  const hs = (comp.house_sub_type ?? "").toLowerCase();
-  if (pt === "flat") return "hpi_flat";
-  if (hs === "semi-detached") return "hpi_semi";
-  if (hs === "terraced" || hs === "end-terrace") return "hpi_terraced";
-  if (hs === "detached") return "hpi_detached";
-  return "hpi_all";
-}
-
-function computeAdjFactor(
-  comp: ComparableCandidate,
-  trend: HpiTrendSlice[],
-  correlation: number
-): number {
-  if (!trend.length || correlation === 0) return 1;
-  const txMonth  = comp.transaction_date.slice(0, 7);
-  const prefKey  = hpiKeyForComp(comp);
-  const txPoint  = trend.find(t => t.month === txMonth);
-  const nowPoint = trend[trend.length - 1];
-  if (!txPoint || !nowPoint) return 1;
-
-  // Use type-specific series only if available in BOTH points — avoids mixing series
-  const useKey: HpiValueKey =
-    prefKey !== "hpi_all" && txPoint[prefKey] != null && nowPoint[prefKey] != null
-      ? prefKey : "hpi_all";
-
-  const hpiTx  = txPoint[useKey];
-  const hpiNow = nowPoint[useKey];
-  if (hpiTx == null || hpiNow == null) return 1;
-
-  return 1 + (hpiNow / hpiTx - 1) * (correlation / 100);
-}
-
-function computeSizeAdj(
-  compSqft: number,
-  subjectSqft: number,
-  timeAdjPsf: number,
-  compPrice: number,
-  beta: number
-): { adjPsf: number; pctChange: number; capped: boolean } {
-  if (beta === 0) return { adjPsf: timeAdjPsf, pctChange: 0, capped: false };
-  const rawFactor = Math.pow(compSqft / subjectSqft, beta);
-  const rawAdjPsf = timeAdjPsf * rawFactor;
-  const limitPsf = compPrice / subjectSqft;
-  const subjectIsSmaller = subjectSqft < compSqft;
-  let adjPsf = rawAdjPsf;
-  let capped = false;
-  if (subjectIsSmaller && rawAdjPsf * subjectSqft >= compPrice) {
-    adjPsf = limitPsf;
-    capped = true;
-  } else if (!subjectIsSmaller && rawAdjPsf * subjectSqft <= compPrice) {
-    adjPsf = limitPsf;
-    capped = true;
-  }
-  return { adjPsf, pctChange: ((adjPsf - timeAdjPsf) / timeAdjPsf) * 100, capped };
-}
-
-// ── PropCard wrapper — grid item + resize handle ──────────────────────────────
-interface PropCardProps {
-  id: string;
-  isCustomising: boolean;
-  cardSizes: Record<string, CardSizeKey>;
-  onSizeChange: (id: string, size: CardSizeKey) => void;
-  children: React.ReactNode;
-}
-
-function PropCard({ id, isCustomising, cardSizes, onSizeChange, children }: PropCardProps) {
-  const [showMenu, setShowMenu] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
-  const size: CardSizeKey = (cardSizes[id] as CardSizeKey) ?? "1x1";
-  const preset = SIZE_PRESETS.find(p => p.key === size) ?? SIZE_PRESETS[0];
-
-  const openMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const PW = 252; // estimated popup width
-    const PH = 92;  // estimated popup height
-    // Default: above the button, right-aligned to button's right edge
-    let top = rect.top - PH - 8;
-    let left = rect.right - PW;
-    // Flip below if it clips the top
-    if (top < 8) top = rect.bottom + 8;
-    // Clamp within viewport
-    if (top + PH > window.innerHeight - 8) top = window.innerHeight - PH - 8;
-    left = Math.max(8, Math.min(left, window.innerWidth - PW - 8));
-    setMenuPos({ top, left });
-    setShowMenu(true);
-  };
-
-  return (
-    <div
-      style={{
-        gridColumn: `span ${preset.cols}`,
-        gridRow: `span ${preset.rows}`,
-        position: "relative",
-        // No transform here — transform on a parent breaks position:fixed children
-      }}
-    >
-      {/* Inner wrapper gets the jiggle so the fixed popup is unaffected */}
-      <div style={{
-        height: "100%",
-        animation: isCustomising ? "propCardJiggle 0.35s ease-in-out infinite alternate" : "none",
-        transformOrigin: "center center",
-      }}>
-        {children}
-      </div>
-
-      {/* Resize button — only visible in customise mode */}
-      {isCustomising && (
-        <button
-          onClick={openMenu}
-          title="Resize card"
-          style={{
-            position: "absolute",
-            bottom: 8,
-            right: 8,
-            width: 26,
-            height: 26,
-            borderRadius: 7,
-            background: "rgba(0,240,255,0.18)",
-            backdropFilter: "blur(6px)",
-            border: "1px solid rgba(0,240,255,0.35)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            cursor: "pointer",
-            zIndex: 20,
-            transition: "background 0.15s",
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,240,255,0.35)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,240,255,0.18)"; }}
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 10L10 2M10 2H5M10 2V7" stroke="#00F0FF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      )}
-
-      {/* Size preset popup */}
-      {showMenu && (
-        <>
-          <div onClick={() => setShowMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 999 }} />
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              position: "fixed",
-              top: menuPos.top,
-              left: menuPos.left,
-              zIndex: 1000,
-              background: "rgba(17,24,39,0.97)",
-              backdropFilter: "blur(20px)",
-              borderRadius: 14,
-              padding: 8,
-              display: "flex",
-              gap: 4,
-              border: "1px solid #334155",
-              boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
-              animation: "propCardPopIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            }}
-          >
-            {SIZE_PRESETS.map(p => {
-              const isActive = p.key === size;
-              return (
-                <button
-                  key={p.key}
-                  onClick={() => { onSizeChange(id, p.key); setShowMenu(false); }}
-                  style={{
-                    border: "none",
-                    background: isActive ? "rgba(0,240,255,0.15)" : "rgba(255,255,255,0.05)",
-                    color: "white",
-                    borderRadius: 10,
-                    padding: "8px 10px",
-                    cursor: "pointer",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 5,
-                    outline: isActive ? "2px solid #00F0FF" : "2px solid transparent",
-                    minWidth: 52,
-                    transition: "background 0.12s",
-                  }}
-                  onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.1)"; }}
-                  onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.05)"; }}
-                >
-                  {/* Mini 3×2 grid preview */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 8px)", gridTemplateRows: "repeat(2, 8px)", gap: 2 }}>
-                    {[0,1,2,3,4,5].map(i => {
-                      const row = Math.floor(i / 3);
-                      const col = i % 3;
-                      const filled = col < p.cols && row < p.rows;
-                      return (
-                        <div key={i} style={{
-                          width: 8, height: 8, borderRadius: 2,
-                          background: filled
-                            ? (isActive ? "rgba(0,240,255,0.9)" : "rgba(255,255,255,0.5)")
-                            : "rgba(255,255,255,0.1)",
-                        }} />
-                      );
-                    })}
-                  </div>
-                  <span style={{ fontSize: 10, fontWeight: 600, opacity: isActive ? 1 : 0.55, color: isActive ? "#00F0FF" : "white" }}>
-                    {p.label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-const FULL_POSTCODE_RE = /[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}/i;
-
-/** Auto-fetch HPI when tab is opened and data is missing */
-function HpiAutoFetch({ active, hpi, postcode, propertyType, builtForm, token, onHpi }: {
-  active: boolean; hpi: unknown; postcode?: string; propertyType?: string; builtForm?: string;
-  token?: string; onHpi: (hpi: Record<string, unknown>) => void;
-}) {
-  const fetchedRef = useRef(false);
-  useEffect(() => {
-    if (!active || hpi || fetchedRef.current || !postcode || !token) return;
-    fetchedRef.current = true;
-    fetch(`${API_BASE}/api/property/hpi`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ postcode, property_type: propertyType, built_form: builtForm }),
-    })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.hpi) onHpi(d.hpi); })
-      .catch(() => {});
-  }, [active, hpi, postcode, propertyType, builtForm, token, onHpi]);
-  // Reset when postcode changes (new case loaded)
-  useEffect(() => { fetchedRef.current = false; }, [postcode]);
-  return null;
-}
+// PropCard, HpiAutoFetch extracted to ./components/PropCard.tsx and ./components/HpiAutoFetch.tsx
 
 export default function Home() {
   const { session, isAdmin } = useAuth();
@@ -506,9 +52,9 @@ export default function Home() {
   const [aiNarrativeEditing, setAiNarrativeEditing] = useState<{ location_summary: boolean; property_overview: boolean; market_context: boolean }>({ location_summary: false, property_overview: false, market_context: false });
   const aiEditRefs = useRef<{ location_summary: HTMLTextAreaElement | null; property_overview: HTMLTextAreaElement | null; market_context: HTMLTextAreaElement | null }>({ location_summary: null, property_overview: null, market_context: null });
   const [enrichSlowDone, setEnrichSlowDone] = useState(false);
+  const [enrichSlowError, setEnrichSlowError] = useState(false);
   const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
   const [activeTab, setActiveTab] = useState<TabKey>("property");
   const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "comparables", "wider", "additional", "hpi", "adopted", "report_typing", "semv", "report"];
   const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
@@ -584,7 +130,6 @@ export default function Home() {
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", updateFades); stopTabScroll(); };
   }, [tabOrder, updateFades, stopTabScroll]);
 
-  type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
   const [adoptedSortPostcode, setAdoptedSortPostcode] = useState<AdoptedSortKey>("default");
   const [adoptedSortDirPostcode, setAdoptedSortDirPostcode] = useState<"asc" | "desc">("desc");
   const [buildingSearchIds, setBuildingSearchIds] = useState<string[]>([]);
@@ -752,7 +297,6 @@ export default function Home() {
   }, [result?.lat, result?.lon, mapCrimeCache]);
 
   // ── Saved cases state ──────────────────────────────────────────────────
-  interface SavedCaseSummary { id: string; display_name: string | null; title: string; address: string; postcode: string | null; uprn: string | null; case_type: string; status: string; valuation_date: string | null; created_at: string; updated_at: string; }
   const [showCasesPanel, setShowCasesPanel] = useState(false);
   const [casesList, setCasesList] = useState<SavedCaseSummary[]>([]);
   const [casesLoading, setCasesLoading] = useState(false);
@@ -1395,6 +939,7 @@ export default function Home() {
 
   const searchFormRef = useRef<HTMLFormElement>(null);
   const searchFormRef2 = useRef<HTMLFormElement>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   function pickSuggestion(s: { address: string; uprn: string }) {
     setAddress(s.address);
@@ -1419,7 +964,10 @@ export default function Home() {
     // Keep previous result visible while loading — cleared only on success or error
     setError(null);
 
+    // Cancel any previous in-flight search to prevent stale results
+    searchAbortRef.current?.abort();
     const controller = new AbortController();
+    searchAbortRef.current = controller;
     const timeoutId = setTimeout(() => controller.abort(), 95000);
 
     try {
@@ -1442,6 +990,7 @@ export default function Home() {
       setActiveTab("property");
       // Fire slow enrichment (council tax + planning flood) in background
       setEnrichSlowDone(false);
+      setEnrichSlowError(false);
       const slowController = new AbortController();
       setTimeout(() => slowController.abort(), 95000);
       fetch(`${API_BASE}/api/property/enrich-slow`, {
@@ -1457,7 +1006,7 @@ export default function Home() {
           rivers_sea_risk: slow.rivers_sea_risk ?? prev.rivers_sea_risk,
           surface_water_risk: slow.surface_water_risk ?? prev.surface_water_risk,
         } : prev);
-      }).catch(() => {}).finally(() => setEnrichSlowDone(true));
+      }).catch(() => { setEnrichSlowError(true); }).finally(() => setEnrichSlowDone(true));
       // Backfill HPI if initial search returned null (timeout)
       if (!data.hpi && data.postcode) {
         fetch(`${API_BASE}/api/property/hpi`, {
@@ -1489,6 +1038,8 @@ export default function Home() {
       setCurrentCaseStatus("in_progress");
       setValuationDate("");
     } catch (err) {
+      // If this search was cancelled by a newer search, silently ignore
+      if (controller.signal.aborted && searchAbortRef.current !== controller) return;
       if (err instanceof DOMException && err.name === "AbortError") {
         setError("Request timed out. The server took too long to respond.");
       } else {
@@ -1569,14 +1120,6 @@ export default function Home() {
     });
   }
 
-  const ADOPTED_TIER_STYLE: Record<number, { pill: string; header: string; icon: string }> = {
-    0: { pill: "bg-[#FF2D78]/15 text-[#FF2D78]",  header: "bg-[#FF2D78]/5  border-[#FF2D78]/30", icon: "✏️" },
-    1: { pill: "bg-[#39FF14]/15 text-[#39FF14]",  header: "bg-[#39FF14]/5  border-[#39FF14]/30", icon: "🏢" },
-    2: { pill: "bg-[#00F0FF]/15 text-[#00F0FF]",   header: "bg-[#00F0FF]/5  border-[#00F0FF]/30",  icon: "🏘️" },
-    3: { pill: "bg-[#FFB800]/15 text-[#FFB800]",  header: "bg-[#FFB800]/5  border-[#FFB800]/30", icon: "📍" },
-    4: { pill: "bg-[#94A3B8]/15 text-[#94A3B8]",  header: "bg-[#94A3B8]/10 border-[#334155]",   icon: "🗺️" },
-  };
-
   // ── Adopted comparables dashboard stats ──────────────────────────────────
   const adoptedPrices    = adoptedComparables.map(c => c.price);
   const adoptedPriceMin  = adoptedPrices.length ? Math.min(...adoptedPrices) : 0;
@@ -1637,40 +1180,6 @@ export default function Home() {
   const sizeAdjIndHigh = sizeAdjPsfMax != null && subjectAreaSqft != null ? Math.round(sizeAdjPsfMax * subjectAreaSqft) : null;
   const sizeAdjIndMid  = sizeAdjPsfAvg != null && subjectAreaSqft != null ? Math.round(sizeAdjPsfAvg * subjectAreaSqft) : null;
 
-  // ── Report inline style constants — iOS design language ─────────────────
-  const appleFont = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif';
-  const iosBlue   = "#007AFF";
-  const iosPurple = "#5856D6";
-  const rptSection: React.CSSProperties = { marginBottom: "32px" };
-  const rptH2: React.CSSProperties = {
-    fontSize: "13px", fontWeight: 600, color: iosBlue,
-    borderLeft: "3px solid " + iosBlue, paddingLeft: "10px",
-    marginBottom: "14px", marginTop: 0,
-    fontFamily: appleFont, letterSpacing: "-0.01em",
-  };
-  const rptTable: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: "12px", fontFamily: appleFont };
-  const rptTh: React.CSSProperties = {
-    backgroundColor: "#F2F2F7", fontWeight: 600, padding: "8px 12px",
-    textAlign: "left", border: "1px solid #C6C6C8", fontSize: "11px",
-    color: "#8E8E93", letterSpacing: "0.04em", textTransform: "uppercase",
-    fontFamily: appleFont,
-  };
-  const rptTdL: React.CSSProperties = {
-    padding: "8px 12px", border: "1px solid #E5E5EA",
-    fontWeight: 500, color: "#8E8E93", width: "38%", verticalAlign: "top",
-    backgroundColor: "#FFFFFF", fontSize: "12px",
-    fontFamily: appleFont,
-  };
-  const rptTdV: React.CSSProperties = {
-    padding: "8px 12px", border: "1px solid #E5E5EA", color: "#000000", verticalAlign: "top",
-    fontFamily: appleFont,
-  };
-  const rptTdS: React.CSSProperties = {
-    ...rptTdV, color: "#8E8E93", fontSize: "11px", width: "22%",
-  };
-  const rptStripe = (i: number): React.CSSProperties =>
-    ({ backgroundColor: i % 2 === 0 ? "#F9F9FB" : "#FFFFFF" });
-
   return (
     <main className="min-h-screen bg-[#0A0E1A] flex flex-col items-center px-4">
 
@@ -1699,7 +1208,7 @@ export default function Home() {
                 onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
                 placeholder={manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG"}
                 disabled={loading}
-                className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#F5E6C8] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
+                className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
               />
               {(showSuggestions || suggestionsLoading) && !manualMode && (
                 <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
@@ -1810,7 +1319,7 @@ export default function Home() {
                           className={`flex items-center gap-1 whitespace-nowrap px-5 py-2.5 text-sm font-medium rounded-t-lg border transition-colors ${
                             isCompActive
                               ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
-                              : "border-transparent text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                              : "border-transparent text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
                           }`}
                           style={isCompActive ? { borderBottomColor: "#111827" } : undefined}
                         >
@@ -1838,7 +1347,7 @@ export default function Home() {
                                   key={ct}
                                   onClick={() => { setActiveTab(ct); setCompDropdownOpen(false); }}
                                   className={`w-full text-left px-4 py-2 text-sm transition-colors flex items-center justify-between ${
-                                    isActive ? "text-[#00F0FF] bg-[#00F0FF]/10" : "text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                                    isActive ? "text-[#00F0FF] bg-[#00F0FF]/10" : "text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
                                   }`}
                                 >
                                   {labels[ct]}
@@ -1894,7 +1403,7 @@ export default function Home() {
                       className={`flex-shrink-0 whitespace-nowrap mr-1 px-5 py-2.5 text-sm font-medium rounded-t-lg border -mb-px transition-colors cursor-grab active:cursor-grabbing ${
                         active
                           ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
-                          : "border-transparent text-[#94A3B8] hover:text-[#F5E6C8] hover:bg-[#1E293B]"
+                          : "border-transparent text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
                       }`}
                       style={active ? { borderBottomColor: "#111827" } : undefined}
                     >
@@ -2017,19 +1526,11 @@ export default function Home() {
                   }
                 }}
                 disabled={savingCase}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border border-transparent transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:brightness-110 hover:shadow-[0_0_16px_#FF2D7866]"
                 style={{
-                  background: 'linear-gradient(135deg, #FF2D78 0%, #7B2FBE 100%)',
+                  backgroundColor: '#FF2D78',
                   color: '#FFFFFF',
-                  borderColor: 'transparent',
-                  boxShadow: '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22',
-                }}
-                onMouseEnter={e => {
-                  if (!savingCase) { e.currentTarget.style.boxShadow = '0 0 16px #FF2D7888, 0 0 32px #7B2FBE44'; e.currentTarget.style.transform = 'scale(1.03)'; }
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.boxShadow = '0 0 12px #FF2D7844, 0 0 24px #7B2FBE22';
-                  e.currentTarget.style.transform = 'scale(1)';
+                  boxShadow: '0 0 10px #FF2D7833',
                 }}
               >
                 {savingCase ? (
@@ -2102,7 +1603,7 @@ export default function Home() {
                   onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
                   placeholder={currentCaseId ? "Save & Exit to search a new address" : (manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG")}
                   disabled={loading || !!currentCaseId}
-                  className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#F5E6C8] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
+                  className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
                 />
                 {(showSuggestions || suggestionsLoading) && !manualMode && !currentCaseId && (
                   <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
@@ -2169,6 +1670,14 @@ export default function Home() {
               </div>
             )}
 
+            {/* ── Enrichment degraded notice ── */}
+            {enrichSlowError && (
+              <div className="flex items-start gap-3 rounded-lg border border-[#FFB800]/40 bg-[#FFB800]/10 px-4 py-3 text-sm mb-2">
+                <span className="text-[#FFB800] text-base leading-none mt-0.5">⚠</span>
+                <span className="text-[#FFB800]">Some background data (council tax, flood zones) could not be loaded. These fields may show as unavailable.</span>
+              </div>
+            )}
+
             {/* ── No-EPC notice ── */}
             {!result.epc_matched && (
               <div className="flex items-start gap-3 rounded-lg border border-[#FFB800]/40 bg-[#FFB800]/10 px-4 py-3 text-sm">
@@ -2189,7 +1698,7 @@ export default function Home() {
               <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-[#334155]/60">
                 <div>
                   <p className="text-xs text-[#94A3B8]/70 mb-0.5">Matched address</p>
-                  <p className="font-semibold text-[#F5E6C8]">{result.address}</p>
+                  <p className="font-semibold text-[#E2E8F0]">{result.address}</p>
                   {result.uprn && (
                     <p className="text-xs text-[#94A3B8]/70 mt-0.5">UPRN: {result.uprn}</p>
                   )}
@@ -2211,7 +1720,7 @@ export default function Home() {
                         {isEmpty ? (
                           <span className="text-[#475569] font-normal">Data Not Available</span>
                         ) : (
-                          <span className="text-[#F5E6C8]">{String(value)}</span>
+                          <span className="text-[#E2E8F0]">{String(value)}</span>
                         )}
                       </dd>
                     </div>
@@ -2247,7 +1756,7 @@ export default function Home() {
                               backgroundColor: ctColors.bg, color: ctColors.dark ? "#1a1a1a" : "#ffffff",
                               fontWeight: 700, fontSize: "13px",
                             }}>{ctBand}</span>
-                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>Band {ctBand}</span>
+                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>Band {ctBand}</span>
                           </span>
                         ) : (
                           <span className="text-xs text-[#94A3B8]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</span>
@@ -2291,7 +1800,7 @@ export default function Home() {
                                     backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
                                     fontWeight: 700, fontSize: "13px",
                                   }}>{epcConfig.band}</span>
-                                  <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore}</span>
+                                  <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>{epcScore}</span>
                                   <span style={{ fontSize: "10px", fontWeight: 500, color: "#94A3B8" }}>View certificate ↗</span>
                                 </span>
                               </a>
@@ -2315,7 +1824,7 @@ export default function Home() {
                                 backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
                                 fontWeight: 700, fontSize: "13px",
                               }}>{epcConfig.band}</span>
-                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#F5E6C8" }}>{epcScore}</span>
+                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>{epcScore}</span>
                             </span>
                           )
                         ) : (
@@ -2334,7 +1843,7 @@ export default function Home() {
             <PropCard id="tenure" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
               <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
                 <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Tenure</h2>
+                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Tenure</h2>
                   <p className="text-xs text-[#94A3B8]/70 mt-0.5">HM Land Registry Price Paid Data</p>
                 </div>
                 <div className="px-6 py-5 space-y-4">
@@ -2353,7 +1862,7 @@ export default function Home() {
                       </span>
                     )}
                     {result.tenure !== "Freehold" && result.tenure !== "Leasehold" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#334155] px-3 py-1.5 text-sm font-semibold text-[#F5E6C8]">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#334155] px-3 py-1.5 text-sm font-semibold text-[#E2E8F0]">
                         {result.tenure}
                       </span>
                     )}
@@ -2383,15 +1892,15 @@ export default function Home() {
                             <dl className="grid grid-cols-2 gap-px bg-[#334155]/40 rounded-lg overflow-hidden">
                               <div className="bg-[#111827] px-4 py-3">
                                 <dt className="text-xs text-[#94A3B8]">Commencement</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#F5E6C8]">{fmtDate(result.lease_commencement)}</dd>
+                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{fmtDate(result.lease_commencement)}</dd>
                               </div>
                               <div className="bg-[#111827] px-4 py-3">
                                 <dt className="text-xs text-[#94A3B8]">Expiry</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#F5E6C8]">{fmtDate(result.lease_expiry_date!)}</dd>
+                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{fmtDate(result.lease_expiry_date!)}</dd>
                               </div>
                               <div className="bg-[#111827] px-4 py-3">
                                 <dt className="text-xs text-[#94A3B8]">Total term</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#F5E6C8]">{totalTerm}</dd>
+                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{totalTerm}</dd>
                               </div>
                               <div className="bg-[#111827] px-4 py-3">
                                 <dt className="text-xs text-[#94A3B8]">Remaining</dt>
@@ -2424,7 +1933,7 @@ export default function Home() {
             <PropCard id="sales" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
             <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
               <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Sale History</h2>
+                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Sale History</h2>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">Land Registry Price Paid Data</p>
               </div>
 
@@ -2472,7 +1981,7 @@ export default function Home() {
             <PropCard id="flood" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
               <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
                 <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Flood Risk</h2>
+                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Flood Risk</h2>
                   <p className="text-xs text-[#94A3B8]/70 mt-0.5">Environment Agency data</p>
                 </div>
 
@@ -2487,7 +1996,7 @@ export default function Home() {
                       <dt className="text-xs text-[#94A3B8]/70">Rivers &amp; Sea</dt>
                       <dd className="mt-1">
                         {result.rivers_sea_risk ? (
-                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.rivers_sea_risk] ?? "bg-[#334155] text-[#F5E6C8]"}`}>
+                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.rivers_sea_risk] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
                             {result.rivers_sea_risk}
                           </span>
                         ) : (
@@ -2499,7 +2008,7 @@ export default function Home() {
                       <dt className="text-xs text-[#94A3B8]/70">Surface Water</dt>
                       <dd className="mt-1">
                         {result.surface_water_risk ? (
-                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.surface_water_risk] ?? "bg-[#334155] text-[#F5E6C8]"}`}>
+                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.surface_water_risk] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
                             {result.surface_water_risk}
                           </span>
                         ) : (
@@ -2567,7 +2076,7 @@ export default function Home() {
             <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
               {/* Conservation Area section */}
               <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Conservation Area</h2>
+                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Conservation Area</h2>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">Planning Data — Historic England designation</p>
                 <p className="text-xs text-[#FFB800]/60 mt-1">⚠ planning.data.gov.uk coverage: ~135/340 councils (40%). Verify with local authority.</p>
               </div>
@@ -2584,7 +2093,7 @@ export default function Home() {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0 mt-0.5" />
-                            <span className="text-sm font-semibold text-[#F5E6C8]">{ca.name}</span>
+                            <span className="text-sm font-semibold text-[#E2E8F0]">{ca.name}</span>
                           </div>
                           {ca.designation_date && (
                             <p className="text-xs text-[#94A3B8]/70 mt-1 ml-4">
@@ -2611,7 +2120,7 @@ export default function Home() {
               {/* Natural England designations section */}
               <div className="border-t border-[#334155]">
                 <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
-                  <h3 className="text-sm font-semibold text-[#F5E6C8]">Natural Environment</h3>
+                  <h3 className="text-sm font-semibold text-[#E2E8F0]">Natural Environment</h3>
                   <p className="text-xs text-[#94A3B8]/70 mt-0.5">Natural England — statutory designations</p>
                 </div>
 
@@ -2622,7 +2131,7 @@ export default function Home() {
                     {result.aonb ? (
                       <div className="flex items-center gap-2">
                         <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                        <span className="text-sm font-semibold text-[#F5E6C8]">{result.aonb}</span>
+                        <span className="text-sm font-semibold text-[#E2E8F0]">{result.aonb}</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -2638,7 +2147,7 @@ export default function Home() {
                     {result.green_belt ? (
                       <div className="flex items-center gap-2">
                         <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                        <span className="text-sm font-semibold text-[#F5E6C8]">Within Green Belt</span>
+                        <span className="text-sm font-semibold text-[#E2E8F0]">Within Green Belt</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
@@ -2690,7 +2199,7 @@ export default function Home() {
                       {(result.sssi ?? []).map((name) => (
                         <li key={name} className="flex items-center gap-2">
                           <span className="inline-block w-2 h-2 rounded-full bg-[#00F0FF] shrink-0" />
-                          <span className="text-sm text-[#F5E6C8]">{name}</span>
+                          <span className="text-sm text-[#E2E8F0]">{name}</span>
                         </li>
                       ))}
                     </ul>
@@ -2710,7 +2219,7 @@ export default function Home() {
                       {(result.ancient_woodland ?? []).map((aw) => (
                         <li key={aw.name} className="flex items-center gap-2">
                           <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                          <span className="text-sm text-[#F5E6C8]">{aw.name}</span>
+                          <span className="text-sm text-[#E2E8F0]">{aw.name}</span>
                           <span className="text-xs text-[#94A3B8]/70">
                             {aw.type === "ASNW" ? "Ancient Semi-Natural" : aw.type === "PAWS" ? "Replanted Ancient" : aw.type}
                           </span>
@@ -2729,7 +2238,7 @@ export default function Home() {
 
               {/* Coal Mining section */}
               <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Coal Mining Risk</h2>
+                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Coal Mining Risk</h2>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">Mining Remediation Authority</p>
               </div>
               <div className="flex items-start gap-3 px-6 py-3 border-b border-[#334155]/60">
@@ -2752,7 +2261,7 @@ export default function Home() {
                   {result.coal_mining_in_coalfield ? (
                     <div className="flex items-center gap-2">
                       <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0" />
-                      <span className="text-sm font-semibold text-[#F5E6C8]">Within Coalfield</span>
+                      <span className="text-sm font-semibold text-[#E2E8F0]">Within Coalfield</span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
@@ -2778,7 +2287,7 @@ export default function Home() {
                 <ul className="divide-y divide-[#334155]/60 border-b border-[#334155]/60">
                   {(result.listed_buildings ?? []).map((lb) => (
                     <li key={lb.list_entry ?? lb.name} className="flex items-start gap-3 px-6 py-3">
-                      <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-bold ${GRADE_STYLE[lb.grade] ?? "bg-[#334155] text-[#F5E6C8]"}`}>
+                      <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-bold ${GRADE_STYLE[lb.grade] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
                         {lb.grade}
                       </span>
                       <div className="min-w-0">
@@ -2787,7 +2296,7 @@ export default function Home() {
                             {lb.name}
                           </a>
                         ) : (
-                          <span className="text-sm font-medium text-[#F5E6C8]">{lb.name}</span>
+                          <span className="text-sm font-medium text-[#E2E8F0]">{lb.name}</span>
                         )}
                         {lb.list_entry && <p className="text-xs text-[#94A3B8]/70 mt-0.5">List entry {lb.list_entry}</p>}
                       </div>
@@ -2813,7 +2322,7 @@ export default function Home() {
                       <div className="flex items-start gap-2">
                         <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0 mt-1.5" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-[#F5E6C8] leading-snug">{site.name}</p>
+                          <p className="text-sm font-semibold text-[#E2E8F0] leading-snug">{site.name}</p>
                           <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
                             {site.hectares && <span className="text-xs text-[#94A3B8]">{site.hectares} ha</span>}
                             {site.planning_status && (
@@ -2889,7 +2398,7 @@ export default function Home() {
               return (
                 <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
                   <div className="px-6 py-4 border-b border-[#334155]/60">
-                    <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Ground Conditions</h2>
+                    <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Ground Conditions</h2>
                     <p className="text-xs text-[#94A3B8]/70 mt-0.5">BGS GeoSure — geological hazard susceptibility</p>
                   </div>
 
@@ -2923,7 +2432,7 @@ export default function Home() {
                     {HAZARDS.map(({ label, val, definition }) => (
                       <div key={label} className="flex items-start justify-between gap-6 px-6 py-4">
                         <div className="flex-1 min-w-0">
-                          <dt className="text-sm font-medium text-[#F5E6C8]">{label}</dt>
+                          <dt className="text-sm font-medium text-[#E2E8F0]">{label}</dt>
                           <dd className="text-xs text-[#94A3B8]/70 mt-1 leading-relaxed">{definition}</dd>
                         </div>
                         <div className="shrink-0 pt-0.5">{badge(val)}</div>
@@ -2947,7 +2456,7 @@ export default function Home() {
             <PropCard id="planning" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
             <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full flex flex-col">
               <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Nearby Planning Applications</h2>
+                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Nearby Planning Applications</h2>
                 <p className="text-xs text-[#94A3B8]/70 mt-0.5">GLA Planning London Datahub — within 500 m</p>
               </div>
               {result.nearby_planning_london_only && result.region !== "London" ? (
@@ -3062,7 +2571,7 @@ export default function Home() {
               return (
                 <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
                   <div className="px-6 py-4 border-b border-[#334155]/60">
-                    <h2 className="font-orbitron text-[#00F0FF] text-[10px] tracking-[3px] uppercase">Asbestos Risk</h2>
+                    <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Asbestos Risk</h2>
                     <p className="text-xs text-[#94A3B8]/70 mt-0.5">Age-based indicator — HSE precautionary approach</p>
                   </div>
 
@@ -3075,7 +2584,7 @@ export default function Home() {
                       </span>
                       {band && (
                         <span className="text-sm text-[#94A3B8]">
-                          Construction: <span className="font-medium text-[#F5E6C8]">{band}</span>
+                          Construction: <span className="font-medium text-[#E2E8F0]">{band}</span>
                         </span>
                       )}
                     </div>
@@ -3230,7 +2739,7 @@ export default function Home() {
               <div className="text-center py-16 text-[#94A3B8]/70 space-y-3">
                 <p className="text-4xl">📋</p>
                 <p className="text-sm font-medium text-[#94A3B8]">No comparables adopted yet</p>
-                <p className="text-xs text-[#94A3B8]/70">Click <span className="font-semibold text-[#F5E6C8]">Adopt</span> on any comparable in the search tabs, or add your own:</p>
+                <p className="text-xs text-[#94A3B8]/70">Click <span className="font-semibold text-[#E2E8F0]">Adopt</span> on any comparable in the search tabs, or add your own:</p>
                 <button
                   onClick={() => setShowManualForm(true)}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20 transition-colors"
@@ -3280,7 +2789,7 @@ export default function Home() {
                     {/* Price */}
                     <div className="px-3 py-3">
                       <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Price</p>
-                      <p className="text-sm font-bold text-[#F5E6C8] leading-snug tabular-nums">
+                      <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
                         {fmtK(adoptedPriceMin)}<span className="text-[#334155] font-normal">–</span>{fmtK(adoptedPriceMax)}
                       </p>
                       <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {fmtK(adoptedPriceAvg)}</p>
@@ -3291,7 +2800,7 @@ export default function Home() {
                       <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">£ / sqft</p>
                       {adoptedPsfMin != null ? (
                         <>
-                          <p className="text-sm font-bold text-[#F5E6C8] leading-snug tabular-nums">
+                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
                             {fmtPsf(adoptedPsfMin)}<span className="text-[#334155] font-normal">–</span>{fmtPsf(adoptedPsfMax!)}
                           </p>
                           <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {fmtPsf(adoptedPsfAvg!)}</p>
@@ -3312,7 +2821,7 @@ export default function Home() {
                       <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Floor Area</p>
                       {adoptedSizeMin != null ? (
                         <>
-                          <p className="text-sm font-bold text-[#F5E6C8] leading-snug tabular-nums">
+                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
                             {Math.round(adoptedSizeMin)}<span className="text-[#334155] font-normal">–</span>{Math.round(adoptedSizeMax!)} m²
                           </p>
                           <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {Math.round(adoptedSizeAvg!)} m²</p>
@@ -3327,7 +2836,7 @@ export default function Home() {
                       <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Date Range</p>
                       {adoptedDateMin && (
                         <>
-                          <p className="text-sm font-bold text-[#F5E6C8] leading-snug">{fmtDateShort(adoptedDateMin)}</p>
+                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug">{fmtDateShort(adoptedDateMin)}</p>
                           <p className="text-[11px] text-[#94A3B8] mt-1">to {fmtDateShort(adoptedDateMax!)}</p>
                         </>
                       )}
@@ -3383,7 +2892,7 @@ export default function Home() {
 
                 {/* ── Comparable cards with independent sort per group ──── */}
                 <p className="text-sm text-[#94A3B8]">
-                  <span className="font-semibold text-[#F5E6C8]">{adoptedComparables.length}</span> comparable{adoptedComparables.length !== 1 ? "s" : ""} adopted
+                  <span className="font-semibold text-[#E2E8F0]">{adoptedComparables.length}</span> comparable{adoptedComparables.length !== 1 ? "s" : ""} adopted
                 </p>
 
                 {/* ── Adopted comparables grouped by tier ─────────────────── */}
@@ -3427,7 +2936,7 @@ export default function Home() {
                                 <div className={`px-4 py-2.5 border-b flex items-center justify-between ${style.header}`}>
                                   <div className="flex items-center gap-2">
                                     <span>{style.icon}</span>
-                                    <span className="font-orbitron font-bold text-xs text-[#F5E6C8] tracking-wider">{label.toUpperCase()}</span>
+                                    <span className="font-orbitron font-bold text-xs text-[#E2E8F0] tracking-wider">{label.toUpperCase()}</span>
                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.pill}`}>{comps.length} adopted</span>
                                   </div>
                                 </div>
@@ -3448,7 +2957,7 @@ export default function Home() {
                         <div className="rounded-2xl border border-[#334155] overflow-hidden shadow-lg shadow-black/30">
                           <div className="px-4 py-2.5 border-b flex items-center gap-2 bg-[#00F0FF]/5 border-[#00F0FF]/30">
                             <span>📊</span>
-                            <span className="font-orbitron font-bold text-xs text-[#F5E6C8] tracking-wider">
+                            <span className="font-orbitron font-bold text-xs text-[#E2E8F0] tracking-wider">
                               SORTED BY {adoptedSortPostcode === "psf" ? "£/SQFT" : adoptedSortPostcode.toUpperCase()}
                             </span>
                             <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[#00F0FF]/15 text-[#00F0FF]">{sorted.length} adopted</span>
@@ -3583,212 +3092,8 @@ export default function Home() {
             onHpi={(hpi) => setResult(prev => prev ? { ...prev, hpi } : prev)}
           />
           <div className="pb-8" style={{ display: activeTab === "hpi" ? undefined : "none" }}>
-            {!result.hpi ? (
-              <div className="text-center py-20 text-[#94A3B8]/70 space-y-2">
-                <p className="text-4xl">📊</p>
-                <p className="text-sm font-medium text-[#94A3B8]">Loading HPI data...</p>
-                <p className="text-xs text-[#94A3B8]/60">Fetching House Price Index from Land Registry...</p>
-              </div>
-            ) : (() => {
-              const hpi = result.hpi!;
-              const latest = hpi.trend[hpi.trend.length - 1];
-
-              // Determine type label — use both property_type and built_form
-              // (EPC property-type is "House"/"Flat"; sub-type lives in built-form e.g. "Semi-Detached")
-              const pt = (result.property_type ?? "").toLowerCase();
-              const bf = (result.built_form ?? "").toLowerCase();
-              const isFlat      = pt.includes("flat") || pt.includes("maisonette");
-              const isSemi      = !isFlat && (pt.includes("semi")    || bf.includes("semi"));
-              const isDetached  = !isFlat && !isSemi && (pt.includes("detach") || bf.includes("detach"));
-              const isTerraced  = !isFlat && !isSemi && (pt.includes("terrace") || bf.includes("terrace"));
-              const typeLabel   = isFlat ? "Flat / Maisonette" : isDetached ? "Detached" : isSemi ? "Semi-detached" : isTerraced ? "Terraced" : null;
-              const typeAnnualChange = latest
-                ? isFlat ? latest.annual_change_flat_pct
-                  : isSemi ? latest.annual_change_semi_pct
-                  : isDetached ? latest.annual_change_detached_pct
-                  : isTerraced ? latest.annual_change_terraced_pct
-                  : null
-                : null;
-
-              // Compute type-specific avg price from latest trend point directly (not from backend pre-computation)
-              const typeAvgPrice = latest
-                ? isFlat ? latest.avg_price_flat
-                  : isSemi ? latest.avg_price_semi
-                  : isDetached ? latest.avg_price_detached
-                  : isTerraced ? latest.avg_price_terraced
-                  : null
-                : null;
-
-              const INDEX_SERIES = [
-                { key: "hpi_detached" as const, label: "Detached",          shortLabel: "Detached",  color: "#7B2FBE", isSubject: isDetached },
-                { key: "hpi_semi"     as const, label: "Semi-detached",     shortLabel: "Semi-det.", color: "#FFB800", isSubject: isSemi     },
-                { key: "hpi_terraced" as const, label: "Terraced",          shortLabel: "Terraced",  color: "#39FF14", isSubject: isTerraced },
-                { key: "hpi_flat"     as const, label: "Flat / Maisonette", shortLabel: "Flat/Mais", color: "#00F0FF", isSubject: isFlat     },
-              ];
-
-              const fmtChange = (v: number | null) =>
-                v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
-              const changeColor = (v: number | null) =>
-                v == null ? "#94A3B8" : v >= 0 ? "#39FF14" : "#FF3131";
-
-              return (
-                <div className="space-y-6">
-
-                  {/* ── Header ──────────────────────────────────────────────── */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="font-orbitron font-bold text-lg text-[#00F0FF] uppercase tracking-wider">
-                        House Price Index
-                      </h2>
-                      <p className="text-xs text-[#94A3B8] mt-1">
-                        {hpi.local_authority} · Data as at {hpi.data_month} · Source: HMLR UK HPI
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* ── KPI row ─────────────────────────────────────────────── */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {/* Avg price — type-specific, fall back to all if type unknown */}
-                    <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-                      <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">
-                        Avg price{typeLabel ? ` (${typeLabel})` : " (all types)"}
-                      </div>
-                      <div className="text-2xl font-bold text-[#E2E8F0] tabular-nums">
-                        {(typeAvgPrice ?? hpi.avg_price) != null
-                          ? `£${Math.round((typeAvgPrice ?? hpi.avg_price)!).toLocaleString("en-GB")}`
-                          : "—"}
-                      </div>
-                    </div>
-
-                    {/* Annual change (type-specific) */}
-                    <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-                      <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">
-                        Annual change{typeLabel ? ` (${typeLabel})` : " (all)"}
-                      </div>
-                      <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(typeAnnualChange ?? hpi.annual_change_pct) }}>
-                        {fmtChange(typeAnnualChange ?? hpi.annual_change_pct)}
-                      </div>
-                    </div>
-
-                    {/* Annual change all types */}
-                    <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-                      <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">Annual change (all types)</div>
-                      <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(hpi.annual_change_pct) }}>
-                        {fmtChange(hpi.annual_change_pct)}
-                      </div>
-                    </div>
-
-                    {/* Monthly change + sales volume */}
-                    <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-                      <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">Monthly change</div>
-                      <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(hpi.monthly_change_pct) }}>
-                        {fmtChange(hpi.monthly_change_pct)}
-                      </div>
-                      {hpi.sales_volume != null && (
-                        <div className="text-[11px] text-[#94A3B8] mt-2">
-                          {hpi.sales_volume.toLocaleString("en-GB")} sales
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* ── Trend bar chart (type-specific avg price) ───────────── */}
-                  {(() => {
-                    const typePriceKey = isFlat ? "avg_price_flat" : isDetached ? "avg_price_detached" : isSemi ? "avg_price_semi" : isTerraced ? "avg_price_terraced" : null;
-                    const getPrice = typePriceKey
-                      ? (t: typeof hpi.trend[0]) => t[typePriceKey as keyof typeof t] as number | null
-                      : (t: typeof hpi.trend[0]) => t.avg_price;
-                    const chartLabel = typeLabel ? `${typeLabel} average price` : "Average price (all types)";
-                    const typePts = hpi.trend.filter(t => getPrice(t) != null);
-                    if (typePts.length < 2) return null;
-                    const typePrices = typePts.map(t => getPrice(t)!);
-                    const tMin = Math.min(...typePrices);
-                    const tMax = Math.max(...typePrices);
-                    return (
-                      <div className="rounded-xl border border-[#334155] bg-[#111827] p-6">
-                        <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider mb-4">
-                          {chartLabel} — {typePts[0]?.month} to {typePts[typePts.length - 1]?.month}
-                        </h3>
-                        <HpiBarChart pts={typePts} getPrice={getPrice} barColor="#00F0FF" maColor="#FF2D78" />
-                        <div className="flex justify-between text-[10px] text-[#475569] mt-2 tabular-nums">
-                          <span>£{Math.round(tMin).toLocaleString("en-GB")}</span>
-                          <span>£{Math.round(tMax).toLocaleString("en-GB")}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* ── Property type breakdown table ────────────────────────── */}
-                  {latest && (
-                    <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
-                      <div className="px-6 py-4 border-b border-[#334155]/60">
-                        <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider">
-                          By property type — {hpi.data_month}
-                        </h3>
-                      </div>
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr style={{ background: "linear-gradient(90deg, #00F0FF 0%, #FF2D78 100%)" }}>
-                            <th className="px-6 py-3 text-left text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Type</th>
-                            <th className="px-6 py-3 text-right text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Avg price</th>
-                            <th className="px-6 py-3 text-right text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Annual change</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[
-                            { label: "Detached",          price: latest.avg_price_detached, change: latest.annual_change_detached_pct },
-                            { label: "Semi-detached",     price: latest.avg_price_semi,     change: latest.annual_change_semi_pct },
-                            { label: "Terraced",          price: latest.avg_price_terraced, change: latest.annual_change_terraced_pct },
-                            { label: "Flat / Maisonette", price: latest.avg_price_flat,     change: latest.annual_change_flat_pct },
-                          ].map((row, i) => {
-                            const highlight =
-                              (row.label === "Flat / Maisonette" && isFlat) ||
-                              (row.label === "Detached" && isDetached) ||
-                              (row.label === "Semi-detached" && isSemi) ||
-                              (row.label === "Terraced" && isTerraced);
-                            return (
-                              <tr key={row.label}
-                                className={i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"}
-                                style={highlight ? { boxShadow: "inset 3px 0 0 #00F0FF" } : undefined}
-                              >
-                                <td className="px-6 py-3 font-medium" style={{ color: highlight ? "#00F0FF" : "#E2E8F0" }}>
-                                  {row.label}
-                                  {highlight && <span className="ml-2 text-[10px] text-[#00F0FF]/60 uppercase tracking-wide">subject</span>}
-                                </td>
-                                <td className="px-6 py-3 text-right tabular-nums text-[#E2E8F0]">
-                                  {row.price != null ? `£${Math.round(row.price).toLocaleString("en-GB")}` : "—"}
-                                </td>
-                                <td className="px-6 py-3 text-right tabular-nums font-semibold" style={{ color: changeColor(row.change) }}>
-                                  {fmtChange(row.change)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {/* ── HPI index by type ────────────────────────────────────── */}
-                  {hpi.trend.length >= 3 && (() => {
-                    const firstMonth = hpi.trend[0]?.month;
-                    const lastMonth  = hpi.trend[hpi.trend.length - 1]?.month;
-                    return (
-                      <div className="rounded-xl border border-[#334155] bg-[#111827] p-6">
-                        <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider mb-1">
-                          House Price Index by type — {firstMonth} to {lastMonth}
-                        </h3>
-                        <p className="text-[10px] text-[#475569] mb-4">3-month moving average · rebased Jan 2023 = 100 · subject type highlighted · drag to explore</p>
-                        <HpiIndexChart trend={hpi.trend} series={INDEX_SERIES} />
-                      </div>
-                    );
-                  })()}
-
-                </div>
-              );
-            })()}
+            <HpiTab result={result} />
           </div>
-
           {/* ── Tab: Report Typing ─────────────────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
             <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} />
@@ -3800,187 +3105,35 @@ export default function Home() {
 
       {/* ── Save Case dialog ────────────────────────────────────────────────── */}
       {showSaveDialog && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60" onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}>
-          <div className="bg-[#111827] border border-[#334155] rounded-xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-orbitron font-bold text-[#00F0FF] mb-4">New Case</h2>
-            <p className="text-sm text-[#E2E8F0] mb-1 truncate">{result?.address}</p>
-            {result?.uprn && <p className="text-xs text-[#94A3B8] mb-4">UPRN: {result.uprn}</p>}
-            {!result?.uprn && <p className="text-xs text-[#FFB800] mb-4">No UPRN found — case will still be saved</p>}
-            <label className="block text-xs text-[#94A3B8] mb-1.5">Case type</label>
-            <div className="flex gap-2 mb-5">
-              {([["research", "Research"], ["full_valuation", "Full Valuation"]] as const).map(([val, label]) => (
-                <button
-                  key={val}
-                  onClick={() => setSaveCaseType(val)}
-                  className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
-                    saveCaseType === val
-                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF] font-semibold"
-                      : "border-[#334155] text-[#94A3B8] hover:border-[#475569] hover:text-[#E2E8F0]"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowSaveDialog(false); if (pendingExitAfterSave) doResetHome(); }}
-                className="px-4 py-2 text-sm rounded-lg border border-[#334155] text-[#94A3B8] hover:bg-[#1E293B] transition-colors"
-              >
-                {pendingExitAfterSave ? "Don\u2019t Save" : "Cancel"}
-              </button>
-              <button
-                onClick={() => saveCase()}
-                disabled={savingCase}
-                className="px-4 py-2 text-sm font-bold rounded-lg bg-[#39FF14] text-[#0A0E1A] hover:bg-[#32E612] disabled:opacity-50 transition-colors"
-              >
-                {savingCase ? "Saving…" : "Save"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SaveCaseDialog
+          result={result}
+          saveCaseType={saveCaseType}
+          onSaveCaseTypeChange={setSaveCaseType}
+          onSave={() => saveCase()}
+          onCancel={() => setShowSaveDialog(false)}
+          savingCase={savingCase}
+          pendingExitAfterSave={pendingExitAfterSave}
+          onResetHome={doResetHome}
+        />
       )}
 
       {/* ── My Cases slide-out panel ────────────────────────────────────────── */}
-      {showCasesPanel && (() => {
-        const filters = [
-          { key: "all", label: "All" },
-          { key: "in_progress", label: "In Progress" },
-          { key: "complete", label: "Complete" },
-          { key: "issued", label: "Issued" },
-          { key: "research", label: "Research" },
-          { key: "full_valuation", label: "Full Valuation" },
-        ];
-        const statusFilters = ["in_progress", "complete", "issued"];
-        const typeFilters = ["research", "full_valuation"];
-        const filtered = casesList.filter(c => {
-          if (casesFilter === "all") return c.status !== "archived";
-          if (statusFilters.includes(casesFilter)) {
-            const effectiveStatus = c.status === "draft" ? "in_progress" : c.status;
-            return effectiveStatus === casesFilter;
-          }
-          if (typeFilters.includes(casesFilter)) return c.case_type === casesFilter && c.status !== "archived";
-          return true;
-        }).sort((a, b) => {
-          const dir = casesSortDir === "asc" ? 1 : -1;
-          if (casesSort === "updated") return dir * (new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
-          if (casesSort === "created") return dir * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-          if (casesSort === "valuation_date") {
-            const da = a.valuation_date ? new Date(a.valuation_date).getTime() : 0;
-            const db = b.valuation_date ? new Date(b.valuation_date).getTime() : 0;
-            return dir * (da - db);
-          }
-          if (casesSort === "postcode") return dir * (a.postcode ?? "").localeCompare(b.postcode ?? "");
-          if (casesSort === "address") return dir * (a.address ?? "").localeCompare(b.address ?? "");
-          return 0;
-        });
-        const sortOptions = [
-          { key: "updated", label: "Last Updated" },
-          { key: "created", label: "Case Creation Date" },
-          { key: "valuation_date", label: "Valuation Date" },
-          { key: "postcode", label: "Postcode" },
-          { key: "address", label: "Address" },
-        ];
-        const statusColors: Record<string, string> = {
-          in_progress: "bg-[#FFB800]/20 text-[#FFB800]",
-          complete: "bg-[#39FF14]/20 text-[#39FF14]",
-          issued: "bg-[#00F0FF]/20 text-[#00F0FF]",
-          archived: "bg-[#334155] text-[#94A3B8]",
-        };
-        return (
-        <div className="fixed inset-0 z-[9999] flex justify-end" onClick={() => setShowCasesPanel(false)}>
-          <div className="bg-[#0A0E1A] border-l border-[#334155] w-full max-w-md h-full overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-5 border-b border-[#334155]">
-              <div>
-                <h2 className="text-lg font-orbitron font-bold text-[#00F0FF]">My Cases</h2>
-                <p className="text-[10px] text-[#94A3B8] mt-0.5">{filtered.length} case{filtered.length !== 1 ? "s" : ""}{casesFilter !== "all" ? ` (filtered)` : ""} · {casesList.length} total</p>
-              </div>
-              <button onClick={() => setShowCasesPanel(false)} className="text-[#94A3B8] hover:text-[#E2E8F0] text-lg">✕</button>
-            </div>
-            <div className="flex flex-wrap gap-1.5 px-5 pt-4 pb-2">
-              {filters.map(f => (
-                <button
-                  key={f.key}
-                  onClick={() => setCasesFilter(f.key)}
-                  className={`px-2.5 py-1 text-[10px] font-medium rounded-full border transition-colors ${
-                    casesFilter === f.key
-                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF]"
-                      : "border-[#334155] text-[#94A3B8] hover:border-[#475569] hover:text-[#E2E8F0]"
-                  }`}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-2 px-5 pb-2">
-              <span className="text-[10px] text-[#475569]">Sort:</span>
-              <select
-                value={casesSort}
-                onChange={e => setCasesSort(e.target.value)}
-                className="text-[10px] bg-[#1E293B] border border-[#334155] text-[#E2E8F0] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#00F0FF]"
-              >
-                {sortOptions.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-              </select>
-              <button
-                onClick={() => setCasesSortDir(d => d === "asc" ? "desc" : "asc")}
-                className="text-[10px] px-1.5 py-1 border border-[#334155] rounded text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] transition-colors"
-                title={casesSortDir === "asc" ? "Ascending" : "Descending"}
-              >
-                {casesSortDir === "asc" ? "A→Z" : "Z→A"}
-              </button>
-            </div>
-            <div className="p-5 pt-2">
-              {casesLoading && (
-                <div className="flex justify-center py-8">
-                  <div className="h-6 w-6 animate-spin rounded-full border-3 border-[#00F0FF] border-t-transparent" />
-                </div>
-              )}
-              {!casesLoading && filtered.length === 0 && (
-                <p className="text-sm text-[#94A3B8] text-center py-8">{casesList.length === 0 ? "No saved cases yet." : "No cases match this filter."}</p>
-              )}
-              {!casesLoading && filtered.map(c => {
-                const typeLabel = (c.case_type ?? "research").replace("_", " ");
-                return (
-                <div
-                  key={c.id}
-                  className={`rounded-lg border p-4 mb-3 cursor-pointer transition-colors ${
-                    currentCaseId === c.id
-                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/5"
-                      : "border-[#334155] bg-[#111827] hover:border-[#475569] hover:bg-[#1E293B]"
-                  }`}
-                  onClick={() => loadCase(c)}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <h3 className="text-sm font-semibold text-[#E2E8F0] truncate">{c.display_name ?? c.title}</h3>
-                      <p className="text-xs text-[#94A3B8] truncate mt-0.5">{c.address}</p>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded capitalize bg-[#7B2FBE]/20 text-[#c084fc]">{typeLabel}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${statusColors[c.status] ?? statusColors.in_progress}`}>{(c.status === "draft" ? "in_progress" : (c.status ?? "in_progress")).replace("_", " ")}</span>
-                      </div>
-                      <p className="text-[10px] text-[#475569] mt-1">
-                        Created: {new Date(c.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                        <span className="mx-1.5">·</span>
-                        Updated: {new Date(c.updated_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                        {c.postcode && <span className="ml-2">{c.postcode}</span>}
-                      </p>
-                    </div>
-                    <button
-                      onClick={e => { e.stopPropagation(); deleteCase(c.id); }}
-                      className="text-[#94A3B8] hover:text-[#FF3131] text-xs px-1.5 py-0.5 rounded transition-colors shrink-0"
-                      title="Delete case"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-        );
-      })()}
+      {showCasesPanel && (
+        <MyCasesPanel
+          casesList={casesList}
+          casesLoading={casesLoading}
+          currentCaseId={currentCaseId}
+          casesFilter={casesFilter}
+          casesSort={casesSort}
+          casesSortDir={casesSortDir}
+          onSetCasesFilter={setCasesFilter}
+          onSetCasesSort={setCasesSort}
+          onSetCasesSortDir={setCasesSortDir}
+          onLoadCase={loadCase}
+          onDeleteCase={deleteCase}
+          onClose={() => setShowCasesPanel(false)}
+        />
+      )}
 
     </main>
   );
