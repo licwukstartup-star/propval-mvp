@@ -80,6 +80,7 @@ export interface PropertyResult {
   admin_district: string | null;
   region: string | null;
   lsoa: string | null;
+  lsoa_code: string | null;
   rivers_sea_risk: string | null;
   surface_water_risk: string | null;
   planning_flood_zone: string | null;
@@ -126,6 +127,17 @@ export interface PropertyResult {
       data_indoor: number | null;
     }>;
     uprn_matched: boolean;
+  } | null;
+  imd: {
+    overall_rank: number | null;
+    overall_decile: number | null;
+    income_decile: number | null;
+    employment_decile: number | null;
+    education_decile: number | null;
+    health_decile: number | null;
+    crime_decile: number | null;
+    housing_decile: number | null;
+    environment_decile: number | null;
   } | null;
   hpi: {
     local_authority: string;

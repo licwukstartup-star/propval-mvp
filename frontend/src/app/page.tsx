@@ -996,7 +996,7 @@ export default function Home() {
       fetch(`${API_BASE}/api/property/enrich-slow`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon, uprn: data.uprn }),
+        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon, uprn: data.uprn, lsoa_code: data.lsoa_code }),
         signal: slowController.signal,
       }).then(r => r.ok ? r.json() : null).then(slow => {
         if (slow) setResult(prev => prev ? {
@@ -1007,6 +1007,7 @@ export default function Home() {
           surface_water_risk: slow.surface_water_risk ?? prev.surface_water_risk,
           broadband: slow.broadband ?? prev.broadband,
           mobile: slow.mobile ?? prev.mobile,
+          imd: slow.imd ?? prev.imd,
         } : prev);
       }).catch(() => { setEnrichSlowError(true); }).finally(() => setEnrichSlowDone(true));
       // Backfill HPI if initial search returned null (timeout)
@@ -1183,15 +1184,15 @@ export default function Home() {
   const sizeAdjIndMid  = sizeAdjPsfAvg != null && subjectAreaSqft != null ? Math.round(sizeAdjPsfAvg * subjectAreaSqft) : null;
 
   return (
-    <main className="min-h-screen bg-[#0A0E1A] flex flex-col items-center px-4">
+    <main className="min-h-screen bg-[var(--color-bg-base)] flex flex-col items-center px-4">
 
       {!result ? (
         /* ── Initial state: no result yet ─ centred search ────────────────── */
         <div className="w-full max-w-xl py-16">
           <div className="mb-1">
-            <h1 className="text-3xl font-bold font-orbitron text-[#00F0FF] tracking-wider">PropVal</h1>
+            <h1 className="text-3xl font-bold font-orbitron text-[var(--color-accent)] tracking-wider">PropVal</h1>
           </div>
-          <p className="text-sm text-[#94A3B8] mb-8">
+          <p className="text-sm text-[var(--color-text-secondary)] mb-8">
             {manualMode ? "Type the full address to search" : "Enter a UK postcode and select the address"}
           </p>
 
@@ -1210,21 +1211,21 @@ export default function Home() {
                 onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
                 placeholder={manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG"}
                 disabled={loading}
-                className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
+                className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] disabled:opacity-50"
               />
               {(showSuggestions || suggestionsLoading) && !manualMode && (
-                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-                  {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                  {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                   {!suggestionsLoading && suggestions.map((s, i) => (
                     <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
-                      style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid rgba(51,65,85,0.3)" }}>
+                      style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "var(--color-accent)" : "var(--color-text-primary)", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid var(--color-border)" }}>
                       {s.address}
                     </div>
                   ))}
                   {!suggestionsLoading && (
                     <div
                       onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
-                      style={{ padding: "10px 14px", fontSize: 12, color: "#FFB800", cursor: "pointer", borderTop: "1px solid #334155", background: "rgba(255,184,0,0.05)" }}
+                      style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-warning)", cursor: "pointer", borderTop: "1px solid var(--color-border)", background: "rgba(255,184,0,0.05)" }}
                     >
                       Address not listed? Click here to type full address manually
                     </div>
@@ -1233,11 +1234,11 @@ export default function Home() {
               )}
               {/* Manual mode autocomplete (same as before) */}
               {(showSuggestions || suggestionsLoading) && manualMode && suggestions.length > 0 && (
-                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-                  {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                  {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                   {!suggestionsLoading && suggestions.map((s, i) => (
                     <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
-                      style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: i < suggestions.length - 1 ? "1px solid rgba(51,65,85,0.5)" : "none" }}>
+                      style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "var(--color-accent)" : "var(--color-text-primary)", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: i < suggestions.length - 1 ? "1px solid var(--color-border)" : "none" }}>
                       {s.address}
                     </div>
                   ))}
@@ -1248,19 +1249,19 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={loading || !address.trim()}
-                className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="rounded-lg bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)] px-5 py-2.5 text-sm font-bold shadow-sm hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {loading ? "Searching…" : "Search"}
               </button>
             )}
             {isAdmin && searchElapsed !== null && (
-              <span className="text-xs font-mono text-[#94A3B8] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
+              <span className="text-xs font-mono text-[var(--color-text-secondary)] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
             )}
           </form>
           {manualMode && (
             <button
               onClick={() => { setManualMode(false); setAddress(""); setSuggestions([]); setShowSuggestions(false); }}
-              className="text-xs text-[#94A3B8] hover:text-[#00F0FF] transition-colors mb-6 cursor-pointer"
+              className="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] transition-colors mb-6 cursor-pointer"
             >
               ← Back to postcode lookup
             </button>
@@ -1269,12 +1270,12 @@ export default function Home() {
 
           {loading && (
             <div className="flex justify-center py-12">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#00F0FF] border-t-transparent" />
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-[var(--color-accent)] border-t-transparent" />
             </div>
           )}
 
           {error && (
-            <div className="rounded-lg border border-[#FF3131]/40 bg-[#FF3131]/10 px-4 py-3 text-sm text-[#FF3131]">
+            <div className="rounded-lg border border-[var(--color-status-danger)]/40 bg-[var(--color-status-danger)]/10 px-4 py-3 text-sm text-[var(--color-status-danger)]">
               {error}
             </div>
           )}
@@ -1299,7 +1300,7 @@ export default function Home() {
             <div ref={leftFadeRef} className="pointer-events-none absolute left-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to right, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("left")} onMouseLeave={stopTabScroll} />
 
             {/* Scrollable tab strip */}
-            <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[#334155] scrollbar-hide scroll-smooth" onScroll={updateFades}>
+            <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[var(--color-border)] scrollbar-hide scroll-smooth" onScroll={updateFades}>
               {(() => {
                 const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", additional: "Additional Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
                 const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", additional: "Additional", adopted: "Adopted" };
@@ -1320,14 +1321,14 @@ export default function Home() {
                           onClick={() => { if (!isCompActive) { setActiveTab("comparables"); setCompDropdownOpen(false); } }}
                           className={`flex items-center gap-1 whitespace-nowrap px-5 py-2.5 text-sm font-medium rounded-t-lg border transition-colors ${
                             isCompActive
-                              ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
-                              : "border-transparent text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
+                              ? "bg-[var(--color-bg-panel)] border-[var(--color-border)] text-[var(--color-accent)]"
+                              : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
                           }`}
-                          style={isCompActive ? { borderBottomColor: "#111827" } : undefined}
+                          style={isCompActive ? { borderBottomColor: "var(--color-bg-panel)" } : undefined}
                         >
                           Comparable
                           {adoptedBadge !== null && (
-                            <span className="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[#39FF14] text-[#0A0E1A]">
+                            <span className="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--color-status-success)] text-[var(--color-btn-primary-text)]">
                               {adoptedBadge}
                             </span>
                           )}
@@ -1338,7 +1339,7 @@ export default function Home() {
                             ref={compDropdownRef}
                             onMouseEnter={openCompDropdown}
                             onMouseLeave={closeCompDropdown}
-                            className="fixed min-w-[200px] rounded-lg border border-[#334155] bg-[#111827] shadow-lg shadow-black/40 py-1"
+                            className="fixed min-w-[200px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/40 py-1"
                             style={{ top: compDropdownPos.top, left: compDropdownPos.left, zIndex: 9999 }}
                           >
                             {compClusterTabs.map(ct => {
@@ -1349,12 +1350,12 @@ export default function Home() {
                                   key={ct}
                                   onClick={() => { setActiveTab(ct); setCompDropdownOpen(false); }}
                                   className={`w-full text-left px-4 py-2 text-sm transition-colors flex items-center justify-between ${
-                                    isActive ? "text-[#00F0FF] bg-[#00F0FF]/10" : "text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
+                                    isActive ? "text-[var(--color-accent)] bg-[var(--color-btn-primary-bg)]/10" : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
                                   }`}
                                 >
                                   {labels[ct]}
                                   {badge !== null && (
-                                    <span className="ml-2 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[#39FF14] text-[#0A0E1A]">
+                                    <span className="ml-2 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--color-status-success)] text-[var(--color-btn-primary-text)]">
                                       {badge}
                                     </span>
                                   )}
@@ -1404,10 +1405,10 @@ export default function Home() {
                       onClick={() => setActiveTab(tab)}
                       className={`flex-shrink-0 whitespace-nowrap mr-1 px-5 py-2.5 text-sm font-medium rounded-t-lg border -mb-px transition-colors cursor-grab active:cursor-grabbing ${
                         active
-                          ? "bg-[#111827] border-[#334155] text-[#00F0FF]"
-                          : "border-transparent text-[#94A3B8] hover:text-[#E2E8F0] hover:bg-[#1E293B]"
+                          ? "bg-[var(--color-bg-panel)] border-[var(--color-border)] text-[var(--color-accent)]"
+                          : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
                       }`}
-                      style={active ? { borderBottomColor: "#111827" } : undefined}
+                      style={active ? { borderBottomColor: "var(--color-bg-panel)" } : undefined}
                     >
                       {labels[tab]}
                     </button>
@@ -1427,17 +1428,17 @@ export default function Home() {
               {!currentCaseId && (
                 <button
                   onClick={() => setShowSaveDialog(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#39FF14]/40 text-[#39FF14] hover:bg-[#39FF14]/10 transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--color-status-success)]/40 text-[var(--color-status-success)] hover:bg-[var(--color-status-success)]/10 transition-colors"
                 >
                   Create a New Case
                 </button>
               )}
               {currentCaseId && (
                 <span className={`text-[10px] px-2 py-1 rounded ${
-                  autoSaveStatus === "saving" ? "text-[#FFB800]"
-                  : autoSaveStatus === "saved" ? "text-[#39FF14]"
-                  : autoSaveStatus === "error" ? "text-[#FF3131]"
-                  : "text-[#475569]"
+                  autoSaveStatus === "saving" ? "text-[var(--color-status-warning)]"
+                  : autoSaveStatus === "saved" ? "text-[var(--color-status-success)]"
+                  : autoSaveStatus === "error" ? "text-[var(--color-status-danger)]"
+                  : "text-[var(--color-text-muted)]"
                 }`}>
                   {autoSaveStatus === "saving" ? "Saving..."
                   : autoSaveStatus === "saved" ? "Saved"
@@ -1447,10 +1448,10 @@ export default function Home() {
               )}
               {currentCaseId && (() => {
                 const allStatuses: { key: string; label: string; color: string }[] = [
-                  { key: "in_progress", label: "In Progress", color: "border-[#FFB800]/40 text-[#FFB800] bg-[#FFB800]/10" },
-                  { key: "complete", label: "Complete", color: "border-[#39FF14]/40 text-[#39FF14] bg-[#39FF14]/10" },
-                  { key: "issued", label: "Issued", color: "border-[#00F0FF]/40 text-[#00F0FF] bg-[#00F0FF]/10" },
-                  { key: "archived", label: "Archived", color: "border-[#334155] text-[#94A3B8] bg-[#334155]/20" },
+                  { key: "in_progress", label: "In Progress", color: "border-[var(--color-status-warning)]/40 text-[var(--color-status-warning)] bg-[var(--color-status-warning)]/10" },
+                  { key: "complete", label: "Complete", color: "border-[var(--color-status-success)]/40 text-[var(--color-status-success)] bg-[var(--color-status-success)]/10" },
+                  { key: "issued", label: "Issued", color: "border-[var(--color-accent)]/40 text-[var(--color-accent)] bg-[var(--color-btn-primary-bg)]/10" },
+                  { key: "archived", label: "Archived", color: "border-[var(--color-border)] text-[var(--color-text-secondary)] bg-[var(--color-border)]/20" },
                 ];
                 const statusFlow: Record<string, string[]> = {
                   in_progress: ["complete"],
@@ -1476,8 +1477,8 @@ export default function Home() {
                             isCurrent
                               ? s.color + " ring-1 ring-current"
                               : isAllowed && !statusUpdating
-                                ? "border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] cursor-pointer"
-                                : "border-[#1E293B] text-[#334155] cursor-not-allowed opacity-40"
+                                ? "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] cursor-pointer"
+                                : "border-[var(--color-bg-surface)] text-[var(--color-border)] cursor-not-allowed opacity-40"
                           }`}
                         >
                           {statusUpdating === s.key && (
@@ -1498,7 +1499,7 @@ export default function Home() {
               {activeTab === "property" && isCustomising && (
                 <button
                   onClick={resetCardSizes}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B] transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] hover:bg-[var(--color-bg-surface)] transition-colors"
                 >
                   ↺ Reset
                 </button>
@@ -1508,8 +1509,8 @@ export default function Home() {
                   onClick={() => setIsCustomising(v => !v)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                     isCustomising
-                      ? "border-[#00F0FF]/60 bg-[#00F0FF]/10 text-[#00F0FF]"
-                      : "border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#475569] hover:bg-[#1E293B]"
+                      ? "border-[var(--color-accent)]/60 bg-[var(--color-btn-primary-bg)]/10 text-[var(--color-accent)]"
+                      : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] hover:bg-[var(--color-bg-surface)]"
                   }`}
                 >
                   {isCustomising ? "✓ Done" : "⊹ Customise"}
@@ -1530,7 +1531,7 @@ export default function Home() {
                 disabled={savingCase}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border border-transparent transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:brightness-110 hover:shadow-[0_0_16px_#FF2D7866]"
                 style={{
-                  backgroundColor: '#FF2D78',
+                  backgroundColor: 'var(--color-accent-pink)',
                   color: '#FFFFFF',
                   boxShadow: '0 0 10px #FF2D7833',
                 }}
@@ -1559,11 +1560,11 @@ export default function Home() {
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all"
                   style={{
                     background: 'transparent',
-                    color: '#FF3131',
-                    borderColor: '#FF313166',
+                    color: 'var(--color-status-danger)',
+                    borderColor: 'var(--color-status-danger)',
                   }}
                   onMouseEnter={e => {
-                    e.currentTarget.style.background = '#FF313118';
+                    e.currentTarget.style.background = 'var(--color-status-danger)'; e.currentTarget.style.opacity = '0.15';
                     e.currentTarget.style.borderColor = '#FF3131';
                     e.currentTarget.style.boxShadow = '0 0 12px #FF313144';
                   }}
@@ -1605,21 +1606,21 @@ export default function Home() {
                   onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
                   placeholder={currentCaseId ? "Save & Exit to search a new address" : (manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG")}
                   disabled={loading || !!currentCaseId}
-                  className="w-full rounded-lg border border-[#334155] bg-[#1E293B] text-[#E2E8F0] placeholder:text-[#94A3B8]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[#00F0FF] disabled:opacity-50"
+                  className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] disabled:opacity-50"
                 />
                 {(showSuggestions || suggestionsLoading) && !manualMode && !currentCaseId && (
-                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-                    {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                    {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                     {!suggestionsLoading && suggestions.map((s, i) => (
                       <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
-                        style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid rgba(51,65,85,0.3)" }}>
+                        style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "var(--color-accent)" : "var(--color-text-primary)", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: "1px solid var(--color-border)" }}>
                         {s.address}
                       </div>
                     ))}
                     {!suggestionsLoading && (
                       <div
                         onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
-                        style={{ padding: "10px 14px", fontSize: 12, color: "#FFB800", cursor: "pointer", borderTop: "1px solid #334155", background: "rgba(255,184,0,0.05)" }}
+                        style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-warning)", cursor: "pointer", borderTop: "1px solid var(--color-border)", background: "rgba(255,184,0,0.05)" }}
                       >
                         Address not listed? Click here to type full address manually
                       </div>
@@ -1627,11 +1628,11 @@ export default function Home() {
                   </div>
                 )}
                 {(showSuggestions || suggestionsLoading) && manualMode && suggestions.length > 0 && !currentCaseId && (
-                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "#1E293B", border: "1px solid #334155", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-                    {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "#94A3B8" }}>Loading addresses…</div>}
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 280, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                    {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                     {!suggestionsLoading && suggestions.map((s, i) => (
                       <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
-                        style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "#00F0FF" : "#E2E8F0", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: i < suggestions.length - 1 ? "1px solid rgba(51,65,85,0.5)" : "none" }}>
+                        style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", color: i === suggestionIdx ? "var(--color-accent)" : "var(--color-text-primary)", background: i === suggestionIdx ? "rgba(0,240,255,0.08)" : "transparent", borderBottom: i < suggestions.length - 1 ? "1px solid var(--color-border)" : "none" }}>
                         {s.address}
                       </div>
                     ))}
@@ -1642,19 +1643,19 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={loading || !address.trim() || !!currentCaseId}
-                  className="rounded-lg bg-[#00F0FF] text-[#0A0E1A] px-5 py-2.5 text-sm font-bold shadow-sm hover:bg-[#00D4E0] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="rounded-lg bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)] px-5 py-2.5 text-sm font-bold shadow-sm hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {loading ? "Searching…" : "Search"}
                 </button>
               )}
               {isAdmin && searchElapsed !== null && (
-                <span className="text-xs font-mono text-[#94A3B8] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
+                <span className="text-xs font-mono text-[var(--color-text-secondary)] whitespace-nowrap ml-2">{(searchElapsed / 1000).toFixed(1)}s</span>
               )}
             </form>
             {manualMode && !currentCaseId && (
               <button
                 onClick={() => { setManualMode(false); setAddress(""); setSuggestions([]); setShowSuggestions(false); }}
-                className="text-xs text-[#94A3B8] hover:text-[#00F0FF] transition-colors mt-1 cursor-pointer"
+                className="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] transition-colors mt-1 cursor-pointer"
               >
                 ← Back to postcode lookup
               </button>
@@ -1662,31 +1663,31 @@ export default function Home() {
 
             {loading && (
               <div className="flex justify-center py-8">
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#00F0FF] border-t-transparent" />
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-[var(--color-accent)] border-t-transparent" />
               </div>
             )}
 
             {error && (
-              <div className="rounded-lg border border-[#FF3131]/40 bg-[#FF3131]/10 px-4 py-3 text-sm text-[#FF3131]">
+              <div className="rounded-lg border border-[var(--color-status-danger)]/40 bg-[var(--color-status-danger)]/10 px-4 py-3 text-sm text-[var(--color-status-danger)]">
                 {error}
               </div>
             )}
 
             {/* ── Enrichment degraded notice ── */}
             {enrichSlowError && (
-              <div className="flex items-start gap-3 rounded-lg border border-[#FFB800]/40 bg-[#FFB800]/10 px-4 py-3 text-sm mb-2">
-                <span className="text-[#FFB800] text-base leading-none mt-0.5">⚠</span>
-                <span className="text-[#FFB800]">Some background data (council tax, flood zones) could not be loaded. These fields may show as unavailable.</span>
+              <div className="flex items-start gap-3 rounded-lg border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning)]/10 px-4 py-3 text-sm mb-2">
+                <span className="text-[var(--color-status-warning)] text-base leading-none mt-0.5">⚠</span>
+                <span className="text-[var(--color-status-warning)]">Some background data (council tax, flood zones) could not be loaded. These fields may show as unavailable.</span>
               </div>
             )}
 
             {/* ── No-EPC notice ── */}
             {!result.epc_matched && (
-              <div className="flex items-start gap-3 rounded-lg border border-[#FFB800]/40 bg-[#FFB800]/10 px-4 py-3 text-sm">
-                <span className="text-[#FFB800] text-base leading-none mt-0.5">⚠</span>
+              <div className="flex items-start gap-3 rounded-lg border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning)]/10 px-4 py-3 text-sm">
+                <span className="text-[var(--color-status-warning)] text-base leading-none mt-0.5">⚠</span>
                 <div>
-                  <span className="font-semibold text-[#FFB800]">No EPC record found for this property.</span>
-                  <span className="text-[#94A3B8] ml-1">Energy certificate data is unavailable. All planning, flood, and environmental data are still shown.</span>
+                  <span className="font-semibold text-[var(--color-status-warning)]">No EPC record found for this property.</span>
+                  <span className="text-[var(--color-text-secondary)] ml-1">Energy certificate data is unavailable. All planning, flood, and environmental data are still shown.</span>
                 </div>
               </div>
             )}
@@ -1696,33 +1697,33 @@ export default function Home() {
 
             {/* EPC card */}
             <PropCard id="epc" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-              <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-[#334155]/60">
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+              <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-[var(--color-border)]/60">
                 <div>
-                  <p className="text-xs text-[#94A3B8]/70 mb-0.5">Matched address</p>
-                  <p className="font-semibold text-[#E2E8F0]">{result.address}</p>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mb-0.5">Matched address</p>
+                  <p className="font-semibold text-[var(--color-text-primary)]">{result.address}</p>
                   {result.uprn && (
-                    <p className="text-xs text-[#94A3B8]/70 mt-0.5">UPRN: {result.uprn}</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">UPRN: {result.uprn}</p>
                   )}
                   {result.coord_source && (
-                    <p className="text-xs text-[#94A3B8]/70 mt-0.5">
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">
                       Coords via {result.coord_source}
                     </p>
                   )}
                 </div>
               </div>
 
-              <dl className="grid grid-cols-2 gap-px bg-[#334155]/40">
+              <dl className="grid grid-cols-2 gap-px bg-[var(--color-border)]/40">
                 {epcFields.map(([label, value]) => {
                   const isEmpty = value === null || value === undefined || value === "";
                   return (
-                    <div key={label} className="bg-[#111827] px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70">{label}</dt>
+                    <div key={label} className="bg-[var(--color-bg-panel)] px-4 py-3">
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70">{label}</dt>
                       <dd className="mt-0.5 text-sm font-medium flex items-center gap-2">
                         {isEmpty ? (
-                          <span className="text-[#475569] font-normal">Data Not Available</span>
+                          <span className="text-[var(--color-text-muted)] font-normal">Data Not Available</span>
                         ) : (
-                          <span className="text-[#E2E8F0]">{String(value)}</span>
+                          <span className="text-[var(--color-text-primary)]">{String(value)}</span>
                         )}
                       </dd>
                     </div>
@@ -1743,8 +1744,8 @@ export default function Home() {
                   const ctBand = result.council_tax_band?.toUpperCase();
                   const ctColors = ctBand ? (CT_COLORS[ctBand] ?? { bg: "#9ca3af", dark: false }) : null;
                   return (
-                    <div className="bg-[#111827] px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Council tax band</dt>
+                    <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70 mb-1.5">Council tax band</dt>
                       <dd>
                         {ctBand && ctColors ? (
                           <span style={{
@@ -1758,10 +1759,10 @@ export default function Home() {
                               backgroundColor: ctColors.bg, color: ctColors.dark ? "#1a1a1a" : "#ffffff",
                               fontWeight: 700, fontSize: "13px",
                             }}>{ctBand}</span>
-                            <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>Band {ctBand}</span>
+                            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>Band {ctBand}</span>
                           </span>
                         ) : (
-                          <span className="text-xs text-[#94A3B8]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</span>
+                          <span className="text-xs text-[var(--color-text-secondary)]">{enrichSlowDone ? "Unavailable" : <span className="animate-pulse">Loading…</span>}</span>
                         )}
                       </dd>
                     </div>
@@ -1783,8 +1784,8 @@ export default function Home() {
                     ? (EPC_COLORS.find(b => epcScore >= b.min) ?? EPC_COLORS[EPC_COLORS.length - 1])
                     : null;
                   return (
-                    <div className="bg-[#111827] px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70 mb-1.5">Energy score</dt>
+                    <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70 mb-1.5">Energy score</dt>
                       <dd>
                         {epcConfig && epcScore != null ? (
                           result.epc_url ? (
@@ -1802,13 +1803,13 @@ export default function Home() {
                                     backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
                                     fontWeight: 700, fontSize: "13px",
                                   }}>{epcConfig.band}</span>
-                                  <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>{epcScore}</span>
-                                  <span style={{ fontSize: "10px", fontWeight: 500, color: "#94A3B8" }}>View certificate ↗</span>
+                                  <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{epcScore}</span>
+                                  <span style={{ fontSize: "10px", fontWeight: 500, color: "var(--color-text-secondary)" }}>View certificate ↗</span>
                                 </span>
                               </a>
                               <button
                                 onClick={() => downloadEpc(result.epc_url!)}
-                                className="inline-flex items-center gap-1 text-[10px] text-[#94A3B8] hover:text-[#00F0FF] transition-colors"
+                                className="inline-flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] transition-colors"
                                 title="Save EPC as PDF"
                               >
                                 📄 Save as PDF
@@ -1826,11 +1827,11 @@ export default function Home() {
                                 backgroundColor: epcConfig.color, color: epcConfig.dark ? "#1a1a1a" : "#ffffff",
                                 fontWeight: 700, fontSize: "13px",
                               }}>{epcConfig.band}</span>
-                              <span style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0" }}>{epcScore}</span>
+                              <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{epcScore}</span>
                             </span>
                           )
                         ) : (
-                          <span className="text-[#475569] font-normal text-sm">Data Not Available</span>
+                          <span className="text-[var(--color-text-muted)] font-normal text-sm">Data Not Available</span>
                         )}
                       </dd>
                     </div>
@@ -1843,35 +1844,35 @@ export default function Home() {
             {/* Tenure card */}
             {result.tenure && (
             <PropCard id="tenure" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-                <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Tenure</h2>
-                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">HM Land Registry Price Paid Data</p>
+              <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+                <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                  <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Tenure</h2>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">HM Land Registry Price Paid Data</p>
                 </div>
                 <div className="px-6 py-5 space-y-4">
                   {/* Badge */}
                   <div className="flex items-center gap-3">
                     {result.tenure === "Freehold" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#39FF14]/15 px-3 py-1.5 text-sm font-semibold text-[#39FF14]">
-                        <span className="h-2 w-2 rounded-full bg-[#39FF14]" />
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-status-success)]/15 px-3 py-1.5 text-sm font-semibold text-[var(--color-status-success)]">
+                        <span className="h-2 w-2 rounded-full bg-[var(--color-status-success)]" />
                         Freehold
                       </span>
                     )}
                     {result.tenure === "Leasehold" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FFB800]/15 px-3 py-1.5 text-sm font-semibold text-[#FFB800]">
-                        <span className="h-2 w-2 rounded-full bg-[#FFB800]" />
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-status-warning)]/15 px-3 py-1.5 text-sm font-semibold text-[var(--color-status-warning)]">
+                        <span className="h-2 w-2 rounded-full bg-[var(--color-status-warning)]" />
                         Leasehold
                       </span>
                     )}
                     {result.tenure !== "Freehold" && result.tenure !== "Leasehold" && (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#334155] px-3 py-1.5 text-sm font-semibold text-[#E2E8F0]">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-border)] px-3 py-1.5 text-sm font-semibold text-[var(--color-text-primary)]">
                         {result.tenure}
                       </span>
                     )}
                   </div>
 
                   {/* Definition */}
-                  <p className="text-sm text-[#94A3B8]">
+                  <p className="text-sm text-[var(--color-text-secondary)]">
                     {result.tenure === "Freehold" && "The owner holds both the property and the land outright with no time limit. No ground rent or service charges payable to a landlord."}
                     {result.tenure === "Leasehold" && "The owner holds the property for a fixed term under a lease from a freeholder (landlord). Subject to ground rent, service charges, and lease terms."}
                   </p>
@@ -1888,33 +1889,33 @@ export default function Home() {
                         const remYears = expiry.getFullYear() - today.getFullYear() - (
                           (expiry.getMonth() < today.getMonth() || (expiry.getMonth() === today.getMonth() && expiry.getDate() < today.getDate())) ? 1 : 0
                         );
-                        const remColour = remYears < 80 ? "text-[#FF3131]" : remYears < 100 ? "text-[#FFB800]" : "text-[#39FF14]";
+                        const remColour = remYears < 80 ? "text-[var(--color-status-danger)]" : remYears < 100 ? "text-[var(--color-status-warning)]" : "text-[var(--color-status-success)]";
                         return (
                           <>
-                            <dl className="grid grid-cols-2 gap-px bg-[#334155]/40 rounded-lg overflow-hidden">
-                              <div className="bg-[#111827] px-4 py-3">
-                                <dt className="text-xs text-[#94A3B8]">Commencement</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{fmtDate(result.lease_commencement)}</dd>
+                            <dl className="grid grid-cols-2 gap-px bg-[var(--color-border)]/40 rounded-lg overflow-hidden">
+                              <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                                <dt className="text-xs text-[var(--color-text-secondary)]">Commencement</dt>
+                                <dd className="mt-1 text-sm font-medium text-[var(--color-text-primary)]">{fmtDate(result.lease_commencement)}</dd>
                               </div>
-                              <div className="bg-[#111827] px-4 py-3">
-                                <dt className="text-xs text-[#94A3B8]">Expiry</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{fmtDate(result.lease_expiry_date!)}</dd>
+                              <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                                <dt className="text-xs text-[var(--color-text-secondary)]">Expiry</dt>
+                                <dd className="mt-1 text-sm font-medium text-[var(--color-text-primary)]">{fmtDate(result.lease_expiry_date!)}</dd>
                               </div>
-                              <div className="bg-[#111827] px-4 py-3">
-                                <dt className="text-xs text-[#94A3B8]">Total term</dt>
-                                <dd className="mt-1 text-sm font-medium text-[#E2E8F0]">{totalTerm}</dd>
+                              <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                                <dt className="text-xs text-[var(--color-text-secondary)]">Total term</dt>
+                                <dd className="mt-1 text-sm font-medium text-[var(--color-text-primary)]">{totalTerm}</dd>
                               </div>
-                              <div className="bg-[#111827] px-4 py-3">
-                                <dt className="text-xs text-[#94A3B8]">Remaining</dt>
+                              <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                                <dt className="text-xs text-[var(--color-text-secondary)]">Remaining</dt>
                                 <dd className={`mt-1 text-sm font-semibold ${remColour}`}>{remaining}</dd>
                               </div>
                             </dl>
                             {remYears < 80 && (
-                              <div className="mt-3 flex items-start gap-2 rounded-lg bg-[#FF3131]/10 border border-[#FF3131]/30 px-4 py-3">
-                                <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#FF3131]" fill="currentColor" viewBox="0 0 20 20">
+                              <div className="mt-3 flex items-start gap-2 rounded-lg bg-[var(--color-status-danger)]/10 border border-[var(--color-status-danger)]/30 px-4 py-3">
+                                <svg className="mt-0.5 h-4 w-4 flex-shrink-0 text-[var(--color-status-danger)]" fill="currentColor" viewBox="0 0 20 20">
                                   <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
                                 </svg>
-                                <p className="text-xs text-[#FF3131]">
+                                <p className="text-xs text-[var(--color-status-danger)]">
                                   <strong>Mortgage risk:</strong> Fewer than 80 years remaining. Most lenders require at least 85 years to grant a mortgage. A lease extension should be considered.
                                 </p>
                               </div>
@@ -1922,7 +1923,7 @@ export default function Home() {
                           </>
                         );
                       })() : (
-                        <p className="text-xs text-[#94A3B8]/70 italic">Lease term details not yet available · extended data coming soon</p>
+                        <p className="text-xs text-[var(--color-text-secondary)]/70 italic">Lease term details not yet available · extended data coming soon</p>
                       )}
                     </div>
                   )}
@@ -1933,20 +1934,20 @@ export default function Home() {
 
             {/* Sales history card */}
             <PropCard id="sales" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-              <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Sale History</h2>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Land Registry Price Paid Data</p>
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+              <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Sale History</h2>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Land Registry Price Paid Data</p>
               </div>
 
               {(result.sales ?? []).length === 0 ? (
-                <p className="px-6 py-4 text-sm text-[#94A3B8]">
+                <p className="px-6 py-4 text-sm text-[var(--color-text-secondary)]">
                   No Land Registry transactions found
                 </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-[#1E293B] text-xs text-[#94A3B8] uppercase tracking-wide">
+                    <thead className="bg-[var(--color-bg-surface)] text-xs text-[var(--color-text-secondary)] uppercase tracking-wide">
                       <tr>
                         <th className="px-4 py-2.5 text-left font-medium">Date</th>
                         <th className="px-4 py-2.5 text-right font-medium">Price</th>
@@ -1954,18 +1955,18 @@ export default function Home() {
                         <th className="px-4 py-2.5 text-left font-medium">Type</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-[#334155]/60">
+                    <tbody className="divide-y divide-[var(--color-border)]/60">
                       {(result.sales ?? []).map((sale, i) => (
-                        <tr key={i} className="hover:bg-[#1E293B]">
-                          <td className="px-4 py-3 text-[#94A3B8] tabular-nums">{sale.date}</td>
-                          <td className="px-4 py-3 text-right font-bold text-[#00F0FF] tabular-nums">
+                        <tr key={i} className="hover:bg-[var(--color-bg-surface)]">
+                          <td className="px-4 py-3 text-[var(--color-text-secondary)] tabular-nums">{sale.date}</td>
+                          <td className="px-4 py-3 text-right font-bold text-[var(--color-accent)] tabular-nums">
                             {formatPrice(sale.price)}
                           </td>
-                          <td className="px-4 py-3 text-[#94A3B8]">{sale.tenure}</td>
-                          <td className="px-4 py-3 text-[#94A3B8]">
+                          <td className="px-4 py-3 text-[var(--color-text-secondary)]">{sale.tenure}</td>
+                          <td className="px-4 py-3 text-[var(--color-text-secondary)]">
                             {sale.property_type}
                             {sale.new_build && (
-                              <span className="ml-1.5 inline-block rounded bg-[#7B2FBE]/20 px-1.5 py-0.5 text-xs font-medium text-[#818CF8]">
+                              <span className="ml-1.5 inline-block rounded bg-[#7B2FBE]/20 px-1.5 py-0.5 text-xs font-medium text-[var(--color-accent-purple)]">
                                 New build
                               </span>
                             )}
@@ -1981,40 +1982,40 @@ export default function Home() {
 
             {/* Flood Risk card */}
             <PropCard id="flood" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-                <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Flood Risk</h2>
-                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Environment Agency data</p>
+              <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+                <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                  <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Flood Risk</h2>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Environment Agency data</p>
                 </div>
 
                 {/* Row 1: NaFRA2 assessed risk (with defences) */}
-                <div className="border-b border-[#334155]/60">
-                  <div className="px-6 py-2 bg-[#1E293B]">
-                    <p className="text-xs font-medium text-[#94A3B8]">Assessed risk — NaFRA2 Jan 2025</p>
-                    <p className="text-xs text-[#94A3B8]/70">Modelled probability including flood defences · insurance context</p>
+                <div className="border-b border-[var(--color-border)]/60">
+                  <div className="px-6 py-2 bg-[var(--color-bg-surface)]">
+                    <p className="text-xs font-medium text-[var(--color-text-secondary)]">Assessed risk — NaFRA2 Jan 2025</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70">Modelled probability including flood defences · insurance context</p>
                   </div>
-                  <dl className="grid grid-cols-2 gap-px bg-[#334155]/40">
-                    <div className="bg-[#111827] px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70">Rivers &amp; Sea</dt>
+                  <dl className="grid grid-cols-2 gap-px bg-[var(--color-border)]/40">
+                    <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70">Rivers &amp; Sea</dt>
                       <dd className="mt-1">
                         {result.rivers_sea_risk ? (
-                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.rivers_sea_risk] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
+                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.rivers_sea_risk] ?? "bg-[var(--color-border)] text-[var(--color-text-primary)]"}`}>
                             {result.rivers_sea_risk}
                           </span>
                         ) : (
-                          <span className="text-sm text-[#94A3B8]/70">—</span>
+                          <span className="text-sm text-[var(--color-text-secondary)]/70">—</span>
                         )}
                       </dd>
                     </div>
-                    <div className="bg-[#111827] px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70">Surface Water</dt>
+                    <div className="bg-[var(--color-bg-panel)] px-4 py-3">
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70">Surface Water</dt>
                       <dd className="mt-1">
                         {result.surface_water_risk ? (
-                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.surface_water_risk] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
+                          <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${FLOOD_STYLE[result.surface_water_risk] ?? "bg-[var(--color-border)] text-[var(--color-text-primary)]"}`}>
                             {result.surface_water_risk}
                           </span>
                         ) : (
-                          <span className="text-sm text-[#94A3B8]/70">—</span>
+                          <span className="text-sm text-[var(--color-text-secondary)]/70">—</span>
                         )}
                       </dd>
                     </div>
@@ -2024,27 +2025,27 @@ export default function Home() {
                 {/* Row 2: Statutory planning flood zone (without defences) */}
                 {!result.planning_flood_zone && (
                   <div className="px-4 py-3">
-                    <dt className="text-xs text-[#94A3B8]/70 mb-1">NPPF Flood Zone</dt>
-                    <dd className="text-xs text-[#94A3B8] animate-pulse">Loading…</dd>
+                    <dt className="text-xs text-[var(--color-text-secondary)]/70 mb-1">NPPF Flood Zone</dt>
+                    <dd className="text-xs text-[var(--color-text-secondary)] animate-pulse">Loading…</dd>
                   </div>
                 )}
                 {result.planning_flood_zone && (
                   <div>
-                    <div className="px-6 py-2 bg-[#1E293B]">
-                      <p className="text-xs font-medium text-[#94A3B8]">Statutory planning flood zone</p>
-                      <p className="text-xs text-[#94A3B8]/70">Undefended flood extent · mortgage lenders · planning policy</p>
+                    <div className="px-6 py-2 bg-[var(--color-bg-surface)]">
+                      <p className="text-xs font-medium text-[var(--color-text-secondary)]">Statutory planning flood zone</p>
+                      <p className="text-xs text-[var(--color-text-secondary)]/70">Undefended flood extent · mortgage lenders · planning policy</p>
                     </div>
                     <dl className="px-4 py-3">
-                      <dt className="text-xs text-[#94A3B8]/70 mb-1">NPPF Flood Zone</dt>
+                      <dt className="text-xs text-[var(--color-text-secondary)]/70 mb-1">NPPF Flood Zone</dt>
                       <dd>
                         <span className={`inline-block rounded-md px-2.5 py-1 text-sm font-semibold ${
-                          result.planning_flood_zone === "Zone 1" ? "bg-[#39FF14]/10 text-[#39FF14]" :
-                          result.planning_flood_zone === "Zone 2" ? "bg-[#FFB800]/10 text-[#FFB800]" :
-                          "bg-[#FF3131]/10 text-[#FF3131]"
+                          result.planning_flood_zone === "Zone 1" ? "bg-[var(--color-status-success)]/10 text-[var(--color-status-success)]" :
+                          result.planning_flood_zone === "Zone 2" ? "bg-[var(--color-status-warning)]/10 text-[var(--color-status-warning)]" :
+                          "bg-[var(--color-status-danger)]/10 text-[var(--color-status-danger)]"
                         }`}>
                           {result.planning_flood_zone}
                         </span>
-                        <span className="ml-2 text-xs text-[#94A3B8]/70">
+                        <span className="ml-2 text-xs text-[var(--color-text-secondary)]/70">
                           {result.planning_flood_zone === "Zone 1" && "Low probability (<0.1% annual)"}
                           {result.planning_flood_zone === "Zone 2" && "Medium probability (0.1–1% annual)"}
                           {result.planning_flood_zone === "Zone 3" && "High probability (>1% annual)"}
@@ -2054,15 +2055,15 @@ export default function Home() {
                   </div>
                 )}
 
-                <div className="px-6 py-3 bg-[#FFB800]/8 border-t border-[#FFB800]/20">
-                  <p className="text-xs text-[#FFB800]">
+                <div className="px-6 py-3 bg-[var(--color-status-warning)]/8 border-t border-[var(--color-status-warning)]/20">
+                  <p className="text-xs text-[var(--color-status-warning)]">
                     NaFRA2 includes flood defence modelling but not manual EA overrides for exceptional schemes (e.g. Thames Barrier).
                     The{" "}
                     <a
                       href="https://check-long-term-flood-risk.service.gov.uk"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="underline hover:text-[#FFB800]/80"
+                      className="underline hover:text-[var(--color-status-warning)]/80"
                     >
                       GOV.UK flood risk checker
                     </a>
@@ -2075,30 +2076,30 @@ export default function Home() {
 
             {/* Conservation Areas + Natural England card */}
             <PropCard id="conservation" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
               {/* Conservation Area section */}
-              <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Conservation Area</h2>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Planning Data — Historic England designation</p>
-                <p className="text-xs text-[#FFB800]/60 mt-1">⚠ planning.data.gov.uk coverage: ~135/340 councils (40%). Verify with local authority.</p>
+              <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Conservation Area</h2>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Planning Data — Historic England designation</p>
+                <p className="text-xs text-[var(--color-status-warning)]/60 mt-1">⚠ planning.data.gov.uk coverage: ~135/340 councils (40%). Verify with local authority.</p>
               </div>
               {(result.conservation_areas ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-4">
-                  <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">Not within a conservation area</p>
+                  <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                  <p className="text-sm text-[var(--color-text-secondary)]">Not within a conservation area</p>
                 </div>
               ) : (
-                <ul className="divide-y divide-[#334155]/60">
+                <ul className="divide-y divide-[var(--color-border)]/60">
                   {(result.conservation_areas ?? []).map((ca) => (
                     <li key={ca.reference || ca.name} className="px-6 py-4">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0 mt-0.5" />
-                            <span className="text-sm font-semibold text-[#E2E8F0]">{ca.name}</span>
+                            <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-warning)] shrink-0 mt-0.5" />
+                            <span className="text-sm font-semibold text-[var(--color-text-primary)]">{ca.name}</span>
                           </div>
                           {ca.designation_date && (
-                            <p className="text-xs text-[#94A3B8]/70 mt-1 ml-4">
+                            <p className="text-xs text-[var(--color-text-secondary)]/70 mt-1 ml-4">
                               Designated {ca.designation_date.slice(0, 4)}
                             </p>
                           )}
@@ -2108,7 +2109,7 @@ export default function Home() {
                             href={ca.documentation_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="shrink-0 text-xs text-[#00F0FF] hover:underline whitespace-nowrap"
+                            className="shrink-0 text-xs text-[var(--color-accent)] hover:underline whitespace-nowrap"
                           >
                             Appraisal →
                           </a>
@@ -2120,57 +2121,57 @@ export default function Home() {
               )}
 
               {/* Natural England designations section */}
-              <div className="border-t border-[#334155]">
-                <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
-                  <h3 className="text-sm font-semibold text-[#E2E8F0]">Natural Environment</h3>
-                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Natural England — statutory designations</p>
+              <div className="border-t border-[var(--color-border)]">
+                <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-b border-[var(--color-border)]/60">
+                  <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Natural Environment</h3>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Natural England — statutory designations</p>
                 </div>
 
                 {/* AONB */}
-                <div className="flex items-start gap-3 px-6 py-3 border-b border-[#334155]/60">
+                <div className="flex items-start gap-3 px-6 py-3 border-b border-[var(--color-border)]/60">
                   <div className="flex-1">
-                    <p className="text-xs text-[#94A3B8]/70 mb-1">National Landscape (AONB)</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">National Landscape (AONB)</p>
                     {result.aonb ? (
                       <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                        <span className="text-sm font-semibold text-[#E2E8F0]">{result.aonb}</span>
+                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)] shrink-0" />
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">{result.aonb}</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/50 shrink-0" />
-                        <span className="text-sm text-[#94A3B8]">Not within an AONB</span>
+                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/50 shrink-0" />
+                        <span className="text-sm text-[var(--color-text-secondary)]">Not within an AONB</span>
                       </div>
                     )}
                   </div>
 
                   {/* Green Belt */}
                   <div className="flex-1">
-                    <p className="text-xs text-[#94A3B8]/70 mb-1">Green Belt</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">Green Belt</p>
                     {result.green_belt ? (
                       <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                        <span className="text-sm font-semibold text-[#E2E8F0]">Within Green Belt</span>
+                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)] shrink-0" />
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">Within Green Belt</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/50 shrink-0" />
-                        <span className="text-sm text-[#94A3B8]">Not in Green Belt</span>
+                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/50 shrink-0" />
+                        <span className="text-sm text-[var(--color-text-secondary)]">Not in Green Belt</span>
                       </div>
                     )}
                   </div>
                 </div>
 
                 {/* Radon */}
-                <div className="flex items-start gap-3 px-6 py-3 border-t border-[#334155]/60">
+                <div className="flex items-start gap-3 px-6 py-3 border-t border-[var(--color-border)]/60">
                   <div className="flex-1">
-                    <p className="text-xs text-[#94A3B8]/70 mb-1">Radon Risk</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">Radon Risk</p>
                     {(() => {
                       const RADON_STYLE: Record<string, { dot: string; text: string; label: string }> = {
-                        "Lower":             { dot: "bg-[#39FF14]/70",  text: "text-[#94A3B8]",   label: "Lower (<1%)" },
-                        "Intermediate":      { dot: "bg-[#FFB800]/70", text: "text-[#94A3B8]",   label: "Intermediate (1–3%)" },
-                        "Intermediate-High": { dot: "bg-[#FFB800]",    text: "text-[#FFB800]",   label: "Intermediate-High (3–10%)" },
-                        "High":              { dot: "bg-[#FF8C00]",    text: "text-[#FF8C00]",   label: "High (10–30%)" },
-                        "Very High":         { dot: "bg-[#FF3131]",    text: "text-[#FF3131]",   label: "Very High (>30%)" },
+                        "Lower":             { dot: "bg-[var(--color-status-success)]/70",  text: "text-[var(--color-text-secondary)]",   label: "Lower (<1%)" },
+                        "Intermediate":      { dot: "bg-[var(--color-status-warning)]/70", text: "text-[var(--color-text-secondary)]",   label: "Intermediate (1–3%)" },
+                        "Intermediate-High": { dot: "bg-[var(--color-status-warning)]",    text: "text-[var(--color-status-warning)]",   label: "Intermediate-High (3–10%)" },
+                        "High":              { dot: "bg-[var(--color-status-warning)]",    text: "text-[var(--color-status-warning)]",   label: "High (10–30%)" },
+                        "Very High":         { dot: "bg-[var(--color-status-danger)]",    text: "text-[var(--color-status-danger)]",   label: "Very High (>30%)" },
                       };
                       const s = result.radon_risk ? RADON_STYLE[result.radon_risk] : null;
                       return s ? (
@@ -2180,8 +2181,8 @@ export default function Home() {
                         </div>
                       ) : (
                         <div className="flex items-center gap-2">
-                          <span className="inline-block w-2 h-2 rounded-full bg-[#475569] shrink-0" />
-                          <span className="text-sm text-[#94A3B8]/70">Data not available</span>
+                          <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-text-muted)] shrink-0" />
+                          <span className="text-sm text-[var(--color-text-secondary)]/70">Data not available</span>
                         </div>
                       );
                     })()}
@@ -2189,19 +2190,19 @@ export default function Home() {
                 </div>
 
                 {/* SSSI */}
-                <div className="px-6 py-3 border-b border-[#334155]/60">
-                  <p className="text-xs text-[#94A3B8]/70 mb-1.5">SSSI within 2 km</p>
+                <div className="px-6 py-3 border-b border-[var(--color-border)]/60">
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1.5">SSSI within 2 km</p>
                   {(result.sssi ?? []).length === 0 ? (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/50 shrink-0" />
-                      <span className="text-sm text-[#94A3B8]">No SSSIs within 2 km</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/50 shrink-0" />
+                      <span className="text-sm text-[var(--color-text-secondary)]">No SSSIs within 2 km</span>
                     </div>
                   ) : (
                     <ul className="space-y-1">
                       {(result.sssi ?? []).map((name) => (
                         <li key={name} className="flex items-center gap-2">
-                          <span className="inline-block w-2 h-2 rounded-full bg-[#00F0FF] shrink-0" />
-                          <span className="text-sm text-[#E2E8F0]">{name}</span>
+                          <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-btn-primary-bg)] shrink-0" />
+                          <span className="text-sm text-[var(--color-text-primary)]">{name}</span>
                         </li>
                       ))}
                     </ul>
@@ -2210,19 +2211,19 @@ export default function Home() {
 
                 {/* Ancient Woodland */}
                 <div className="px-6 py-3">
-                  <p className="text-xs text-[#94A3B8]/70 mb-1.5">Ancient Woodland within 50 m</p>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1.5">Ancient Woodland within 50 m</p>
                   {(result.ancient_woodland ?? []).length === 0 ? (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/50 shrink-0" />
-                      <span className="text-sm text-[#94A3B8]">No ancient woodland within 50 m</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/50 shrink-0" />
+                      <span className="text-sm text-[var(--color-text-secondary)]">No ancient woodland within 50 m</span>
                     </div>
                   ) : (
                     <ul className="space-y-1">
                       {(result.ancient_woodland ?? []).map((aw) => (
                         <li key={aw.name} className="flex items-center gap-2">
-                          <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14] shrink-0" />
-                          <span className="text-sm text-[#E2E8F0]">{aw.name}</span>
-                          <span className="text-xs text-[#94A3B8]/70">
+                          <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)] shrink-0" />
+                          <span className="text-sm text-[var(--color-text-primary)]">{aw.name}</span>
+                          <span className="text-xs text-[var(--color-text-secondary)]/70">
                             {aw.type === "ASNW" ? "Ancient Semi-Natural" : aw.type === "PAWS" ? "Replanted Ancient" : aw.type}
                           </span>
                         </li>
@@ -2236,71 +2237,71 @@ export default function Home() {
 
             {/* Coal Mining Risk + Brownfield Land card */}
             <PropCard id="coal" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
 
               {/* Coal Mining section */}
-              <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Coal Mining Risk</h2>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Mining Remediation Authority</p>
+              <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Coal Mining Risk</h2>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Mining Remediation Authority</p>
               </div>
-              <div className="flex items-start gap-3 px-6 py-3 border-b border-[#334155]/60">
+              <div className="flex items-start gap-3 px-6 py-3 border-b border-[var(--color-border)]/60">
                 <div className="flex-1">
-                  <p className="text-xs text-[#94A3B8]/70 mb-1">Development High Risk Area</p>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">Development High Risk Area</p>
                   {result.coal_mining_high_risk ? (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#FF3131] shrink-0" />
-                      <span className="text-sm font-semibold text-[#FF3131]">Within High Risk Area</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-danger)] shrink-0" />
+                      <span className="text-sm font-semibold text-[var(--color-status-danger)]">Within High Risk Area</span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                      <span className="text-sm text-[#94A3B8]">Not in High Risk Area</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                      <span className="text-sm text-[var(--color-text-secondary)]">Not in High Risk Area</span>
                     </div>
                   )}
                 </div>
                 <div className="flex-1">
-                  <p className="text-xs text-[#94A3B8]/70 mb-1">Coalfield</p>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">Coalfield</p>
                   {result.coal_mining_in_coalfield ? (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0" />
-                      <span className="text-sm font-semibold text-[#E2E8F0]">Within Coalfield</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-warning)] shrink-0" />
+                      <span className="text-sm font-semibold text-[var(--color-text-primary)]">Within Coalfield</span>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                      <span className="text-sm text-[#94A3B8]">Not in coalfield</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                      <span className="text-sm text-[var(--color-text-secondary)]">Not in coalfield</span>
                     </div>
                   )}
                 </div>
               </div>
 
               {/* Listed Buildings section */}
-              <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
-                <h3 className="text-xs font-orbitron text-[#00F0FF] tracking-[3px] uppercase">Listed Buildings</h3>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Historic England NHLE — within 50 m</p>
-                <p className="text-xs text-[#FFB800]/60 mt-1">⚠ planning.data.gov.uk outlines: 74 providers, partial coverage. NHLE point data is authoritative.</p>
+              <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-b border-[var(--color-border)]/60">
+                <h3 className="text-xs font-orbitron text-[var(--color-accent)] tracking-[3px] uppercase">Listed Buildings</h3>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Historic England NHLE — within 50 m</p>
+                <p className="text-xs text-[var(--color-status-warning)]/60 mt-1">⚠ planning.data.gov.uk outlines: 74 providers, partial coverage. NHLE point data is authoritative.</p>
               </div>
               {(result.listed_buildings ?? []).length === 0 ? (
-                <div className="flex items-center gap-2 px-6 py-3 border-b border-[#334155]/60">
-                  <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">No listed buildings within 50 m</p>
+                <div className="flex items-center gap-2 px-6 py-3 border-b border-[var(--color-border)]/60">
+                  <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                  <p className="text-sm text-[var(--color-text-secondary)]">No listed buildings within 50 m</p>
                 </div>
               ) : (
-                <ul className="divide-y divide-[#334155]/60 border-b border-[#334155]/60">
+                <ul className="divide-y divide-[var(--color-border)]/60 border-b border-[var(--color-border)]/60">
                   {(result.listed_buildings ?? []).map((lb) => (
                     <li key={lb.list_entry ?? lb.name} className="flex items-start gap-3 px-6 py-3">
-                      <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-bold ${GRADE_STYLE[lb.grade] ?? "bg-[#334155] text-[#E2E8F0]"}`}>
+                      <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-bold ${GRADE_STYLE[lb.grade] ?? "bg-[var(--color-border)] text-[var(--color-text-primary)]"}`}>
                         {lb.grade}
                       </span>
                       <div className="min-w-0">
                         {lb.url ? (
-                          <a href={lb.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-[#00F0FF] hover:underline">
+                          <a href={lb.url} target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-[var(--color-accent)] hover:underline">
                             {lb.name}
                           </a>
                         ) : (
-                          <span className="text-sm font-medium text-[#E2E8F0]">{lb.name}</span>
+                          <span className="text-sm font-medium text-[var(--color-text-primary)]">{lb.name}</span>
                         )}
-                        {lb.list_entry && <p className="text-xs text-[#94A3B8]/70 mt-0.5">List entry {lb.list_entry}</p>}
+                        {lb.list_entry && <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">List entry {lb.list_entry}</p>}
                       </div>
                     </li>
                   ))}
@@ -2308,33 +2309,33 @@ export default function Home() {
               )}
 
               {/* Brownfield section */}
-              <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
-                <h3 className="text-xs font-orbitron text-[#00F0FF] tracking-[3px] uppercase">Brownfield Land</h3>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">Previously developed land within 100 m — Planning Data</p>
+              <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-b border-[var(--color-border)]/60">
+                <h3 className="text-xs font-orbitron text-[var(--color-accent)] tracking-[3px] uppercase">Brownfield Land</h3>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Previously developed land within 100 m — Planning Data</p>
               </div>
               {(result.brownfield ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-3">
-                  <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">No brownfield sites within 100 m</p>
+                  <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                  <p className="text-sm text-[var(--color-text-secondary)]">No brownfield sites within 100 m</p>
                 </div>
               ) : (
-                <ul className="divide-y divide-[#334155]/60">
+                <ul className="divide-y divide-[var(--color-border)]/60">
                   {(result.brownfield ?? []).map((site, i) => (
                     <li key={i} className="px-6 py-3">
                       <div className="flex items-start gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[#FFB800] shrink-0 mt-1.5" />
+                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-warning)] shrink-0 mt-1.5" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-[#E2E8F0] leading-snug">{site.name}</p>
+                          <p className="text-sm font-semibold text-[var(--color-text-primary)] leading-snug">{site.name}</p>
                           <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
-                            {site.hectares && <span className="text-xs text-[#94A3B8]">{site.hectares} ha</span>}
+                            {site.hectares && <span className="text-xs text-[var(--color-text-secondary)]">{site.hectares} ha</span>}
                             {site.planning_status && (
-                              <span className="text-xs text-[#94A3B8] capitalize">{site.planning_status.replace(/-/g, " ")}</span>
+                              <span className="text-xs text-[var(--color-text-secondary)] capitalize">{site.planning_status.replace(/-/g, " ")}</span>
                             )}
                             {site.planning_date && (
-                              <span className="text-xs text-[#94A3B8]">Permission {site.planning_date.slice(0, 4)}</span>
+                              <span className="text-xs text-[var(--color-text-secondary)]">Permission {site.planning_date.slice(0, 4)}</span>
                             )}
                             {site.hazardous_substances && (
-                              <span className="text-xs font-medium text-[#FF3131]">Hazardous substances</span>
+                              <span className="text-xs font-medium text-[var(--color-status-danger)]">Hazardous substances</span>
                             )}
                           </div>
                         </div>
@@ -2350,9 +2351,9 @@ export default function Home() {
             <PropCard id="ground" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
             {(() => {
               const GS_STYLE: Record<string, { dot: string; text: string; bg: string }> = {
-                "Low":        { dot: "bg-[#39FF14]/70", text: "text-[#39FF14]", bg: "bg-[#39FF14]/10" },
-                "Moderate":   { dot: "bg-[#FFB800]",    text: "text-[#FFB800]", bg: "bg-[#FFB800]/10" },
-                "Significant":{ dot: "bg-[#FF3131]",    text: "text-[#FF3131]", bg: "bg-[#FF3131]/10" },
+                "Low":        { dot: "bg-[var(--color-status-success)]/70", text: "text-[var(--color-status-success)]", bg: "bg-[var(--color-status-success)]/10" },
+                "Moderate":   { dot: "bg-[var(--color-status-warning)]",    text: "text-[var(--color-status-warning)]", bg: "bg-[var(--color-status-warning)]/10" },
+                "Significant":{ dot: "bg-[var(--color-status-danger)]",    text: "text-[var(--color-status-danger)]", bg: "bg-[var(--color-status-danger)]/10" },
               };
               const badge = (val: string | null) => {
                 const s = val ? GS_STYLE[val] : null;
@@ -2362,7 +2363,7 @@ export default function Home() {
                     {val}
                   </span>
                 ) : (
-                  <span className="text-sm text-[#475569]">—</span>
+                  <span className="text-sm text-[var(--color-text-muted)]">—</span>
                 );
               };
               const HAZARDS: { label: string; val: string | null; definition: string }[] = [
@@ -2398,15 +2399,15 @@ export default function Home() {
                 },
               ];
               return (
-                <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-                  <div className="px-6 py-4 border-b border-[#334155]/60">
-                    <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Ground Conditions</h2>
-                    <p className="text-xs text-[#94A3B8]/70 mt-0.5">BGS GeoSure — geological hazard susceptibility</p>
+                <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+                  <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                    <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Ground Conditions</h2>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">BGS GeoSure — geological hazard susceptibility</p>
                   </div>
 
                   {/* Risk level legend */}
-                  <div className="px-6 py-3 bg-[#1E293B] border-b border-[#334155]/60">
-                    <p className="text-xs font-medium text-[#94A3B8] mb-2">Susceptibility levels</p>
+                  <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-b border-[var(--color-border)]/60">
+                    <p className="text-xs font-medium text-[var(--color-text-secondary)] mb-2">Susceptibility levels</p>
                     <div className="flex flex-wrap gap-x-6 gap-y-1.5">
                       {(["Low", "Moderate", "Significant"] as const).map((lvl) => {
                         const desc: Record<string, string> = {
@@ -2418,7 +2419,7 @@ export default function Home() {
                         return (
                           <div key={lvl} className="flex items-center gap-1.5">
                             <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${s.dot}`} />
-                            <span className="text-xs text-[#94A3B8]">
+                            <span className="text-xs text-[var(--color-text-secondary)]">
                               <span className="font-semibold">{lvl}</span>
                               {" — "}
                               {desc[lvl]}
@@ -2430,12 +2431,12 @@ export default function Home() {
                   </div>
 
                   {/* Hazard rows */}
-                  <dl className="divide-y divide-[#334155]/60">
+                  <dl className="divide-y divide-[var(--color-border)]/60">
                     {HAZARDS.map(({ label, val, definition }) => (
                       <div key={label} className="flex items-start justify-between gap-6 px-6 py-4">
                         <div className="flex-1 min-w-0">
-                          <dt className="text-sm font-medium text-[#E2E8F0]">{label}</dt>
-                          <dd className="text-xs text-[#94A3B8]/70 mt-1 leading-relaxed">{definition}</dd>
+                          <dt className="text-sm font-medium text-[var(--color-text-primary)]">{label}</dt>
+                          <dd className="text-xs text-[var(--color-text-secondary)]/70 mt-1 leading-relaxed">{definition}</dd>
                         </div>
                         <div className="shrink-0 pt-0.5">{badge(val)}</div>
                       </div>
@@ -2443,9 +2444,9 @@ export default function Home() {
                   </dl>
 
                   {/* Footer disclaimer */}
-                  <div className="px-6 py-3 bg-[#1E293B] border-t border-[#334155]/60">
-                    <p className="text-xs text-[#94A3B8]/70 leading-relaxed">
-                      <span className="font-medium text-[#94A3B8]">Important:</span>{" "}
+                  <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-t border-[var(--color-border)]/60">
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 leading-relaxed">
+                      <span className="font-medium text-[var(--color-text-secondary)]">Important:</span>{" "}
                       BGS GeoSure data is a 5 km regional susceptibility indicator derived from underlying geology. It reflects the potential for ground hazards based on rock and soil type — not actual conditions at this specific property. These ratings do not replace a site-specific ground investigation report, which is essential before any development, structural alteration or foundation design.
                     </p>
                   </div>
@@ -2456,24 +2457,24 @@ export default function Home() {
 
             {/* Nearby Planning Applications card */}
             <PropCard id="planning" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-            <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full flex flex-col">
-              <div className="px-6 py-4 border-b border-[#334155]/60">
-                <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Nearby Planning Applications</h2>
-                <p className="text-xs text-[#94A3B8]/70 mt-0.5">GLA Planning London Datahub — within 500 m</p>
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full flex flex-col">
+              <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Nearby Planning Applications</h2>
+                <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">GLA Planning London Datahub — within 500 m</p>
               </div>
               {result.nearby_planning_london_only && result.region !== "London" ? (
                 <div className="flex items-center gap-2 px-6 py-4">
-                  <span className="inline-block w-2 h-2 rounded-full bg-[#67E8F9] shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">Planning application data available for London properties only</p>
+                  <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-info)] shrink-0" />
+                  <p className="text-sm text-[var(--color-text-secondary)]">Planning application data available for London properties only</p>
                 </div>
               ) : (result.nearby_planning ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 px-6 py-4">
-                  <span className="inline-block w-2 h-2 rounded-full bg-[#39FF14]/70 shrink-0" />
-                  <p className="text-sm text-[#94A3B8]">No recent applications within 500 m</p>
+                  <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/70 shrink-0" />
+                  <p className="text-sm text-[var(--color-text-secondary)]">No recent applications within 500 m</p>
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto max-h-[420px]">
-                  <ul className="divide-y divide-[#334155]/60">
+                  <ul className="divide-y divide-[var(--color-border)]/60">
                     {(result.nearby_planning ?? []).map((app, i) => {
                       const ds = planningDecisionStyle(app.decision);
                       const desc = app.description
@@ -2491,25 +2492,25 @@ export default function Home() {
                           })()
                         : null;
                       return (
-                        <li key={app.lpa_app_no || i} className="px-6 py-3 hover:bg-[#1E293B]/50 transition-colors">
+                        <li key={app.lpa_app_no || i} className="px-6 py-3 hover:bg-[var(--color-bg-surface)]/50 transition-colors">
                           <div className="flex items-start gap-3">
                             <span className={`shrink-0 mt-0.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${ds.bg} ${ds.text}`}>
                               {app.decision ?? "Pending"}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm text-[#E2E8F0] leading-snug">{desc}</p>
+                              <p className="text-sm text-[var(--color-text-primary)] leading-snug">{desc}</p>
                               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
                                 {app.street_name && (
-                                  <span className="text-xs text-[#94A3B8]">{app.street_name}</span>
+                                  <span className="text-xs text-[var(--color-text-secondary)]">{app.street_name}</span>
                                 )}
                                 {app.distance_m != null && (
-                                  <span className="text-xs text-[#94A3B8]/60">{app.distance_m} m</span>
+                                  <span className="text-xs text-[var(--color-text-secondary)]/60">{app.distance_m} m</span>
                                 )}
                                 {decDate && (
-                                  <span className="text-xs text-[#94A3B8]/60">{decDate}</span>
+                                  <span className="text-xs text-[var(--color-text-secondary)]/60">{decDate}</span>
                                 )}
                                 {app.application_type && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#334155]/60 text-[#94A3B8]/80">{app.application_type}</span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-border)]/60 text-[var(--color-text-secondary)]/80">{app.application_type}</span>
                                 )}
                               </div>
                             </div>
@@ -2549,20 +2550,20 @@ export default function Home() {
 
               const RISK_CONFIG: Record<AsbestosRisk, { dot: string; pill: string; definition: string }> = {
                 High: {
-                  dot:  "bg-[#FF3131]",
-                  pill: "bg-[#FF3131]/10 text-[#FF3131]",
+                  dot:  "bg-[var(--color-status-danger)]",
+                  pill: "bg-[var(--color-status-danger)]/10 text-[var(--color-status-danger)]",
                   definition:
                     "Built during peak asbestos use. Blue (crocidolite), brown (amosite) and white (chrysotile) asbestos were all in widespread use. A professional Asbestos Management Survey (HSG264) is strongly recommended before any renovation, structural or intrusive work.",
                 },
                 Moderate: {
-                  dot:  "bg-[#FFB800]",
-                  pill: "bg-[#FFB800]/10 text-[#FFB800]",
+                  dot:  "bg-[var(--color-status-warning)]",
+                  pill: "bg-[var(--color-status-warning)]/10 text-[var(--color-status-warning)]",
                   definition:
                     "Built partly within the asbestos era. Blue and brown asbestos were banned in 1985, but white asbestos remained legal until November 1999. An Asbestos Management Survey is advised before any intrusive works.",
                 },
                 Low: {
-                  dot:  "bg-[#39FF14]/70",
-                  pill: "bg-[#39FF14]/10 text-[#39FF14]",
+                  dot:  "bg-[var(--color-status-success)]/70",
+                  pill: "bg-[var(--color-status-success)]/10 text-[var(--color-status-success)]",
                   definition:
                     "Built after the November 1999 total UK asbestos ban. Asbestos is unlikely to be present unless earlier materials were retained or reused during a subsequent refurbishment.",
                 },
@@ -2571,28 +2572,28 @@ export default function Home() {
               const cfg = risk ? RISK_CONFIG[risk] : null;
 
               return (
-                <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-                  <div className="px-6 py-4 border-b border-[#334155]/60">
-                    <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Asbestos Risk</h2>
-                    <p className="text-xs text-[#94A3B8]/70 mt-0.5">Age-based indicator — HSE precautionary approach</p>
+                <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+                  <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                    <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Asbestos Risk</h2>
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Age-based indicator — HSE precautionary approach</p>
                   </div>
 
                   <div className="px-6 py-4">
                     {/* Risk badge + construction date */}
                     <div className="flex flex-wrap items-center gap-4 mb-4">
-                      <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold ${cfg ? cfg.pill : "bg-[#FFB800]/10 text-[#FFB800]"}`}>
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${cfg ? cfg.dot : "bg-[#FFB800]"}`} />
+                      <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold ${cfg ? cfg.pill : "bg-[var(--color-status-warning)]/10 text-[var(--color-status-warning)]"}`}>
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${cfg ? cfg.dot : "bg-[var(--color-status-warning)]"}`} />
                         {risk ? `${risk} Risk` : "Unknown — survey advised"}
                       </span>
                       {band && (
-                        <span className="text-sm text-[#94A3B8]">
-                          Construction: <span className="font-medium text-[#E2E8F0]">{band}</span>
+                        <span className="text-sm text-[var(--color-text-secondary)]">
+                          Construction: <span className="font-medium text-[var(--color-text-primary)]">{band}</span>
                         </span>
                       )}
                     </div>
 
                     {/* Definition */}
-                    <p className="text-sm text-[#94A3B8] leading-relaxed">
+                    <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed">
                       {cfg
                         ? cfg.definition
                         : "Build date not recorded in EPC. As a precaution, treat the property as potentially containing asbestos and commission an Asbestos Management Survey before any renovation work."}
@@ -2600,21 +2601,21 @@ export default function Home() {
 
                     {/* Key ban date reference tiles */}
                     <div className="mt-4 grid grid-cols-2 gap-3">
-                      <div className="rounded-lg bg-[#1E293B] px-3 py-2.5">
-                        <p className="text-xs font-medium text-[#94A3B8] mb-0.5">1985 — Phase 1 ban</p>
-                        <p className="text-xs text-[#94A3B8]/70">Blue &amp; brown asbestos prohibited</p>
+                      <div className="rounded-lg bg-[var(--color-bg-surface)] px-3 py-2.5">
+                        <p className="text-xs font-medium text-[var(--color-text-secondary)] mb-0.5">1985 — Phase 1 ban</p>
+                        <p className="text-xs text-[var(--color-text-secondary)]/70">Blue &amp; brown asbestos prohibited</p>
                       </div>
-                      <div className="rounded-lg bg-[#1E293B] px-3 py-2.5">
-                        <p className="text-xs font-medium text-[#94A3B8] mb-0.5">1999 — Full ban</p>
-                        <p className="text-xs text-[#94A3B8]/70">All asbestos types prohibited in UK</p>
+                      <div className="rounded-lg bg-[var(--color-bg-surface)] px-3 py-2.5">
+                        <p className="text-xs font-medium text-[var(--color-text-secondary)] mb-0.5">1999 — Full ban</p>
+                        <p className="text-xs text-[var(--color-text-secondary)]/70">All asbestos types prohibited in UK</p>
                       </div>
                     </div>
                   </div>
 
                   {/* Footer disclaimer */}
-                  <div className="px-6 py-3 bg-[#1E293B] border-t border-[#334155]/60">
-                    <p className="text-xs text-[#94A3B8]/70 leading-relaxed">
-                      <span className="font-medium text-[#94A3B8]">Important:</span>{" "}
+                  <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-t border-[var(--color-border)]/60">
+                    <p className="text-xs text-[var(--color-text-secondary)]/70 leading-relaxed">
+                      <span className="font-medium text-[var(--color-text-secondary)]">Important:</span>{" "}
                       This is an age-based indicator only. No public database of property-level asbestos surveys exists in the UK. Only a UKAS-accredited Asbestos Management Survey (HSG264) can confirm presence or absence. HSE guidance states: any building built or refurbished before 2000 should be assumed to contain asbestos until surveyed.
                     </p>
                   </div>
@@ -2625,17 +2626,17 @@ export default function Home() {
 
             {/* Connectivity (Broadband & Mobile) card */}
             <PropCard id="connectivity" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="rounded-xl border border-[#334155] bg-[#111827] shadow-lg shadow-black/30 overflow-hidden h-full">
-                <div className="px-6 py-4 border-b border-[#334155]/60">
-                  <h2 className="font-orbitron text-[#00F0FF] text-[11px] tracking-[3px] uppercase">Connectivity</h2>
-                  <p className="text-xs text-[#94A3B8]/70 mt-0.5">Ofcom Connected Nations · broadband & mobile coverage</p>
+              <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
+                <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+                  <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Connectivity</h2>
+                  <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Ofcom Connected Nations · broadband & mobile coverage</p>
                 </div>
                 <div className="px-6 py-4 space-y-4">
                   {!enrichSlowDone && !result.broadband && (
-                    <p className="text-sm text-[#94A3B8]/60 animate-pulse">Loading connectivity data...</p>
+                    <p className="text-sm text-[var(--color-text-secondary)]/60 animate-pulse">Loading connectivity data...</p>
                   )}
                   {enrichSlowDone && !result.broadband && !result.mobile && (
-                    <p className="text-sm text-[#94A3B8]/60">No connectivity data available{!enrichSlowError ? " — Ofcom API key may not be configured" : ""}</p>
+                    <p className="text-sm text-[var(--color-text-secondary)]/60">No connectivity data available{!enrichSlowError ? " — Ofcom API key may not be configured" : ""}</p>
                   )}
 
                   {/* Broadband speeds */}
@@ -2649,12 +2650,12 @@ export default function Home() {
                     return (
                       <div>
                         <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-semibold text-[#94A3B8] uppercase tracking-wide">Broadband</span>
+                          <span className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">Broadband</span>
                           <span className="px-2 py-0.5 rounded-full text-xs font-semibold" style={{ background: `${tierColor}15`, color: tierColor }}>
                             {tier}
                           </span>
                           {!bb.uprn_matched && (
-                            <span className="text-[10px] text-[#FFB800]">postcode-level (UPRN not matched)</span>
+                            <span className="text-[10px] text-[var(--color-status-warning)]">postcode-level (UPRN not matched)</span>
                           )}
                         </div>
                         <div className="grid grid-cols-2 gap-2">
@@ -2664,9 +2665,9 @@ export default function Home() {
                             ["Superfast ↓", bb.superfast_download, "Mbps"],
                             ["Ultrafast ↓", bb.ultrafast_download, "Mbps"],
                           ].map(([label, val, unit]) => (
-                            <div key={label as string} className="rounded-lg bg-[#1E293B] px-3 py-2">
-                              <p className="text-[10px] text-[#94A3B8] uppercase">{label as string}</p>
-                              <p className="text-sm font-semibold text-[#E2E8F0]">
+                            <div key={label as string} className="rounded-lg bg-[var(--color-bg-surface)] px-3 py-2">
+                              <p className="text-[10px] text-[var(--color-text-secondary)] uppercase">{label as string}</p>
+                              <p className="text-sm font-semibold text-[var(--color-text-primary)]">
                                 {val != null && (val as number) >= 0 ? `${val} ${unit}` : "N/A"}
                               </p>
                             </div>
@@ -2686,25 +2687,25 @@ export default function Home() {
                     return (
                       <div>
                         <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-semibold text-[#94A3B8] uppercase tracking-wide">Mobile Coverage</span>
+                          <span className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">Mobile Coverage</span>
                           {!mob.uprn_matched && (
-                            <span className="text-[10px] text-[#FFB800]">postcode-level</span>
+                            <span className="text-[10px] text-[var(--color-status-warning)]">postcode-level</span>
                           )}
                         </div>
-                        <div className="overflow-hidden rounded-lg border border-[#334155]">
+                        <div className="overflow-hidden rounded-lg border border-[var(--color-border)]">
                           <table className="w-full text-xs">
                             <thead>
-                              <tr className="bg-[#1E293B]">
-                                <th className="px-3 py-2 text-left text-[#94A3B8] font-medium">Operator</th>
-                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Data (outdoor)</th>
-                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Data (indoor)</th>
-                                <th className="px-3 py-2 text-center text-[#94A3B8] font-medium">Voice</th>
+                              <tr className="bg-[var(--color-bg-surface)]">
+                                <th className="px-3 py-2 text-left text-[var(--color-text-secondary)] font-medium">Operator</th>
+                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Data (outdoor)</th>
+                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Data (indoor)</th>
+                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Voice</th>
                               </tr>
                             </thead>
                             <tbody>
                               {Object.entries(mob.operators).map(([name, cov], i) => (
-                                <tr key={name} className={i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"}>
-                                  <td className="px-3 py-2 font-medium text-[#E2E8F0]">{name}</td>
+                                <tr key={name} className={i % 2 === 0 ? "bg-[var(--color-bg-panel)]" : "bg-[var(--color-bg-surface)]"}>
+                                  <td className="px-3 py-2 font-medium text-[var(--color-text-primary)]">{name}</td>
                                   <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.data_outdoor) }}>
                                     {coverageLabel(cov.data_outdoor)}
                                   </td>
@@ -2723,9 +2724,76 @@ export default function Home() {
                     );
                   })()}
                 </div>
-                <div className="px-6 py-3 bg-[#1E293B] border-t border-[#334155]/60">
-                  <p className="text-[10px] text-[#94A3B8]/60">Source: Ofcom Connected Nations. Predicted coverage — actual speeds may vary. Updated annually.</p>
+                <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-t border-[var(--color-border)]/60">
+                  <p className="text-[10px] text-[var(--color-text-secondary)]/60">Source: Ofcom Connected Nations. Predicted coverage — actual speeds may vary. Updated annually.</p>
                 </div>
+              </div>
+            </PropCard>
+
+            {/* IMD (Deprivation) card */}
+            <PropCard id="imd" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
+              <div className="h-full rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 flex flex-col gap-3 overflow-hidden">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-orbitron text-[var(--color-accent)] text-[11px] tracking-[3px] uppercase">Deprivation (IMD)</h2>
+                </div>
+                {!enrichSlowDone ? (
+                  <div className="flex items-center justify-center flex-1">
+                    <p className="text-sm text-[var(--color-text-secondary)]/60 animate-pulse">Loading IMD data...</p>
+                  </div>
+                ) : !result.imd ? (
+                  <div className="flex items-center justify-center flex-1">
+                    <p className="text-sm text-[var(--color-text-secondary)]/60">No IMD data available{result.lsoa_code && !result.lsoa_code.startsWith("E") ? " (England only)" : ""}</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
+                    {/* Overall rank + decile hero */}
+                    <div className="flex items-center gap-3 mb-1">
+                      <div className={`px-3 py-1.5 rounded-lg text-center font-bold text-lg ${
+                        (result.imd.overall_decile ?? 10) <= 3 ? "bg-[#FF3131]/15 text-[#FF3131]" :
+                        (result.imd.overall_decile ?? 10) <= 5 ? "bg-[#FFB800]/15 text-[#FFB800]" :
+                        "bg-[#39FF14]/15 text-[#39FF14]"
+                      }`}>
+                        {result.imd.overall_decile ?? "—"}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-[var(--color-text-primary)]">
+                          Decile {result.imd.overall_decile} of 10
+                        </p>
+                        <p className="text-[10px] text-[var(--color-text-secondary)]">
+                          {(result.imd.overall_decile ?? 10) <= 3 ? "Most deprived" : (result.imd.overall_decile ?? 10) <= 5 ? "Below average" : "Least deprived"} — rank {result.imd.overall_rank?.toLocaleString() ?? "—"} of 32,844
+                        </p>
+                      </div>
+                    </div>
+                    {/* Domain breakdown */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      {([
+                        ["Income", result.imd.income_decile],
+                        ["Employment", result.imd.employment_decile],
+                        ["Education", result.imd.education_decile],
+                        ["Health", result.imd.health_decile],
+                        ["Crime", result.imd.crime_decile],
+                        ["Housing", result.imd.housing_decile],
+                        ["Environment", result.imd.environment_decile],
+                      ] as [string, number | null][]).map(([label, dec]) => (
+                        <div key={label} className="flex items-center justify-between py-0.5">
+                          <span className="text-[10px] text-[var(--color-text-secondary)]">{label}</span>
+                          <div className="flex items-center gap-1">
+                            <div className="w-16 h-1.5 rounded-full bg-[var(--color-border)] overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  (dec ?? 10) <= 3 ? "bg-[#FF3131]" : (dec ?? 10) <= 5 ? "bg-[#FFB800]" : "bg-[#39FF14]"
+                                }`}
+                                style={{ width: `${((dec ?? 0) / 10) * 100}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] font-mono text-[var(--color-text-primary)] w-4 text-right">{dec ?? "—"}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-[var(--color-text-secondary)]/60 mt-auto">Source: MHCLG English IMD 2019. Decile 1 = most deprived 10% of LSOAs.</p>
+                  </div>
+                )}
               </div>
             </PropCard>
 
@@ -2736,8 +2804,8 @@ export default function Home() {
 
           {/* ── Tab 2: Same Building Sales ───────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "comparables" ? undefined : "none" }}>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#00F0FF]" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-accent)] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-btn-primary-bg)]" />
               Direct Comparables
             </h2>
             <ComparableSearch
@@ -2776,8 +2844,8 @@ export default function Home() {
 
           {/* ── Tab: Wider Comparables ───────────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "wider" ? undefined : "none" }}>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#00F0FF]" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-accent)] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-btn-primary-bg)]" />
               Wider Comparables
             </h2>
             <ComparableSearch
@@ -2814,8 +2882,8 @@ export default function Home() {
 
           {/* ── Tab: Additional Comparables ────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "additional" ? undefined : "none" }}>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] mb-4 flex items-center gap-2">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#FF2D78]" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-accent)] mb-4 flex items-center gap-2">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-accent-pink)]" />
               Additional Comparables
             </h2>
             <AdditionalComparable
@@ -2828,28 +2896,28 @@ export default function Home() {
           {/* ── Tab 4: Adopted Comparables ───────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "adopted" ? undefined : "none" }}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-[#00F0FF] flex items-center gap-2">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-[var(--color-accent)] flex items-center gap-2">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-status-success)]" />
                 Adopted Comparables
                 {adoptedComparables.length > 0 && (
-                  <span className="ml-1 text-[#39FF14]">({adoptedComparables.length})</span>
+                  <span className="ml-1 text-[var(--color-status-success)]">({adoptedComparables.length})</span>
                 )}
               </h2>
               <button
                 onClick={() => setShowManualForm(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[var(--color-accent-pink)]/10 text-[var(--color-accent-pink)] hover:bg-[var(--color-accent-pink)]/20 transition-colors"
               >
                 <span>✏️</span> Add Manual
               </button>
             </div>
             {adoptedComparables.length === 0 ? (
-              <div className="text-center py-16 text-[#94A3B8]/70 space-y-3">
+              <div className="text-center py-16 text-[var(--color-text-secondary)]/70 space-y-3">
                 <p className="text-4xl">📋</p>
-                <p className="text-sm font-medium text-[#94A3B8]">No comparables adopted yet</p>
-                <p className="text-xs text-[#94A3B8]/70">Click <span className="font-semibold text-[#E2E8F0]">Adopt</span> on any comparable in the search tabs, or add your own:</p>
+                <p className="text-sm font-medium text-[var(--color-text-secondary)]">No comparables adopted yet</p>
+                <p className="text-xs text-[var(--color-text-secondary)]/70">Click <span className="font-semibold text-[var(--color-text-primary)]">Adopt</span> on any comparable in the search tabs, or add your own:</p>
                 <button
                   onClick={() => setShowManualForm(true)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[#FF2D78]/10 text-[#FF2D78] hover:bg-[#FF2D78]/20 transition-colors"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[var(--color-accent-pink)]/10 text-[var(--color-accent-pink)] hover:bg-[var(--color-accent-pink)]/20 transition-colors"
                 >
                   <span>✏️</span> Add Manual Comparable
                 </button>
@@ -2859,103 +2927,103 @@ export default function Home() {
 
                 {/* ── HPI Correlation slider ──────────────────────────────── */}
                 {hpiTrend.length > 0 && (
-                  <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-3 flex items-center gap-4 no-print">
-                    <div className="text-xs text-[#94A3B8] uppercase tracking-wide whitespace-nowrap font-medium">HPI Correlation</div>
+                  <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-5 py-3 flex items-center gap-4 no-print">
+                    <div className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide whitespace-nowrap font-medium">HPI Correlation</div>
                     <input type="range" min={0} max={100} step={1} value={hpiCorrelation}
                       onChange={e => setHpiCorrelation(Number(e.target.value))}
-                      className="flex-1 accent-[#00F0FF]" />
-                    <div className="text-sm font-bold text-[#00F0FF] tabular-nums w-10 text-right">{hpiCorrelation}%</div>
-                    <div className="text-[10px] text-[#475569] whitespace-nowrap">0% = no adj · 100% = full HPI</div>
+                      className="flex-1 accent-[var(--color-accent)]" />
+                    <div className="text-sm font-bold text-[var(--color-accent)] tabular-nums w-10 text-right">{hpiCorrelation}%</div>
+                    <div className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap">0% = no adj · 100% = full HPI</div>
                   </div>
                 )}
 
                 {/* ── Size Elasticity slider ───────────────────────────────── */}
-                <div className={`rounded-xl border px-5 py-3 flex items-center gap-4 no-print transition-colors ${sizeElasticity > 0 ? "border-[#F59E0B]/40 bg-[#F59E0B]/5" : "border-[#334155] bg-[#111827]"}`}>
+                <div className={`rounded-xl border px-5 py-3 flex items-center gap-4 no-print transition-colors ${sizeElasticity > 0 ? "border-[#F59E0B]/40 bg-[#F59E0B]/5" : "border-[var(--color-border)] bg-[var(--color-bg-panel)]"}`}>
                   <div className="flex items-center gap-1.5 whitespace-nowrap">
-                    <span className="text-xs text-[#94A3B8] uppercase tracking-wide font-medium">Size Elasticity (β)</span>
-                    <span className="text-[#94A3B8]/50 text-xs cursor-help select-none" title="Controls how much £/sq ft adjusts for size differences. 0% = no adjustment. Higher values = stronger size premium for smaller units. Typical range for London residential: 10–30%.">ⓘ</span>
+                    <span className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide font-medium">Size Elasticity (β)</span>
+                    <span className="text-[var(--color-text-secondary)]/50 text-xs cursor-help select-none" title="Controls how much £/sq ft adjusts for size differences. 0% = no adjustment. Higher values = stronger size premium for smaller units. Typical range for London residential: 10–30%.">ⓘ</span>
                   </div>
                   <input type="range" min={0} max={50} step={1} value={sizeElasticity}
                     onChange={e => setSizeElasticity(Number(e.target.value))}
                     className={`flex-1 ${sizeElasticity > 0 ? "accent-[#F59E0B]" : "accent-[#334155]"}`} />
-                  <div className={`text-sm font-bold tabular-nums w-10 text-right ${sizeElasticity > 0 ? "text-[#F59E0B]" : "text-[#94A3B8]"}`}>{sizeElasticity}%</div>
-                  <div className="text-[10px] text-[#475569] whitespace-nowrap">0% = no adj · 50% = max</div>
+                  <div className={`text-sm font-bold tabular-nums w-10 text-right ${sizeElasticity > 0 ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-secondary)]"}`}>{sizeElasticity}%</div>
+                  <div className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap">0% = no adj · 50% = max</div>
                 </div>
 
                 {/* ── Floating statistics dashboard ──────────────────────── */}
-                <div className="sticky top-4 z-10 rounded-2xl overflow-hidden shadow-[0_0_20px_#00F0FF22] border border-[#334155]">
+                <div className="sticky top-4 z-10 rounded-2xl overflow-hidden shadow-[0_0_20px_#00F0FF22] border border-[var(--color-border)]">
 
                   {/* Header */}
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-[#0A0E1A]">
-                    <span className="text-[11px] font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">Comparable Statistics</span>
-                    <span className="text-[11px] text-[#94A3B8]">{adoptedComparables.length} comparable{adoptedComparables.length !== 1 ? "s" : ""}</span>
+                  <div className="flex items-center justify-between px-4 py-2.5 bg-[var(--color-bg-base)]">
+                    <span className="text-[11px] font-orbitron font-bold tracking-widest text-[var(--color-accent)] uppercase">Comparable Statistics</span>
+                    <span className="text-[11px] text-[var(--color-text-secondary)]">{adoptedComparables.length} comparable{adoptedComparables.length !== 1 ? "s" : ""}</span>
                   </div>
 
                   {/* 4-column stats */}
-                  <div className="grid grid-cols-4 divide-x divide-[#334155] border-b border-[#334155] bg-[#111827]">
+                  <div className="grid grid-cols-4 divide-x divide-[var(--color-border)] border-b border-[var(--color-border)] bg-[var(--color-bg-panel)]">
                     {/* Price */}
                     <div className="px-3 py-3">
-                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Price</p>
-                      <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
-                        {fmtK(adoptedPriceMin)}<span className="text-[#334155] font-normal">–</span>{fmtK(adoptedPriceMax)}
+                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-1.5">Price</p>
+                      <p className="text-sm font-bold text-[var(--color-text-primary)] leading-snug tabular-nums">
+                        {fmtK(adoptedPriceMin)}<span className="text-[var(--color-border)] font-normal">–</span>{fmtK(adoptedPriceMax)}
                       </p>
-                      <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {fmtK(adoptedPriceAvg)}</p>
+                      <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 tabular-nums">avg {fmtK(adoptedPriceAvg)}</p>
                     </div>
 
                     {/* £/sqft */}
                     <div className="px-3 py-3">
-                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">£ / sqft</p>
+                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-1.5">£ / sqft</p>
                       {adoptedPsfMin != null ? (
                         <>
-                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
-                            {fmtPsf(adoptedPsfMin)}<span className="text-[#334155] font-normal">–</span>{fmtPsf(adoptedPsfMax!)}
+                          <p className="text-sm font-bold text-[var(--color-text-primary)] leading-snug tabular-nums">
+                            {fmtPsf(adoptedPsfMin)}<span className="text-[var(--color-border)] font-normal">–</span>{fmtPsf(adoptedPsfMax!)}
                           </p>
-                          <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {fmtPsf(adoptedPsfAvg!)}</p>
+                          <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 tabular-nums">avg {fmtPsf(adoptedPsfAvg!)}</p>
                           {adjPsfAvg != null && hpiCorrelation > 0 && adjPsfAvg !== Math.round(adoptedPsfAvg!) && (
-                            <p className="text-[11px] text-[#67E8F9] mt-0.5 tabular-nums">adj {fmtPsf(adjPsfAvg)}</p>
+                            <p className="text-[11px] text-[var(--color-status-info)] mt-0.5 tabular-nums">adj {fmtPsf(adjPsfAvg)}</p>
                           )}
                           {sizeAdjPsfAvg != null && sizeElasticity > 0 && (
-                            <p className="text-[11px] text-[#F59E0B] mt-0.5 tabular-nums">β-adj {fmtPsf(sizeAdjPsfAvg)}</p>
+                            <p className="text-[11px] text-[var(--color-status-warning)] mt-0.5 tabular-nums">β-adj {fmtPsf(sizeAdjPsfAvg)}</p>
                           )}
                         </>
                       ) : (
-                        <p className="text-[11px] text-[#475569] mt-2">No area data</p>
+                        <p className="text-[11px] text-[var(--color-text-muted)] mt-2">No area data</p>
                       )}
                     </div>
 
                     {/* Floor area */}
                     <div className="px-3 py-3">
-                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Floor Area</p>
+                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-1.5">Floor Area</p>
                       {adoptedSizeMin != null ? (
                         <>
-                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug tabular-nums">
-                            {Math.round(adoptedSizeMin)}<span className="text-[#334155] font-normal">–</span>{Math.round(adoptedSizeMax!)} m²
+                          <p className="text-sm font-bold text-[var(--color-text-primary)] leading-snug tabular-nums">
+                            {Math.round(adoptedSizeMin)}<span className="text-[var(--color-border)] font-normal">–</span>{Math.round(adoptedSizeMax!)} m²
                           </p>
-                          <p className="text-[11px] text-[#94A3B8] mt-1 tabular-nums">avg {Math.round(adoptedSizeAvg!)} m²</p>
+                          <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 tabular-nums">avg {Math.round(adoptedSizeAvg!)} m²</p>
                         </>
                       ) : (
-                        <p className="text-[11px] text-[#475569] mt-2">No area data</p>
+                        <p className="text-[11px] text-[var(--color-text-muted)] mt-2">No area data</p>
                       )}
                     </div>
 
                     {/* Date range */}
                     <div className="px-3 py-3">
-                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">Date Range</p>
+                      <p className="text-[9px] font-orbitron font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-1.5">Date Range</p>
                       {adoptedDateMin && (
                         <>
-                          <p className="text-sm font-bold text-[#E2E8F0] leading-snug">{fmtDateShort(adoptedDateMin)}</p>
-                          <p className="text-[11px] text-[#94A3B8] mt-1">to {fmtDateShort(adoptedDateMax!)}</p>
+                          <p className="text-sm font-bold text-[var(--color-text-primary)] leading-snug">{fmtDateShort(adoptedDateMin)}</p>
+                          <p className="text-[11px] text-[var(--color-text-secondary)] mt-1">to {fmtDateShort(adoptedDateMax!)}</p>
                         </>
                       )}
                     </div>
                   </div>
 
                   {/* Indicative valuation model */}
-                  <div className="px-4 py-3 bg-[#0A0E1A]">
-                    <p className="text-[9px] font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase mb-1.5">
+                  <div className="px-4 py-3 bg-[var(--color-bg-base)]">
+                    <p className="text-[9px] font-orbitron font-bold tracking-widest text-[var(--color-accent)] uppercase mb-1.5">
                       Indicative Valuation{sizeElasticity > 0 && subjectAreaSqft != null ? " (size+time adj)" : hpiCorrelation > 0 && hpiTrend.length > 0 ? " (time-adjusted)" : ""}
                       {subjectAreaM2 != null && (
-                        <span className="ml-1.5 text-[#94A3B8] normal-case font-normal tracking-normal">
+                        <span className="ml-1.5 text-[var(--color-text-secondary)] normal-case font-normal tracking-normal">
                           — subject {Math.round(subjectAreaM2)} m² · {Math.round(subjectAreaM2 * 10.764)} sqft
                         </span>
                       )}
@@ -2969,25 +3037,25 @@ export default function Home() {
                       const psf  = useSize ? sizeAdjPsfAvg  : useAdj ? adjPsfAvg         : (adoptedPsfAvg != null ? Math.round(adoptedPsfAvg) : null);
                       return low != null ? (
                         <div className="flex items-baseline gap-3 flex-wrap">
-                          <span className="text-lg font-bold text-[#00F0FF] tabular-nums" style={{ textShadow: "0 0 10px #00F0FF66" }}>
+                          <span className="text-lg font-bold text-[var(--color-accent)] tabular-nums" style={{ textShadow: "0 0 10px #00F0FF66" }}>
                             {fmtK(low)} – {fmtK(high!)}
                           </span>
                           {mid != null && (
-                            <span className="text-sm font-semibold text-[#67E8F9] tabular-nums">
+                            <span className="text-sm font-semibold text-[var(--color-status-info)] tabular-nums">
                               mid {fmtK(mid)}
                             </span>
                           )}
                           {psf != null && (
-                            <span className="text-xs text-[#94A3B8] tabular-nums">
+                            <span className="text-xs text-[var(--color-text-secondary)] tabular-nums">
                               @ {fmtPsf(psf)} avg psf
                             </span>
                           )}
-                          <span className="ml-auto text-[10px] text-[#475569] font-normal">
+                          <span className="ml-auto text-[10px] text-[var(--color-text-muted)] font-normal">
                             {adoptedWithArea.length}/{adoptedComparables.length} comps have area data
                           </span>
                         </div>
                       ) : (
-                        <p className="text-sm text-[#94A3B8]">
+                        <p className="text-sm text-[var(--color-text-secondary)]">
                           {subjectAreaM2 == null
                             ? "Subject floor area unknown — cannot derive valuation"
                             : "EPC area data needed on comparables to model valuation"}
@@ -2998,8 +3066,8 @@ export default function Home() {
                 </div>
 
                 {/* ── Comparable cards with independent sort per group ──── */}
-                <p className="text-sm text-[#94A3B8]">
-                  <span className="font-semibold text-[#E2E8F0]">{adoptedComparables.length}</span> comparable{adoptedComparables.length !== 1 ? "s" : ""} adopted
+                <p className="text-sm text-[var(--color-text-secondary)]">
+                  <span className="font-semibold text-[var(--color-text-primary)]">{adoptedComparables.length}</span> comparable{adoptedComparables.length !== 1 ? "s" : ""} adopted
                 </p>
 
                 {/* ── Adopted comparables grouped by tier ─────────────────── */}
@@ -3008,11 +3076,11 @@ export default function Home() {
                   return (
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">
+                        <span className="text-xs font-orbitron font-bold tracking-widest text-[var(--color-accent)] uppercase">
                           All Adopted ({adoptedPostcodeComps.length})
                         </span>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
+                          <span className="text-xs text-[var(--color-text-secondary)]/70 mr-1">Sort:</span>
                           {([["default", "Tier"], ["date", "Date"], ["price", "Price"], ["size", "Size"], ["psf", "£/sqft"]] as [AdoptedSortKey, string][]).map(([key, label]) => {
                             const active = adoptedSortPostcode === key;
                             return (
@@ -3022,7 +3090,7 @@ export default function Home() {
                                   else { setAdoptedSortPostcode(key); setAdoptedSortDirPostcode("desc"); }
                                 }}
                                 className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                                  active ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30" : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
+                                  active ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30" : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
                                 }`}
                               >
                                 {label}{active && key !== "default" && <span className="ml-1">{adoptedSortDirPostcode === "asc" ? "↑" : "↓"}</span>}
@@ -3039,15 +3107,15 @@ export default function Home() {
                             const style = ADOPTED_TIER_STYLE[tier] ?? ADOPTED_TIER_STYLE[4];
                             const label = comps[0]?.tier_label ?? `Tier ${tier}`;
                             return (
-                              <div key={tier} className="rounded-2xl border border-[#334155] overflow-hidden shadow-lg shadow-black/30">
+                              <div key={tier} className="rounded-2xl border border-[var(--color-border)] overflow-hidden shadow-lg shadow-black/30">
                                 <div className={`px-4 py-2.5 border-b flex items-center justify-between ${style.header}`}>
                                   <div className="flex items-center gap-2">
                                     <span>{style.icon}</span>
-                                    <span className="font-orbitron font-bold text-xs text-[#E2E8F0] tracking-wider">{label.toUpperCase()}</span>
+                                    <span className="font-orbitron font-bold text-xs text-[var(--color-text-primary)] tracking-wider">{label.toUpperCase()}</span>
                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.pill}`}>{comps.length} adopted</span>
                                   </div>
                                 </div>
-                                <div className="divide-y divide-[#334155]/60 bg-[#111827]">
+                                <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
                                   {comps.map((comp, idx) => {
                                     const globalIdx = adoptedComparables.indexOf(comp);
                                     return (
@@ -3061,15 +3129,15 @@ export default function Home() {
                             );
                           })
                       ) : (
-                        <div className="rounded-2xl border border-[#334155] overflow-hidden shadow-lg shadow-black/30">
-                          <div className="px-4 py-2.5 border-b flex items-center gap-2 bg-[#00F0FF]/5 border-[#00F0FF]/30">
+                        <div className="rounded-2xl border border-[var(--color-border)] overflow-hidden shadow-lg shadow-black/30">
+                          <div className="px-4 py-2.5 border-b flex items-center gap-2 bg-[var(--color-btn-primary-bg)]/5 border-[var(--color-accent)]/30">
                             <span>📊</span>
-                            <span className="font-orbitron font-bold text-xs text-[#E2E8F0] tracking-wider">
+                            <span className="font-orbitron font-bold text-xs text-[var(--color-text-primary)] tracking-wider">
                               SORTED BY {adoptedSortPostcode === "psf" ? "£/SQFT" : adoptedSortPostcode.toUpperCase()}
                             </span>
-                            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[#00F0FF]/15 text-[#00F0FF]">{sorted.length} adopted</span>
+                            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)]">{sorted.length} adopted</span>
                           </div>
-                          <div className="divide-y divide-[#334155]/60 bg-[#111827]">
+                          <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
                             {sorted.map((comp, idx) => {
                               const globalIdx = adoptedComparables.indexOf(comp);
                               return (
@@ -3181,7 +3249,7 @@ export default function Home() {
                 imdCache={mapImdCache} onImdCacheChange={setMapImdCache}
               />
             ) : (
-              <div className="flex items-center justify-center h-full text-[#94A3B8] text-sm">
+              <div className="flex items-center justify-center h-full text-[var(--color-text-secondary)] text-sm">
                 No coordinates available for this property.
               </div>
             )}

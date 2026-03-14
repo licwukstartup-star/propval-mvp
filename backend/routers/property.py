@@ -159,6 +159,7 @@ _SOURCE_TTL: dict[str, int] = {
     "nearby_planning":      7 * 86400,   # 7 days (applications update daily)
     "broadband":           180 * 86400,  # 180 days (Ofcom data updates annually)
     "mobile":              180 * 86400,  # 180 days (Ofcom data updates annually)
+    "imd":                 365 * 86400,  # 365 days (IMD release is multi-year)
 }
 _DEFAULT_TTL = 86400  # 24 hours fallback
 
@@ -1197,6 +1198,7 @@ async def _fetch_location(address: str, postcode: str) -> dict:
         "admin_district": pc_result.get("admin_district"),
         "region": pc_result.get("region"),
         "lsoa": pc_result.get("lsoa"),
+        "lsoa_code": (pc_result.get("codes") or {}).get("lsoa"),
     }
 
 
@@ -2225,6 +2227,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "admin_district": location["admin_district"],
             "region": location["region"],
             "lsoa": location["lsoa"],
+            "lsoa_code": location.get("lsoa_code"),
             "rivers_sea_risk": flood["rivers_sea_risk"],
             "surface_water_risk": flood["surface_water_risk"],
             "planning_flood_zone": planning_zone,
@@ -2284,6 +2287,83 @@ async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Dep
 
 # ---------------------------------------------------------------------------
 # Slow enrichment — council tax + planning flood zone (deferred from main search)
+# ---------------------------------------------------------------------------
+# IMD (Index of Multiple Deprivation) — ONS Open Geography Portal
+# ---------------------------------------------------------------------------
+
+_IMD_URL = (
+    "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/"
+    "IMD_2019_1/FeatureServer/0/query"
+)
+
+
+async def _fetch_imd(lsoa_code: str | None) -> dict | None:
+    """Fetch IMD 2019 data for a given LSOA code from ONS ArcGIS.
+
+    Returns dict with overall rank/decile plus domain scores, or None.
+    IMD only covers England — Welsh/Scottish LSOAs will return None.
+    """
+    if not lsoa_code or not lsoa_code.startswith("E"):
+        return None
+    try:
+        client = _get_http_client()
+        resp = await client.get(
+            _IMD_URL,
+            params={
+                "where": f"lsoa_code_2011='{lsoa_code}'",
+                "outFields": (
+                    "IMDRank0,IMDDecil0,"
+                    "IncRank,IncDec,"
+                    "EmpRank,EmpDec,"
+                    "EduRank,EduDec,"
+                    "HDDRank,HDDDec,"
+                    "CriRank,CriDec,"
+                    "BHSRank,BHSDec,"
+                    "EnvRank,EnvDec,"
+                    "IDCRank,IDCDec,"
+                    "IDAMRank,IDAMDec,"
+                    "IDYORank,IDYODec"
+                ),
+                "returnGeometry": "false",
+                "f": "json",
+            },
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            return None
+        features = resp.json().get("features", [])
+        if not features:
+            return None
+        a = features[0]["attributes"]
+        return {
+            "overall_rank": a.get("IMDRank0"),
+            "overall_decile": a.get("IMDDecil0"),
+            "income_rank": a.get("IncRank"),
+            "income_decile": a.get("IncDec"),
+            "employment_rank": a.get("EmpRank"),
+            "employment_decile": a.get("EmpDec"),
+            "education_rank": a.get("EduRank"),
+            "education_decile": a.get("EduDec"),
+            "health_rank": a.get("HDDRank"),
+            "health_decile": a.get("HDDDec"),
+            "crime_rank": a.get("CriRank"),
+            "crime_decile": a.get("CriDec"),
+            "housing_rank": a.get("BHSRank"),
+            "housing_decile": a.get("BHSDec"),
+            "environment_rank": a.get("EnvRank"),
+            "environment_decile": a.get("EnvDec"),
+            "idaci_rank": a.get("IDCRank"),
+            "idaci_decile": a.get("IDCDec"),
+            "idaopi_rank": a.get("IDAMRank"),
+            "idaopi_decile": a.get("IDAMDec"),
+            "cyp_rank": a.get("IDYORank"),
+            "cyp_decile": a.get("IDYODec"),
+        }
+    except Exception as exc:
+        logging.warning("IMD fetch failed for LSOA %s: %s", lsoa_code, exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Ofcom Connected Nations — broadband & mobile coverage
 # ---------------------------------------------------------------------------
@@ -2404,6 +2484,7 @@ class SlowEnrichRequest(BaseModel):
     lat: float | None = None
     lon: float | None = None
     uprn: str | None = None
+    lsoa_code: str | None = None
 
 @router.post("/enrich-slow")
 @limiter.limit("20/minute")
@@ -2416,24 +2497,27 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
         fl_coro = _fetch_flood_risk(body.lat, body.lon) if has_coords else asyncio.sleep(0)
         bb_coro = _fetch_ofcom_broadband(body.postcode, body.uprn)
         mob_coro = _fetch_ofcom_mobile(body.postcode, body.uprn)
+        imd_coro = _fetch_imd(body.lsoa_code)
 
         try:
-            ct_r, pf_r, fl_r, bb_r, mob_r = await asyncio.wait_for(
-                asyncio.gather(ct_coro, pf_coro, fl_coro, bb_coro, mob_coro, return_exceptions=True),
+            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r = await asyncio.wait_for(
+                asyncio.gather(ct_coro, pf_coro, fl_coro, bb_coro, mob_coro, imd_coro, return_exceptions=True),
                 timeout=30.0,
             )
         except asyncio.TimeoutError:
             logging.error("⏱ enrich-slow TIMEOUT (>30s)")
-            ct_r, pf_r, fl_r, bb_r, mob_r = None, None, None, None, None
+            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r = None, None, None, None, None, None
 
         ct = ct_r if isinstance(ct_r, str) else None
         pf = pf_r if isinstance(pf_r, str) else None
         flood = fl_r if isinstance(fl_r, dict) else {"rivers_sea_risk": None, "surface_water_risk": None}
         broadband = bb_r if isinstance(bb_r, dict) else None
         mobile = mob_r if isinstance(mob_r, dict) else None
-        logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s bb=%s mob=%s in %.0fms",
+        imd = imd_r if isinstance(imd_r, dict) else None
+        logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s bb=%s mob=%s imd=%s in %.0fms",
                         ct, pf, flood.get("rivers_sea_risk"),
                         "ok" if broadband else "none", "ok" if mobile else "none",
+                        "dec" + str(imd.get("overall_decile")) if imd else "none",
                         (time.monotonic() - t0) * 1000)
         return {
             "council_tax_band": ct,
@@ -2442,6 +2526,7 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
             "surface_water_risk": flood.get("surface_water_risk"),
             "broadband": broadband,
             "mobile": mobile,
+            "imd": imd,
         }
     except Exception as exc:
         logging.exception("enrich-slow unexpected error: %s", exc)
@@ -2452,6 +2537,7 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
             "surface_water_risk": None,
             "broadband": None,
             "mobile": None,
+            "imd": None,
         }
 
 
