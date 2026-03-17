@@ -24,6 +24,7 @@ const config: Config = {
         'status-info': '#67E8F9',
       },
       fontFamily: {
+        sans: ["var(--font-inter)", "system-ui", "-apple-system", "sans-serif"],
         orbitron: ["var(--font-orbitron)", "sans-serif"],
         mono: ["var(--font-mono)", "'Courier New'", "monospace"],
       },

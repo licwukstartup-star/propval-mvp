@@ -28,6 +28,8 @@ Keys.xlsx
 LEASES_FULL_*.csv
 *.csv
 *.db
+*.db-shm
+*.db-wal
 backend/leases.db
 
 # Debug / test artifacts
@@ -41,12 +43,17 @@ tmp_*.json
 # Database backups (contain production data — never commit)
 backups/
 
+# Logs
+logs/
+
 # Generated output
-Output Reports/
+Reports/
 
 # Reference docs (personal notes, not source code)
 Useful material by CL/
-Business Valuation and Cap table/
+Business/
+Research/
+User entry management/
 
 # Stale prototypes / old prompts
 property-cards-resizable.jsx

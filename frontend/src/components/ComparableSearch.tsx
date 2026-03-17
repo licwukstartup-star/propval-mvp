@@ -65,6 +65,10 @@ export interface ComparableCandidate {
   epc_score:            number | null;
   months_ago:           number | null;
   lease_remaining:      string | null;
+  distance_m:           number | null;
+  coord_source:         string | null;
+  lat:                  number | null;
+  lon:                  number | null;
   // Option E: UPRN Timeline snapshot fields (populated after API persist)
   snapshot_id?:         string;
   case_comp_id?:        string;
@@ -166,10 +170,10 @@ function fmtMonthsAgo(n: number | null): string {
 // ─── Tier styling ─────────────────────────────────────────────────────────────
 
 const TIER_STYLE: Record<number, { pill: string; header: string; icon: string }> = {
-  1: { pill: "bg-[#39FF14]/15 text-[#39FF14]",  header: "bg-[#39FF14]/5  border-[#39FF14]/30", icon: "🏢" },
-  2: { pill: "bg-[#00F0FF]/15 text-[#00F0FF]",   header: "bg-[#00F0FF]/5  border-[#00F0FF]/30",  icon: "🏘️" },
-  3: { pill: "bg-[#FFB800]/15 text-[#FFB800]",  header: "bg-[#FFB800]/5  border-[#FFB800]/30", icon: "📍" },
-  4: { pill: "bg-[#94A3B8]/15 text-[#94A3B8]",  header: "bg-[#94A3B8]/10 border-[#334155]",   icon: "🗺️" },
+  1: { pill: "bg-[#39FF14]/15 text-[var(--color-status-success)]",  header: "bg-[#39FF14]/5  border-[#39FF14]/30", icon: "🏢" },
+  2: { pill: "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)]",   header: "bg-[var(--color-btn-primary-bg)]/5  border-[var(--color-accent)]/30",  icon: "🏘️" },
+  3: { pill: "bg-[#FFB800]/15 text-[var(--color-status-warning)]",  header: "bg-[#FFB800]/5  border-[#FFB800]/30", icon: "📍" },
+  4: { pill: "bg-[var(--color-text-secondary)]/15 text-[var(--color-text-secondary)]",  header: "bg-[#94A3B8]/10 border-[var(--color-border)]",   icon: "🗺️" },
 };
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -434,11 +438,11 @@ export default function ComparableSearch({
 
       {/* ── Locked notice (outward mode, building search not yet done) ── */}
       {locked && (
-        <div className="rounded-2xl border border-[#FFB800]/40 bg-[#FFB800]/10 px-5 py-4 text-sm text-[#FFB800] flex items-start gap-3">
+        <div className="rounded-2xl border border-[#FFB800]/40 bg-[#FFB800]/10 px-5 py-4 text-sm text-[var(--color-status-warning)] flex items-start gap-3">
           <span className="text-lg leading-none">🔒</span>
           <div>
             <p className="font-semibold">Run Same Building Sales first</p>
-            <p className="text-xs mt-0.5 text-[#FFB800]">
+            <p className="text-xs mt-0.5 text-[var(--color-status-warning)]">
               Complete the Same Building Sales search before searching neighbouring properties.
               This ensures same-building results are excluded from this search.
             </p>
@@ -447,19 +451,19 @@ export default function ComparableSearch({
       )}
 
       {/* ── Controls ── */}
-      <div className={`rounded-2xl border border-[#334155] bg-[#111827] p-5 shadow-lg shadow-black/30 space-y-4 ${locked ? "opacity-50 pointer-events-none select-none" : ""}`}>
-        <h3 className="font-semibold text-[#E2E8F0] text-sm">
+      <div className={`rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-5 shadow-lg shadow-black/30 space-y-4 ${locked ? "opacity-50 pointer-events-none select-none" : ""}`}>
+        <h3 className="font-semibold text-[var(--color-text-primary)] text-sm">
           {isBuilding ? "Same Building Sales" : "Additional Sales"}
         </h3>
 
         {/* Subject summary */}
-        <div className="rounded-lg bg-[#1E293B] border border-[#334155] px-4 py-3 text-xs text-[#94A3B8]">
-          <span className="font-medium text-[#E2E8F0]">Subject: </span>{subjectSummary || "—"}
+        <div className="rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] px-4 py-3 text-xs text-[var(--color-text-secondary)]">
+          <span className="font-medium text-[var(--color-text-primary)]">Subject: </span>{subjectSummary || "—"}
           {isBuilding && buildingName && (
-            <span className="ml-2 text-[#94A3B8]">· {buildingName}</span>
+            <span className="ml-2 text-[var(--color-text-secondary)]">· {buildingName}</span>
           )}
           {!isBuilding && streetName && (
-            <span className="ml-2 text-[#94A3B8]">· {streetName}</span>
+            <span className="ml-2 text-[var(--color-text-secondary)]">· {streetName}</span>
           )}
         </div>
 
@@ -467,7 +471,7 @@ export default function ComparableSearch({
           {/* Target count — outward mode only */}
           {!isBuilding && (
             <div>
-              <label className="block text-xs font-medium text-[#94A3B8] mb-1">Target comparables</label>
+              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">Target comparables</label>
               <div className="flex gap-1">
                 {[5, 8, 10, 15, 20].map(n => (
                   <button
@@ -475,8 +479,8 @@ export default function ComparableSearch({
                     onClick={() => setTargetCount(n)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                       targetCount === n
-                        ? "bg-[#00F0FF] text-[#0A0E1A]"
-                        : "bg-[#1E293B] text-[#94A3B8] hover:bg-[#334155]"
+                        ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]"
+                        : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]"
                     }`}
                   >
                     {n}
@@ -488,15 +492,15 @@ export default function ComparableSearch({
 
           {/* Valuation date — compulsory, shared across both tabs */}
           <div>
-            <label className="block text-xs font-medium text-[#94A3B8] mb-1">
-              Valuation date <span className="text-[#FF2D78]">*</span>
+            <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
+              Valuation date <span className="text-[var(--color-accent-pink)]">*</span>
             </label>
             <input
               type="date"
               value={valuationDate}
               onChange={e => onValuationDateChange(e.target.value)}
-              className={`border rounded-lg px-3 py-1.5 text-xs text-[#E2E8F0] bg-[#1E293B] focus:outline-none focus:ring-2 focus:ring-[#00F0FF] ${
-                !valuationDate ? "border-[#FF2D78]/60" : "border-[#334155]"
+              className={`border rounded-lg px-3 py-1.5 text-xs text-[var(--color-text-primary)] bg-[var(--color-bg-surface)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] ${
+                !valuationDate ? "border-[#FF2D78]/60" : "border-[var(--color-border)]"
               }`}
             />
           </div>
@@ -504,9 +508,9 @@ export default function ComparableSearch({
           {/* Time window slider */}
           {isBuilding ? (
             <div className="min-w-[200px]">
-              <label className="block text-xs font-medium text-[#94A3B8] mb-1">
+              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
                 Time window
-                <span className="ml-1.5 font-semibold text-[#E2E8F0]">{buildingMonths} months</span>
+                <span className="ml-1.5 font-semibold text-[var(--color-text-primary)]">{buildingMonths} months</span>
               </label>
               <input
                 type="range"
@@ -514,20 +518,20 @@ export default function ComparableSearch({
                 value={buildingMonths}
                 onChange={e => setBuildingMonths(Number(e.target.value))}
                 list="building-months-ticks"
-                className="w-full accent-[#00F0FF]"
+                className="w-full accent-[var(--color-accent)]"
               />
               <datalist id="building-months-ticks">
                 {[12, 18, 24, 30, 36].map(v => <option key={v} value={v} />)}
               </datalist>
-              <div className="flex justify-between text-xs text-[#94A3B8]/70 mt-0.5">
+              <div className="flex justify-between text-xs text-[var(--color-text-secondary)]/70 mt-0.5">
                 {[12, 18, 24, 30, 36].map(v => <span key={v}>{v}</span>)}
               </div>
             </div>
           ) : (
             <div className="min-w-[200px]">
-              <label className="block text-xs font-medium text-[#94A3B8] mb-1">
+              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
                 Time window
-                <span className="ml-1.5 font-semibold text-[#E2E8F0]">{neighbouringMonths} months</span>
+                <span className="ml-1.5 font-semibold text-[var(--color-text-primary)]">{neighbouringMonths} months</span>
               </label>
               <input
                 type="range"
@@ -535,12 +539,12 @@ export default function ComparableSearch({
                 value={neighbouringMonths}
                 onChange={e => setNeighbouringMonths(Number(e.target.value))}
                 list="neighbouring-months-ticks"
-                className="w-full accent-[#00F0FF]"
+                className="w-full accent-[var(--color-accent)]"
               />
               <datalist id="neighbouring-months-ticks">
                 {[6, 12, 18, 24].map(v => <option key={v} value={v} />)}
               </datalist>
-              <div className="flex justify-between text-xs text-[#94A3B8]/70 mt-0.5">
+              <div className="flex justify-between text-xs text-[var(--color-text-secondary)]/70 mt-0.5">
                 {[6, 12, 18, 24].map(v => <span key={v}>{v}</span>)}
               </div>
             </div>
@@ -550,7 +554,7 @@ export default function ComparableSearch({
           <button
             onClick={runSearch}
             disabled={loading || !postcode || !valuationDate}
-            className="px-5 py-2 rounded-xl text-sm font-bold bg-[#00F0FF] text-[#0A0E1A]
+            className="px-5 py-2 rounded-xl text-sm font-bold bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]
                        hover:bg-[#00D4E0] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={!valuationDate ? "Set valuation date first" : undefined}
           >
@@ -564,16 +568,16 @@ export default function ComparableSearch({
                 onClick={() => setOutwardEnabled(v => !v)}
                 className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent
                             transition-colors duration-200 focus:outline-none
-                            ${outwardEnabled ? "bg-[#00F0FF]" : "bg-[#334155]"}`}
+                            ${outwardEnabled ? "bg-[var(--color-btn-primary-bg)]" : "bg-[var(--color-border)]"}`}
                 role="switch"
                 aria-checked={outwardEnabled}
               >
-                <span className={`inline-block h-4 w-4 rounded-full bg-[#E2E8F0] shadow transform transition-transform duration-200
+                <span className={`inline-block h-4 w-4 rounded-full bg-[var(--color-text-primary)] shadow transform transition-transform duration-200
                                  ${outwardEnabled ? "translate-x-4" : "translate-x-0"}`} />
               </button>
               <div>
-                <span className="text-xs text-[#94A3B8]">Include adjacent areas</span>
-                <span className="ml-1 text-xs text-[#94A3B8]/70">(Tier 4)</span>
+                <span className="text-xs text-[var(--color-text-secondary)]">Include adjacent areas</span>
+                <span className="ml-1 text-xs text-[var(--color-text-secondary)]/70">(Tier 4)</span>
               </div>
             </div>
           )}
@@ -581,7 +585,7 @@ export default function ComparableSearch({
 
         {/* Exclusion notice for outward mode */}
         {!isBuilding && (excludeIds.length > 0 || excludeAddressKeys.length > 0) && (
-          <div className="flex items-center gap-2 rounded-lg bg-[#00F0FF]/10 border border-[#00F0FF]/30 px-3 py-2 text-xs text-[#00F0FF]">
+          <div className="flex items-center gap-2 rounded-lg bg-[var(--color-btn-primary-bg)]/10 border border-[var(--color-accent)]/30 px-3 py-2 text-xs text-[var(--color-accent)]">
             <span>ℹ</span>
             <span>
               Properties already found in Same Building Sales will be excluded
@@ -597,15 +601,15 @@ export default function ComparableSearch({
         )}
 
         {/* Hard deck info */}
-        <div className="text-xs text-[#94A3B8]/70 space-y-0.5">
+        <div className="text-xs text-[var(--color-text-secondary)]/70 space-y-0.5">
           <p>
-            <span className="text-[#94A3B8]">Hard deck:</span>{" "}
-            <span className="text-[#94A3B8] font-medium">{normTenure}</span>
+            <span className="text-[var(--color-text-secondary)]">Hard deck:</span>{" "}
+            <span className="text-[var(--color-text-secondary)] font-medium">{normTenure}</span>
             {" · "}
-            <span className="text-[#94A3B8] font-medium">{propType}</span>
-            {subType && <span className="text-[#94A3B8]"> ({subType})</span>}
-            {era && <span className="text-[#94A3B8] font-medium"> · {era}</span>}
-            {normRooms != null && <span className="text-[#94A3B8] font-medium"> · {normRooms} hab. rooms</span>}
+            <span className="text-[var(--color-text-secondary)] font-medium">{propType}</span>
+            {subType && <span className="text-[var(--color-text-secondary)]"> ({subType})</span>}
+            {era && <span className="text-[var(--color-text-secondary)] font-medium"> · {era}</span>}
+            {normRooms != null && <span className="text-[var(--color-text-secondary)] font-medium"> · {normRooms} hab. rooms</span>}
           </p>
           <p>
             {isBuilding
@@ -627,23 +631,23 @@ export default function ComparableSearch({
       {result && (
         <div className="space-y-4">
           {/* Metadata bar */}
-          <div className="flex flex-wrap items-center gap-3 text-xs text-[#94A3B8]">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--color-text-secondary)]">
             <span>
               {activeFilterCount > 0 ? (
                 <>
-                  <span className="font-semibold text-[#FF2D78]">{filteredTotal}</span>
-                  <span className="text-[#94A3B8]/70"> of </span>
-                  <span className="font-semibold text-[#E2E8F0]">{result.comparables.length}</span> shown
+                  <span className="font-semibold text-[var(--color-accent-pink)]">{filteredTotal}</span>
+                  <span className="text-[var(--color-text-secondary)]/70"> of </span>
+                  <span className="font-semibold text-[var(--color-text-primary)]">{result.comparables.length}</span> shown
                 </>
               ) : (
                 <>
-                  <span className="font-semibold text-[#E2E8F0]">{activeCount}</span> of{" "}
+                  <span className="font-semibold text-[var(--color-text-primary)]">{activeCount}</span> of{" "}
                   <span className="font-semibold">{result.comparables.length}</span> comparables
                 </>
               )}
               {result.search_metadata.target_met
-                ? <span className="ml-1 text-[#39FF14] font-medium">(target met)</span>
-                : <span className="ml-1 text-[#FFB800] font-medium">(below target)</span>}
+                ? <span className="ml-1 text-[var(--color-status-success)] font-medium">(target met)</span>
+                : <span className="ml-1 text-[var(--color-status-warning)] font-medium">(below target)</span>}
             </span>
             <span>·</span>
             <span>{result.search_metadata.total_candidates_scanned} candidates scanned</span>
@@ -652,7 +656,7 @@ export default function ComparableSearch({
             {result.search_metadata.spec_relaxations_applied.length > 0 && (
               <>
                 <span>·</span>
-                <span className="text-[#FFB800] font-medium">
+                <span className="text-[var(--color-status-warning)] font-medium">
                   Relaxed: {result.search_metadata.spec_relaxations_applied.join(", ")}
                 </span>
               </>
@@ -667,7 +671,7 @@ export default function ComparableSearch({
                 <div className="flex items-center gap-3">
                   {/* Sort buttons */}
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-[#94A3B8]/70 mr-1">Sort:</span>
+                    <span className="text-xs text-[var(--color-text-secondary)]/70 mr-1">Sort:</span>
                     {([
                       ["default", "Tier"],
                       ["date",    "Date"],
@@ -689,8 +693,8 @@ export default function ComparableSearch({
                           }}
                           className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
                             active
-                              ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                              : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
+                              ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
+                              : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
                           }`}
                         >
                           {label}
@@ -703,15 +707,15 @@ export default function ComparableSearch({
                   </div>
 
                   {/* Divider */}
-                  <div className="h-5 w-px bg-[#334155]" />
+                  <div className="h-5 w-px bg-[var(--color-border)]" />
 
                   {/* Filter toggle */}
                   <button
                     onClick={() => setFiltersOpen(v => !v)}
                     className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md border transition-colors ${
                       filtersOpen || activeFilterCount > 0
-                        ? "bg-[#FF2D78]/15 text-[#FF2D78] border-[#FF2D78]/30"
-                        : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0] hover:border-[#475569]"
+                        ? "bg-[#FF2D78]/15 text-[var(--color-accent-pink)] border-[#FF2D78]/30"
+                        : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
                     }`}
                   >
                     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
@@ -744,8 +748,8 @@ export default function ComparableSearch({
                       disabled={nonRejected.length === 0}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
                         nonRejected.length === 0
-                          ? "bg-[#1E293B] text-[#94A3B8]/50 cursor-not-allowed border border-[#334155]/50"
-                          : "bg-[#39FF14]/15 text-[#39FF14] border border-[#39FF14]/30 hover:bg-[#39FF14]/25"
+                          ? "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)]/50 cursor-not-allowed border border-[var(--color-border)]/50"
+                          : "bg-[#39FF14]/15 text-[var(--color-status-success)] border border-[#39FF14]/30 hover:bg-[#39FF14]/25"
                       }`}
                     >
                       Adopt All ({unadopted.length})
@@ -756,19 +760,19 @@ export default function ComparableSearch({
 
               {/* ── Filter panel (collapsible) ── */}
               {filtersOpen && (
-                <div className="mt-2 rounded-xl border border-[#334155] bg-[#0A0E1A] p-4 space-y-4">
+                <div className="mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-base)] p-4 space-y-4">
                   {/* Row 1: Toggle filters */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                     {/* Tenure */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Tenure</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Tenure</label>
                       <div className="flex gap-1">
                         {(["all", "freehold", "leasehold"] as const).map(v => (
                           <button key={v} onClick={() => setFilterTenure(v)}
-                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
                               filterTenure === v
-                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
+                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
                             }`}
                           >{v}</button>
                         ))}
@@ -777,14 +781,14 @@ export default function ComparableSearch({
 
                     {/* Property type */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Type</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Type</label>
                       <div className="flex gap-1">
                         {(["all", "flat", "house"] as const).map(v => (
                           <button key={v} onClick={() => setFilterType(v)}
-                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
                               filterType === v
-                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
+                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
                             }`}
                           >{v}</button>
                         ))}
@@ -793,14 +797,14 @@ export default function ComparableSearch({
 
                     {/* EPC verified */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">EPC Verified</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">EPC Verified</label>
                       <div className="flex gap-1">
                         {(["all", "yes", "no"] as const).map(v => (
                           <button key={v} onClick={() => setFilterEpcVerified(v)}
-                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
                               filterEpcVerified === v
-                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
+                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
                             }`}
                           >{v}</button>
                         ))}
@@ -809,14 +813,14 @@ export default function ComparableSearch({
 
                     {/* New build */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">New Build</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">New Build</label>
                       <div className="flex gap-1">
                         {(["all", "yes", "no"] as const).map(v => (
                           <button key={v} onClick={() => setFilterNewBuild(v)}
-                            className={`px-2 py-1 text-[11px] font-medium rounded-md border transition-colors capitalize ${
+                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
                               filterNewBuild === v
-                                ? "bg-[#00F0FF]/15 text-[#00F0FF] border-[#00F0FF]/30"
-                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
+                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
                             }`}
                           >{v}</button>
                         ))}
@@ -828,44 +832,44 @@ export default function ComparableSearch({
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                     {/* Price range */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Price Range (£)</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Price Range (£)</label>
                       <div className="flex items-center gap-1.5">
                         <input type="number" placeholder="Min" value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)}
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[#475569] text-xs">–</span>
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
                         <input type="number" placeholder="Max" value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)}
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
                       </div>
                     </div>
 
                     {/* Floor area range */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Floor Area (m²)</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Floor Area (m²)</label>
                       <div className="flex items-center gap-1.5">
                         <input type="number" placeholder="Min" value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)}
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[#475569] text-xs">–</span>
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
                         <input type="number" placeholder="Max" value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)}
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
                       </div>
                     </div>
 
                     {/* Rooms range */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">Hab. Rooms</label>
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Hab. Rooms</label>
                       <div className="flex items-center gap-1.5">
                         <input type="number" placeholder="Min" value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} min="0" max="20"
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[#475569] text-xs">–</span>
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
                         <input type="number" placeholder="Max" value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} min="0" max="20"
-                          className="w-full bg-[#1E293B] border border-[#334155] rounded-md px-2 py-1 text-[11px] text-[#E2E8F0] placeholder-[#475569] focus:outline-none focus:ring-1 focus:ring-[#00F0FF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
                       </div>
                     </div>
                   </div>
 
                   {/* Row 3: EPC rating multi-select */}
                   <div>
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-1.5">EPC Rating</label>
+                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">EPC Rating</label>
                     <div className="flex gap-1">
                       {["A", "B", "C", "D", "E", "F", "G"].map(r => {
                         const sel = filterEpcRating.has(r);
@@ -878,10 +882,10 @@ export default function ComparableSearch({
                             if (next.has(r)) next.delete(r); else next.add(r);
                             return next;
                           })}
-                            className={`w-8 h-7 text-[11px] font-bold rounded-md border transition-colors ${
+                            className={`w-8 h-7 text-xs font-bold rounded-md border transition-colors ${
                               sel
                                 ? `border-[${ratingColor[r]}]/50 text-[${ratingColor[r]}]`
-                                : "bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-[#E2E8F0]"
+                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
                             }`}
                             style={sel ? { backgroundColor: `${ratingColor[r]}20`, color: ratingColor[r], borderColor: `${ratingColor[r]}80` } : undefined}
                           >{r}</button>
@@ -892,59 +896,59 @@ export default function ComparableSearch({
 
                   {/* Active filters summary & clear */}
                   {activeFilterCount > 0 && (
-                    <div className="flex items-center justify-between pt-2 border-t border-[#334155]/50">
+                    <div className="flex items-center justify-between pt-2 border-t border-[var(--color-border)]/50">
                       <div className="flex flex-wrap items-center gap-1.5">
                         {filterTenure !== "all" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterTenure}
                             <button onClick={() => setFilterTenure("all")} className="hover:text-white">×</button>
                           </span>
                         )}
                         {filterType !== "all" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterType}
                             <button onClick={() => setFilterType("all")} className="hover:text-white">×</button>
                           </span>
                         )}
                         {filterEpcVerified !== "all" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             EPC {filterEpcVerified === "yes" ? "verified" : "unverified"}
                             <button onClick={() => setFilterEpcVerified("all")} className="hover:text-white">×</button>
                           </span>
                         )}
                         {filterNewBuild !== "all" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterNewBuild === "yes" ? "new build" : "not new build"}
                             <button onClick={() => setFilterNewBuild("all")} className="hover:text-white">×</button>
                           </span>
                         )}
                         {(filterMinPrice || filterMaxPrice) && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             £{filterMinPrice || "0"}–£{filterMaxPrice || "∞"}
                             <button onClick={() => { setFilterMinPrice(""); setFilterMaxPrice(""); }} className="hover:text-white">×</button>
                           </span>
                         )}
                         {(filterMinArea || filterMaxArea) && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterMinArea || "0"}–{filterMaxArea || "∞"} m²
                             <button onClick={() => { setFilterMinArea(""); setFilterMaxArea(""); }} className="hover:text-white">×</button>
                           </span>
                         )}
                         {(filterMinRooms || filterMaxRooms) && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterMinRooms || "0"}–{filterMaxRooms || "∞"} rooms
                             <button onClick={() => { setFilterMinRooms(""); setFilterMaxRooms(""); }} className="hover:text-white">×</button>
                           </span>
                         )}
                         {filterEpcRating.size > 0 && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             EPC {[...filterEpcRating].sort().join(", ")}
                             <button onClick={() => setFilterEpcRating(new Set())} className="hover:text-white">×</button>
                           </span>
                         )}
                       </div>
                       <button onClick={clearAllFilters}
-                        className="text-[10px] font-medium text-[#94A3B8] hover:text-[#FF2D78] transition-colors shrink-0 ml-2"
+                        className="text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-accent-pink)] transition-colors shrink-0 ml-2"
                       >
                         Clear all
                       </button>
@@ -957,25 +961,25 @@ export default function ComparableSearch({
               {!filtersOpen && activeFilterCount > 0 && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {filterTenure !== "all" && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                       {filterTenure} <button onClick={() => setFilterTenure("all")} className="hover:text-white">×</button>
                     </span>
                   )}
                   {filterType !== "all" && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                       {filterType} <button onClick={() => setFilterType("all")} className="hover:text-white">×</button>
                     </span>
                   )}
                   {filterEpcVerified !== "all" && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[#FF2D78] border border-[#FF2D78]/20">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                       EPC {filterEpcVerified === "yes" ? "verified" : "unverified"} <button onClick={() => setFilterEpcVerified("all")} className="hover:text-white">×</button>
                     </span>
                   )}
                   {activeFilterCount > 3 && (
-                    <span className="text-[10px] text-[#94A3B8]">+{activeFilterCount - 3} more</span>
+                    <span className="text-[10px] text-[var(--color-text-secondary)]">+{activeFilterCount - 3} more</span>
                   )}
                   <button onClick={clearAllFilters}
-                    className="text-[10px] font-medium text-[#94A3B8] hover:text-[#FF2D78] transition-colors ml-1"
+                    className="text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-accent-pink)] transition-colors ml-1"
                   >
                     Clear all
                   </button>
@@ -1003,20 +1007,20 @@ export default function ComparableSearch({
                   <div className={`px-4 py-2.5 border-b flex items-center justify-between ${style.header}`}>
                     <div className="flex items-center gap-2">
                       <span>{isSorted ? "📊" : style.icon}</span>
-                      <span className="font-orbitron font-bold text-xs text-[#E2E8F0] tracking-wider">{label.toUpperCase()}</span>
+                      <span className="font-orbitron font-bold text-xs text-[var(--color-text-primary)] tracking-wider">{label.toUpperCase()}</span>
                       <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.pill}`}>
                         {active.length} found
                       </span>
                     </div>
                     {!isSorted && (
-                      <span className="text-xs text-[#94A3B8]/70">
+                      <span className="text-xs text-[var(--color-text-secondary)]/70">
                         {comps[0]?.time_window_months} month window
                       </span>
                     )}
                   </div>
 
                   {/* Comparable cards */}
-                  <div className="divide-y divide-[#334155]/60 bg-[#111827]">
+                  <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
                     {active.map((comp, idx) => (
                       <CompCard
                         key={comp.transaction_id ?? idx}
@@ -1050,10 +1054,10 @@ export default function ComparableSearch({
             })}
 
           {result.comparables.length === 0 && (
-            <div className="text-sm text-[#94A3B8] text-center py-8 space-y-1">
+            <div className="text-sm text-[var(--color-text-secondary)] text-center py-8 space-y-1">
               <p>No comparable sales found.</p>
               {result.search_metadata.search_duration_ms > 22000 ? (
-                <p className="text-[#FFB800] text-xs">
+                <p className="text-[var(--color-status-warning)] text-xs">
                   ⚠ The Land Registry SPARQL endpoint was slow (
                   {(result.search_metadata.search_duration_ms / 1000).toFixed(0)}s) —
                   queries may have timed out. Try again or widen the time window.
@@ -1082,9 +1086,9 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
   timeAdjFactor?: number;       // HPI time-adj factor (default 1 = no adj)
 }) {
   const relaxBadges = comp.spec_relaxations.map(r => {
-    if (r === "type")     return { label: "type relaxed",     cls: "bg-[#FFB800]/10 text-[#FFB800]" };
-    if (r === "bedrooms") return { label: "rooms relaxed", cls: "bg-[#FFB800]/10 text-[#FFB800]" };
-    return { label: r, cls: "bg-[#334155]/50 text-[#94A3B8]" };
+    if (r === "type")     return { label: "type relaxed",     cls: "bg-[#FFB800]/10 text-[var(--color-status-warning)]" };
+    if (r === "bedrooms") return { label: "rooms relaxed", cls: "bg-[#FFB800]/10 text-[var(--color-status-warning)]" };
+    return { label: r, cls: "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]" };
   });
 
   // (1) Price per sq ft  (1 m² = 10.7639 ft²)
@@ -1123,24 +1127,24 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
   }
 
   return (
-    <div className={`px-4 py-3 flex flex-col gap-1.5 transition-colors ${isAdopted ? "bg-[#39FF14]/8" : "hover:bg-[#1E293B]"}`}>
+    <div className={`px-4 py-3 flex flex-col gap-1.5 transition-colors ${isAdopted ? "bg-[#39FF14]/8" : "hover:bg-[var(--color-bg-surface)]"}`}>
       {/* Row 1: address + price + adopt button */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-[#E2E8F0] truncate">{comp.address}</p>
-          <p className="text-xs text-[#94A3B8]/70">{comp.postcode}</p>
+          <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">{comp.address}</p>
+          <p className="text-xs text-[var(--color-text-secondary)]/70">{comp.postcode}</p>
         </div>
         <div className="flex items-start gap-2 shrink-0">
           <div className="text-right">
-            <p className="text-sm font-bold text-[#00F0FF]">
+            <p className="text-sm font-bold text-[var(--color-accent)]">
               {fmtPrice(comp.price)}
               {pricePsf != null && (
-                <span className="ml-1.5 text-xs font-normal text-[#94A3B8]">
+                <span className="ml-1.5 text-xs font-normal text-[var(--color-text-secondary)]">
                   £{pricePsf.toLocaleString("en-GB")}/sq ft
                 </span>
               )}
             </p>
-            <p className="text-xs text-[#94A3B8]/70">{fmtDate(comp.transaction_date)}</p>
+            <p className="text-xs text-[var(--color-text-secondary)]/70">{fmtDate(comp.transaction_date)}</p>
           </div>
           {onAdopt && (
             <button
@@ -1148,8 +1152,8 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
               title={isAdopted ? "Remove from Adopted Comparables" : "Add to Adopted Comparables"}
               className={`mt-0.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
                 isAdopted
-                  ? "bg-[#39FF14]/15 text-[#39FF14] border-[#39FF14]/40 hover:bg-[#39FF14]/25"
-                  : "bg-transparent text-[#94A3B8] border-[#334155] hover:border-[#39FF14]/60 hover:text-[#39FF14]"
+                  ? "bg-[#39FF14]/15 text-[var(--color-status-success)] border-[#39FF14]/40 hover:bg-[#39FF14]/25"
+                  : "bg-transparent text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-[#39FF14]/60 hover:text-[var(--color-status-success)]"
               }`}
             >
               {isAdopted ? "✓ Adopted" : "Adopt"}
@@ -1159,7 +1163,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
       </div>
 
       {/* Row 2: attributes */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#94A3B8]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
         {comp.tenure && (
           <span className="capitalize">{comp.tenure}</span>
         )}
@@ -1184,7 +1188,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
           <span>
             {comp.floor_area_sqm} m²
             {areaSqft != null && (
-              <span className="text-[#94A3B8]/70"> / {areaSqft.toLocaleString("en-GB")} ft²</span>
+              <span className="text-[var(--color-text-secondary)]/70"> / {areaSqft.toLocaleString("en-GB")} ft²</span>
             )}
           </span>
         )}
@@ -1193,10 +1197,10 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
           <span>
             Built {comp.build_year}
             {comp.build_year_estimated && (
-              <span className="text-[#94A3B8]/70 italic"> est.</span>
+              <span className="text-[var(--color-text-secondary)]/70 italic"> est.</span>
             )}
             {buildAge != null && (
-              <span className="text-[#94A3B8]/70"> ({buildAge} yrs)</span>
+              <span className="text-[var(--color-text-secondary)]/70"> ({buildAge} yrs)</span>
             )}
           </span>
         )}
@@ -1209,18 +1213,18 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
           </span>
         )}
         {comp.months_ago != null && (
-          <span className="text-[#94A3B8]/70">{fmtMonthsAgo(comp.months_ago)}</span>
+          <span className="text-[var(--color-text-secondary)]/70">{fmtMonthsAgo(comp.months_ago)}</span>
         )}
         {comp.epc_rating && (
           <span className={`px-1.5 py-0.5 rounded font-semibold ${
-            ({ A: "bg-[#16A34A]/20 text-[#39FF14]",
+            ({ A: "bg-[#16A34A]/20 text-[var(--color-status-success)]",
                B: "bg-[#22C55E]/20 text-[#4ADE80]",
                C: "bg-[#FBBF24]/20 text-[#FBBF24]",
                D: "bg-[#F97316]/20 text-[#F97316]",
                E: "bg-[#EA580C]/20 text-[#EA580C]",
                F: "bg-[#DC2626]/20 text-[#FF3131]",
                G: "bg-[#DC2626]/20 text-[#FF3131]",
-            } as Record<string, string>)[comp.epc_rating] || "bg-[#334155]/50 text-[#94A3B8]"
+            } as Record<string, string>)[comp.epc_rating] || "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
           }`}>
             EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
           </span>
@@ -1230,7 +1234,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
       {/* Row 3: badges */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-          comp.epc_matched ? "bg-[#39FF14]/10 text-[#39FF14]" : "bg-[#334155]/50 text-[#94A3B8]"
+          comp.epc_matched ? "bg-[#39FF14]/10 text-[var(--color-status-success)]" : "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
         }`}>
           {comp.epc_matched ? "EPC verified" : "Unverified spec"}
         </span>
@@ -1249,18 +1253,18 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
       {/* Row 4: size adjustment (only when β > 0) */}
       {sizeElasticity > 0 && (
         exactSqft != null && subjectSqft != null && subjectSqft > 0 ? (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs pt-1 border-t border-[#334155]/40">
-            <span className="text-[#94A3B8]">Size Adj:</span>
-            <span className={`font-semibold ${sizeAdjPct >= 0 ? "text-[#39FF14]" : "text-[#FF2D78]"}`}>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs pt-1 border-t border-[var(--color-border)]/40">
+            <span className="text-[var(--color-text-secondary)]">Size Adj:</span>
+            <span className={`font-semibold ${sizeAdjPct >= 0 ? "text-[var(--color-status-success)]" : "text-[var(--color-accent-pink)]"}`}>
               {sizeAdjPct >= 0 ? "+" : ""}{sizeAdjPct.toFixed(1)}%
             </span>
-            <span className="text-[#475569]">|</span>
-            <span className="text-[#94A3B8]">
+            <span className="text-[var(--color-text-muted)]">|</span>
+            <span className="text-[var(--color-text-secondary)]">
               Comp: {areaSqft?.toLocaleString("en-GB")} ft² → Subject: {Math.round(subjectSqft).toLocaleString("en-GB")} ft²
             </span>
-            <span className="text-[#475569]">|</span>
-            <span className="text-[#94A3B8]">
-              Adj PSF: <span className="font-medium text-[#E2E8F0]">
+            <span className="text-[var(--color-text-muted)]">|</span>
+            <span className="text-[var(--color-text-secondary)]">
+              Adj PSF: <span className="font-medium text-[var(--color-text-primary)]">
                 {sizeAdjPsf != null ? `£${sizeAdjPsf.toLocaleString("en-GB")}` : "—"}
               </span>
             </span>
@@ -1269,7 +1273,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             )}
           </div>
         ) : (
-          <div className="text-xs text-[#475569] pt-1 border-t border-[#334155]/40">
+          <div className="text-xs text-[var(--color-text-muted)] pt-1 border-t border-[var(--color-border)]/40">
             Floor areas required for size adjustment
           </div>
         )
@@ -1284,11 +1288,11 @@ function RemovedRow({ comp, onRestore }: {
   onRestore: () => void;
 }) {
   return (
-    <div className="px-4 py-2.5 flex items-center justify-between bg-[#1E293B]/50">
-      <span className="text-xs text-[#94A3B8] truncate">{comp.address} — removed</span>
+    <div className="px-4 py-2.5 flex items-center justify-between bg-[var(--color-bg-surface)]/50">
+      <span className="text-xs text-[var(--color-text-secondary)] truncate">{comp.address} — removed</span>
       <button
         onClick={onRestore}
-        className="text-xs text-[#00F0FF] hover:text-[#67E8F9] font-medium ml-3 shrink-0"
+        className="text-xs text-[var(--color-accent)] hover:text-[#67E8F9] font-medium ml-3 shrink-0"
       >
         Restore
       </button>

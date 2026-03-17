@@ -271,16 +271,16 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
 
   const canSubmit = form && form.address.trim() && form.postcode.trim() && form.price && form.transactionDate && form.tenure;
 
-  const inputCls = "w-full rounded-lg border border-[#334155] bg-[#0A0E1A] px-3 py-2 text-sm text-[#E2E8F0] placeholder-[#475569] focus:border-[#00F0FF] focus:outline-none focus:ring-1 focus:ring-[#00F0FF]/30 transition-colors";
-  const labelCls = "block text-[10px] font-medium text-[#94A3B8] uppercase tracking-wide mb-1";
+  const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-base)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]/30 transition-colors";
+  const labelCls = "block text-[10px] font-medium text-[var(--color-text-secondary)] uppercase tracking-wide mb-1";
   const selectCls = `${inputCls} appearance-none`;
 
   return (
     <div className="space-y-4">
       {/* Info banner */}
-      <div className="rounded-xl border border-[#FF2D78]/20 bg-[#FF2D78]/5 px-4 py-3">
-        <p className="text-xs text-[#E2E8F0] leading-relaxed">
-          <span className="font-semibold text-[#FF2D78]">Additional Comparables</span> — Search for any property by postcode.
+      <div className="rounded-xl border border-[var(--color-accent-pink)]/20 bg-[var(--color-accent-pink)]/5 px-4 py-3">
+        <p className="text-xs text-[var(--color-text-primary)] leading-relaxed">
+          <span className="font-semibold text-[var(--color-accent-pink)]">Additional Comparables</span> — Search for any property by postcode.
           Data from EPC and Land Registry will pre-fill automatically. Edit any field — especially useful for
           recent transactions not yet registered by HMLR (typical lag: 2–6 weeks).
         </p>
@@ -296,30 +296,30 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
           onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
           onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
           placeholder="Type a postcode to search (e.g. SW11 3TN)"
-          className="w-full rounded-xl border border-[#334155] bg-[#0A0E1A] px-4 py-3 text-sm text-[#E2E8F0] placeholder-[#475569] focus:border-[#00F0FF] focus:outline-none focus:ring-1 focus:ring-[#00F0FF]/30 transition-colors"
+          className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-base)] px-4 py-3 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]/30 transition-colors"
         />
         {suggestionsLoading && (
           <div className="absolute right-3 top-1/2 -translate-y-1/2">
-            <div className="w-4 h-4 border-2 border-[#00F0FF]/30 border-t-[#00F0FF] rounded-full animate-spin" />
+            <div className="w-4 h-4 border-2 border-[var(--color-accent)]/30 border-t-[var(--color-accent)] rounded-full animate-spin" />
           </div>
         )}
 
         {/* Dropdown */}
         {(showSuggestions || suggestionsLoading) && (
-          <div className="absolute top-full mt-1 left-0 right-0 z-50 rounded-lg border border-[#334155] bg-[#1E293B] shadow-lg shadow-black/50 max-h-80 overflow-y-auto">
+          <div className="absolute top-full mt-1 left-0 right-0 z-50 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] shadow-lg shadow-black/50 max-h-80 overflow-y-auto">
             {suggestionsLoading && !suggestions.length && (
-              <div className="px-4 py-3 text-xs text-[#94A3B8]">Loading addresses...</div>
+              <div className="px-4 py-3 text-xs text-[var(--color-text-secondary)]">Loading addresses...</div>
             )}
             {!suggestionsLoading && suggestions.length === 0 && query.match(FULL_POSTCODE_RE) && (
-              <div className="px-4 py-3 text-xs text-[#94A3B8]">No addresses found for this postcode</div>
+              <div className="px-4 py-3 text-xs text-[var(--color-text-secondary)]">No addresses found for this postcode</div>
             )}
             {suggestions.map((s, i) => (
               <div
                 key={i}
                 onMouseDown={e => { e.preventDefault(); pickAddress(s); }}
                 onMouseEnter={() => setSuggestionIdx(i)}
-                className={`px-4 py-2.5 text-sm cursor-pointer border-b border-[#334155]/30 transition-colors ${
-                  i === suggestionIdx ? "text-[#00F0FF] bg-[#00F0FF]/8" : "text-[#E2E8F0] hover:bg-[#1E293B]"
+                className={`px-4 py-2.5 text-sm cursor-pointer border-b border-[var(--color-border)]/30 transition-colors ${
+                  i === suggestionIdx ? "text-[var(--color-accent)] bg-[var(--color-btn-primary-bg)]/8" : "text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
                 }`}
               >
                 {s.address}
@@ -332,14 +332,14 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
       {/* Loading */}
       {lookupLoading && (
         <div className="flex items-center justify-center py-12 gap-3">
-          <div className="w-5 h-5 border-2 border-[#00F0FF]/30 border-t-[#00F0FF] rounded-full animate-spin" />
-          <span className="text-sm text-[#94A3B8]">Looking up {selectedAddress}...</span>
+          <div className="w-5 h-5 border-2 border-[var(--color-accent)]/30 border-t-[var(--color-accent)] rounded-full animate-spin" />
+          <span className="text-sm text-[var(--color-text-secondary)]">Looking up {selectedAddress}...</span>
         </div>
       )}
 
       {/* Error */}
       {lookupError && (
-        <div className="rounded-xl border border-[#FF3131]/30 bg-[#FF3131]/5 px-4 py-3 text-sm text-[#FF3131]">
+        <div className="rounded-xl border border-[var(--color-status-danger)]/30 bg-[var(--color-status-danger)]/5 px-4 py-3 text-sm text-[var(--color-status-danger)]">
           {lookupError}
         </div>
       )}
@@ -350,41 +350,51 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
 
           {/* Past transactions — clickable to pre-fill */}
           {lookupResult.transactions.length > 0 && (
-            <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-[#334155] bg-[#0A0E1A]">
-                <p className="text-[11px] font-orbitron font-bold tracking-widest text-[#00F0FF] uppercase">
+            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-bg-base)]">
+                <p className="text-xs font-orbitron font-bold tracking-[2px] text-[var(--color-accent)] uppercase">
                   HMLR Transactions ({lookupResult.transactions.length}) — click to pre-fill
                 </p>
               </div>
-              <div className="divide-y divide-[#334155]/40">
+              <div className="divide-y divide-[var(--color-border)]/40">
                 {lookupResult.transactions.map((tx, i) => {
-                  const isAlreadyAdopted = adoptedIds.has(tx.transaction_id ?? tx.address);
+                  const txKey = tx.transaction_id ?? tx.address;
+                  const isAlreadyAdopted = adoptedIds.has(txKey);
                   return (
-                    <button
+                    <div
                       key={tx.transaction_id ?? i}
-                      onClick={() => prefillFromTransaction(tx)}
-                      className="w-full text-left px-4 py-2.5 flex items-center gap-4 hover:bg-[#1E293B] transition-colors group"
+                      className="flex items-center gap-4 px-4 py-2.5 hover:bg-[var(--color-bg-surface)] transition-colors group"
                     >
-                      <span className="text-xs text-[#94A3B8] tabular-nums w-24">{tx.transaction_date}</span>
-                      <span className="text-sm font-semibold text-[#E2E8F0] tabular-nums">
-                        {tx.price ? `£${tx.price.toLocaleString()}` : "—"}
-                      </span>
-                      <span className="text-xs text-[#94A3B8]">
-                        {tx.tenure ?? ""} {tx.property_type ?? ""}
-                      </span>
-                      {tx.floor_area_sqm != null && (
-                        <span className="text-xs text-[#94A3B8]">{tx.floor_area_sqm} m²</span>
+                      <button
+                        onClick={() => prefillFromTransaction(tx)}
+                        className="flex-1 text-left flex items-center gap-4"
+                        title="Pre-fill form with this transaction"
+                      >
+                        <span className="text-xs text-[var(--color-text-secondary)] tabular-nums w-24">{tx.transaction_date}</span>
+                        <span className="text-sm font-semibold text-[var(--color-text-primary)] tabular-nums">
+                          {tx.price ? `£${tx.price.toLocaleString()}` : "—"}
+                        </span>
+                        <span className="text-xs text-[var(--color-text-secondary)]">
+                          {tx.tenure ?? ""} {tx.property_type ?? ""}
+                        </span>
+                        {tx.floor_area_sqm != null && (
+                          <span className="text-xs text-[var(--color-text-secondary)]">{tx.floor_area_sqm} m²</span>
+                        )}
+                        {tx.epc_rating && (
+                          <span className="text-xs text-[var(--color-text-secondary)]">EPC {tx.epc_rating}</span>
+                        )}
+                      </button>
+                      {isAlreadyAdopted ? (
+                        <span className="text-[10px] text-[var(--color-status-success)] font-semibold whitespace-nowrap">✓ adopted</span>
+                      ) : (
+                        <button
+                          onClick={() => onAdopt(tx)}
+                          className="px-3 py-1 text-[10px] font-semibold rounded-md bg-[var(--color-btn-primary-bg)] text-[var(--color-bg-base)] hover:bg-[var(--color-btn-primary-bg)]/80 transition-colors whitespace-nowrap"
+                        >
+                          Use This
+                        </button>
                       )}
-                      {tx.epc_rating && (
-                        <span className="text-xs text-[#94A3B8]">EPC {tx.epc_rating}</span>
-                      )}
-                      {isAlreadyAdopted && (
-                        <span className="text-[10px] text-[#39FF14] ml-auto">adopted</span>
-                      )}
-                      <span className="text-[10px] text-[#00F0FF] opacity-0 group-hover:opacity-100 ml-auto transition-opacity">
-                        use this &rarr;
-                      </span>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -392,13 +402,13 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
           )}
 
           {/* Editable form */}
-          <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-[#334155] bg-[#0A0E1A] flex items-center justify-between">
-              <p className="text-[11px] font-orbitron font-bold tracking-widest text-[#FF2D78] uppercase">
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-bg-base)] flex items-center justify-between">
+              <p className="text-xs font-orbitron font-bold tracking-[2px] text-[var(--color-accent-pink)] uppercase">
                 Comparable Details — edit as needed
               </p>
               {lookupResult.epc_summary && (
-                <span className="text-[10px] text-[#39FF14]">EPC data pre-filled</span>
+                <span className="text-[10px] text-[var(--color-status-success)]">EPC data pre-filled</span>
               )}
             </div>
 
@@ -416,7 +426,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
                   <input type="text" value={form.postcode} readOnly className={`${inputCls} opacity-60 cursor-not-allowed`} />
                 </div>
                 <div>
-                  <label className={labelCls}>Price (£) <span className="text-[#FF2D78]">*</span></label>
+                  <label className={labelCls}>Price (£) <span className="text-[var(--color-accent-pink)]">*</span></label>
                   <input
                     type="text"
                     inputMode="numeric"
@@ -431,7 +441,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
               {/* Date + Tenure */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={labelCls}>Transaction Date <span className="text-[#FF2D78]">*</span></label>
+                  <label className={labelCls}>Transaction Date <span className="text-[var(--color-accent-pink)]">*</span></label>
                   <input
                     type="date"
                     value={form.transactionDate}
@@ -440,7 +450,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
                   />
                 </div>
                 <div>
-                  <label className={labelCls}>Tenure <span className="text-[#FF2D78]">*</span></label>
+                  <label className={labelCls}>Tenure <span className="text-[var(--color-accent-pink)]">*</span></label>
                   <select value={form.tenure} onChange={e => setField("tenure", e.target.value)} className={selectCls}>
                     <option value="">Select...</option>
                     <option value="freehold">Freehold</option>
@@ -498,22 +508,22 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
                       type="checkbox"
                       checked={form.newBuild}
                       onChange={e => setField("newBuild", e.target.checked)}
-                      className="rounded border-[#334155] bg-[#0A0E1A] text-[#00F0FF] focus:ring-[#00F0FF]/30"
+                      className="rounded border-[var(--color-border)] bg-[var(--color-bg-base)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
                     />
-                    <span className="text-sm text-[#E2E8F0]">New Build</span>
+                    <span className="text-sm text-[var(--color-text-primary)]">New Build</span>
                   </label>
                 </div>
               </div>
             </div>
 
             {/* Submit */}
-            <div className="flex items-center justify-between px-4 py-3 border-t border-[#334155] bg-[#0A0E1A]">
-              <div className="text-xs text-[#475569]">
+            <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--color-border)] bg-[var(--color-bg-base)]">
+              <div className="text-xs text-[var(--color-text-muted)]">
                 {form.price && form.floorAreaSqm && parseFloat(form.floorAreaSqm) > 0 && parseInt(form.price.replace(/,/g, ""), 10) > 0
                   ? `£${Math.round(parseInt(form.price.replace(/,/g, ""), 10) / (parseFloat(form.floorAreaSqm) * 10.764))}/sqft`
                   : ""}
                 {addedCount > 0 && (
-                  <span className="ml-3 text-[#39FF14]">{addedCount} added</span>
+                  <span className="ml-3 text-[var(--color-status-success)]">{addedCount} added</span>
                 )}
               </div>
               <button
@@ -521,8 +531,8 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
                 disabled={!canSubmit}
                 className={`px-5 py-2 text-sm font-semibold rounded-lg transition-all ${
                   canSubmit
-                    ? "bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/90 shadow-lg shadow-[#00F0FF]/20"
-                    : "bg-[#334155] text-[#475569] cursor-not-allowed"
+                    ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-bg-base)] hover:bg-[var(--color-btn-primary-bg)]/90 shadow-lg shadow-[var(--color-accent)]/20"
+                    : "bg-[var(--color-border)] text-[var(--color-text-muted)] cursor-not-allowed"
                 }`}
               >
                 Add to Adopted
@@ -534,10 +544,10 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
 
       {/* Empty state */}
       {!lookupResult && !lookupLoading && !lookupError && !selectedAddress && (
-        <div className="text-center py-16 text-[#94A3B8]/70 space-y-2">
+        <div className="text-center py-16 text-[var(--color-text-secondary)]/70 space-y-2">
           <p className="text-4xl">🔎</p>
-          <p className="text-sm font-medium text-[#94A3B8]">Search for any UK property</p>
-          <p className="text-xs text-[#94A3B8]/70">
+          <p className="text-sm font-medium text-[var(--color-text-secondary)]">Search for any UK property</p>
+          <p className="text-xs text-[var(--color-text-secondary)]/70">
             Enter a postcode above, select an address, then review and edit the details before adding.
           </p>
         </div>

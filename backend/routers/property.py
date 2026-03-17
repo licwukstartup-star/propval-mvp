@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from routers.auth import get_current_user
+from routers.auth import get_current_user, get_user_supabase
 from routers.rate_limit import limiter
 from routers.resilience import resilient_request
 from routers import ppd_cache
@@ -910,6 +910,7 @@ async def _fetch_epc_rows(postcode: str, email: str, api_key: str) -> list[dict]
         params={"postcode": postcode, "size": 5000},
         auth=(email, api_key),
         headers={"Accept": "application/json"},
+        timeout=15.0,
     )
     logging.debug(f"EPC status={resp.status_code}")
     if resp.status_code == 401:
@@ -1217,20 +1218,70 @@ def _inspire_coords(request, lat: float | None, lon: float | None) -> dict:
         return {}
     inspire = getattr(request.app.state, "inspire", None)
     if inspire is None:
-        logging.warning("INSPIRE: app.state.inspire is None — service not loaded")
         return {}
     if not inspire.loaded:
-        logging.warning("INSPIRE: KDTree not built — scipy missing?")
         return {}
     hit = inspire.lookup(lat, lon, max_dist_m=350)
     if hit is None:
-        logging.warning("INSPIRE: no match within 350m for lat=%.6f lon=%.6f", lat, lon)
         return {}
-    logging.warning("INSPIRE: matched lat=%.6f lon=%.6f -> inspire=%.6f,%.6f area=%.1f sqm",
-                    lat, lon, hit["lat"], hit["lng"], hit.get("area_sqm", 0))
     return {
         "inspire_lat": hit["lat"],
         "inspire_lon": hit["lng"],
+        "inspire_area_sqm": hit.get("area_sqm"),
+        "inspire_id": hit.get("inspire_id"),
+    }
+
+
+def _uprn_coords(request, uprn: str | None) -> dict:
+    """Return building-level coords from OS Open UPRN if available."""
+    if not uprn:
+        return {}
+    svc = getattr(request.app.state, "uprn_coords", None)
+    if svc is None:
+        return {}
+    coords = svc.lookup(uprn)
+    if coords is None:
+        return {}
+    return {"uprn_lat": coords[0], "uprn_lon": coords[1]}
+
+
+def _best_coords(request, uprn: str | None, location: dict) -> dict:
+    """Pick best available coordinates: OS Open UPRN > INSPIRE > Nominatim > postcodes.io.
+
+    Always returns lat, lon, coord_source, legacy inspire_lat/inspire_lon keys,
+    and an all_coords dict with every available source.
+    """
+    # Gather all available coordinate sources
+    uprn_hit = _uprn_coords(request, uprn)
+    inspire_hit = _inspire_coords(request, location.get("lat"), location.get("lon"))
+
+    all_coords = {}
+    if uprn_hit:
+        all_coords["os_open_uprn"] = {"lat": uprn_hit["uprn_lat"], "lon": uprn_hit["uprn_lon"]}
+    if inspire_hit:
+        all_coords["inspire"] = {"lat": inspire_hit["inspire_lat"], "lon": inspire_hit["inspire_lon"]}
+    if location.get("nominatim_lat") is not None:
+        all_coords["nominatim"] = {"lat": location["nominatim_lat"], "lon": location["nominatim_lon"]}
+    if location.get("postcodes_io_lat") is not None:
+        all_coords["postcodes_io"] = {"lat": location["postcodes_io_lat"], "lon": location["postcodes_io_lon"]}
+
+    # Pick best: OS Open UPRN > INSPIRE > Nominatim > postcodes.io
+    if uprn_hit:
+        best_lat, best_lon, source = uprn_hit["uprn_lat"], uprn_hit["uprn_lon"], "os_open_uprn"
+    elif inspire_hit:
+        best_lat, best_lon, source = inspire_hit["inspire_lat"], inspire_hit["inspire_lon"], "inspire"
+    else:
+        best_lat, best_lon, source = location.get("lat"), location.get("lon"), location.get("coord_source")
+
+    return {
+        "lat": best_lat,
+        "lon": best_lon,
+        "coord_source": source,
+        "inspire_lat": (inspire_hit or {}).get("inspire_lat") or (uprn_hit or {}).get("uprn_lat"),
+        "inspire_lon": (inspire_hit or {}).get("inspire_lon") or (uprn_hit or {}).get("uprn_lon"),
+        "inspire_area_sqm": (inspire_hit or {}).get("inspire_area_sqm"),
+        "inspire_id": (inspire_hit or {}).get("inspire_id"),
+        "all_coords": all_coords,
     }
 
 
@@ -1286,6 +1337,10 @@ async def _fetch_location(address: str, postcode: str) -> dict:
         "lat": lat,
         "lon": lon,
         "coord_source": coord_source,
+        "nominatim_lat": nom_result[0] if nom_result else None,
+        "nominatim_lon": nom_result[1] if nom_result else None,
+        "postcodes_io_lat": pc_result.get("latitude"),
+        "postcodes_io_lon": pc_result.get("longitude"),
         "admin_district": pc_result.get("admin_district"),
         "region": pc_result.get("region"),
         "lsoa": pc_result.get("lsoa"),
@@ -2314,10 +2369,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "heating_type": best.get("main-fuel"),
             "inspection_date": best.get("inspection-date"),
             "council_tax_band": council_tax_band,
-            "lat": location["lat"],
-            "lon": location["lon"],
-            "coord_source": location["coord_source"],
-            **_inspire_coords(request, location["lat"], location["lon"]),
+            **_best_coords(request, best.get("uprn"), location),
             "admin_district": location["admin_district"],
             "region": location["region"],
             "lsoa": location["lsoa"],
@@ -2372,12 +2424,77 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
 class InspireLookupRequest(BaseModel):
     lat: float
     lon: float
+    uprn: str | None = None
 
 @router.post("/inspire-lookup")
 async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Depends(get_current_user)):
-    """Return INSPIRE centroid for a lat/lon. Used to enrich saved cases loaded from Supabase."""
-    coords = _inspire_coords(request, body.lat, body.lon)
-    return coords  # {} if no match, else {"inspire_lat": ..., "inspire_lon": ...}
+    """Return all available coordinate sources for a property. Used to enrich saved cases loaded from Supabase."""
+    uprn_hit = _uprn_coords(request, body.uprn) if body.uprn else {}
+    inspire_hit = _inspire_coords(request, body.lat, body.lon)
+
+    all_coords: dict = {}
+    if uprn_hit:
+        all_coords["os_open_uprn"] = {"lat": uprn_hit["uprn_lat"], "lon": uprn_hit["uprn_lon"]}
+    if inspire_hit:
+        all_coords["inspire"] = {"lat": inspire_hit["inspire_lat"], "lon": inspire_hit["inspire_lon"]}
+
+    # Best coords for legacy fields
+    best_lat = (uprn_hit or {}).get("uprn_lat") or (inspire_hit or {}).get("inspire_lat")
+    best_lon = (uprn_hit or {}).get("uprn_lon") or (inspire_hit or {}).get("inspire_lon")
+    source = "os_open_uprn" if uprn_hit else ("inspire" if inspire_hit else None)
+
+    return {
+        "inspire_lat": best_lat,
+        "inspire_lon": best_lon,
+        "coord_source": source,
+        "inspire_area_sqm": (inspire_hit or {}).get("inspire_area_sqm"),
+        "inspire_id": (inspire_hit or {}).get("inspire_id"),
+        "all_coords": all_coords if all_coords else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# INSPIRE title boundary polygons
+# ---------------------------------------------------------------------------
+
+class InspirePolygonsRequest(BaseModel):
+    coords: list[dict]  # [{"lat": float, "lon": float, "label": str?}, ...]
+
+@router.post("/inspire-polygons")
+async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user=Depends(get_current_user)):
+    """Return INSPIRE title boundary polygons for a list of coordinates.
+
+    Used to display freehold title extents on the map for the subject property
+    and comparable properties. Also returns area_sqm for site area calculation.
+    """
+    inspire: object | None = getattr(request.app.state, "inspire", None)
+    if inspire is None or not inspire.loaded or not inspire.has_polygons:
+        return {"type": "FeatureCollection", "features": []}
+
+    coord_tuples = [(c["lat"], c["lon"]) for c in body.coords if "lat" in c and "lon" in c]
+    if not coord_tuples:
+        return {"type": "FeatureCollection", "features": []}
+
+    # Add labels to features after lookup
+    labels = [c.get("label", "") for c in body.coords if "lat" in c and "lon" in c]
+    fc = inspire.get_polygons(coord_tuples)
+
+    # Match labels to features via centroid proximity
+    for feat in fc["features"]:
+        clat = feat["properties"].get("centroid_lat")
+        clon = feat["properties"].get("centroid_lon")
+        if clat is not None and clon is not None:
+            # Find the closest input coord to this centroid
+            best_label = ""
+            best_dist = float("inf")
+            for (lat, lon), label in zip(coord_tuples, labels):
+                d = abs(lat - clat) + abs(lon - clon)
+                if d < best_dist:
+                    best_dist = d
+                    best_label = label
+            feat["properties"]["label"] = best_label
+
+    return fc
 
 
 # ---------------------------------------------------------------------------
@@ -2654,10 +2771,28 @@ async def fetch_hpi_endpoint(request: Request, body: HpiRequest, _user: dict = D
 @limiter.limit("10/minute")
 async def ai_narrative(request: Request, body: dict, _user: dict = Depends(get_current_user)):
     """Generate AI-assisted narrative paragraphs from property data."""
-    result = await generate_property_narrative(
-        body, user_id=_user.get("id"), user_email=_user.get("email"),
-    )
-    return result
+    # Load custom AI prompts from firm template (if any)
+    custom_prompts: dict[str, str] | None = None
+    try:
+        sb = get_user_supabase(_user)
+        tmpl = sb.table("firm_templates").select(
+            "ai_prompt_location, ai_prompt_subject_development, ai_prompt_subject_building, ai_prompt_subject_property, ai_prompt_market, ai_prompt_valuation"
+        ).eq("surveyor_id", _user["id"]).execute()
+        if tmpl.data:
+            custom_prompts = {k: v for k, v in tmpl.data[0].items() if v}
+    except Exception:
+        logging.exception("Failed to load custom AI prompts")
+
+    try:
+        result = await generate_property_narrative(
+            body, user_id=_user.get("id"), user_email=_user.get("email"),
+            custom_prompts=custom_prompts,
+        )
+        return result
+    except Exception as exc:
+        logging.exception("ai_narrative endpoint error: %s", exc)
+        section = body.get("requested_section", "unknown")
+        return {section: f"AI narrative unavailable — {type(exc).__name__}: {exc}"}
 
 
 _CT_SERVICE = "https://www.tax.service.gov.uk/check-council-tax-band"
@@ -2833,8 +2968,9 @@ async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_curren
             return {"addresses": []}
         try:
             rows = await _fetch_epc_rows(pc, email, api_key)
-        except Exception:
-            return {"addresses": []}
+        except Exception as exc:
+            logging.warning("EPC autocomplete failed for %s: %s", pc, exc)
+            return {"addresses": [], "error": "EPC API temporarily unavailable"}
         _autocomplete_cache[pc] = rows
     else:
         rows = _autocomplete_cache[pc]

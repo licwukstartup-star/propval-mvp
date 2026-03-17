@@ -54,12 +54,15 @@ interface PropertyMapProps {
   showIncome: boolean; onShowIncomeChange: (v: boolean) => void;
   showEducation: boolean; onShowEducationChange: (v: boolean) => void;
   showHeritage: boolean; onShowHeritageChange: (v: boolean) => void;
+  showTitleBoundary: boolean; onShowTitleBoundaryChange: (v: boolean) => void;
   tileLayer: TileLayerKey; onTileLayerChange: (v: TileLayerKey) => void;
   landUseCache: GeoJSON.FeatureCollection | null; onLandUseCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
   imdCache: GeoJSON.FeatureCollection | null; onImdCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
   incomeCache: GeoJSON.FeatureCollection | null; onIncomeCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
   educationCache: GeoJSON.FeatureCollection | null; onEducationCacheChange: (v: GeoJSON.FeatureCollection | null) => void;
   crimeCache: CrimeCluster[] | null; onCrimeCacheChange: (v: CrimeCluster[] | null) => void;
+  titleBoundaryData: GeoJSON.FeatureCollection | null;
+  subjectInspireId: string | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -74,9 +77,9 @@ function fmtPsf(comp: ComparableCandidate) {
 }
 
 function floodColour(risk: string) {
-  if (risk === "High")   return "#FF3131";
-  if (risk === "Medium") return "#FFB800";
-  return "#39FF14";
+  if (risk === "High")   return "var(--color-status-danger)";
+  if (risk === "Medium") return "var(--color-status-warning)";
+  return "var(--color-status-success)";
 }
 
 const FLOOD_WMS = "https://environment.data.gov.uk/spatialdata/nafra2-risk-of-flooding-from-rivers-and-sea/wms";
@@ -200,8 +203,8 @@ function FullscreenControl() {
       style={{
         position: "absolute", bottom: 80, right: 12, zIndex: 1000,
         background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
-        color: "#E2E8F0",
-        border: "1px solid #334155", borderRadius: 8,
+        color: "var(--color-text-primary)",
+        border: "1px solid var(--color-border)", borderRadius: 8,
         width: 32, height: 32, fontSize: 16,
         cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
         boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
@@ -253,8 +256,8 @@ function CustomScaleBar() {
       position: "absolute", top: 50, left: 12, zIndex: 1000,
       background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
       borderRadius: 8, padding: "6px 12px 6px",
-      border: "1px solid #334155", boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
-      fontFamily: "var(--font-mono), monospace", fontSize: 10, color: "#E2E8F0",
+      border: "1px solid var(--color-border)", boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
+      fontFamily: "var(--font-mono), monospace", fontSize: 10, color: "var(--color-text-primary)",
       userSelect: "none", pointerEvents: "none",
     }}>
       {/* Scale bar with ticks */}
@@ -264,9 +267,9 @@ function CustomScaleBar() {
           return (
             <div key={i} style={{
               position: "absolute", left: i * segW, top: 2, width: segW, height: 4,
-              background: i % 2 === 0 ? "#00F0FF" : "rgba(0, 240, 255, 0.25)",
-              borderLeft: i === 0 ? "1px solid #00F0FF" : undefined,
-              borderRight: "1px solid #00F0FF",
+              background: i % 2 === 0 ? "var(--color-accent)" : "rgba(0, 240, 255, 0.25)",
+              borderLeft: i === 0 ? "1px solid var(--color-accent)" : undefined,
+              borderRight: "1px solid var(--color-accent)",
             }} />
           );
         })}
@@ -275,18 +278,18 @@ function CustomScaleBar() {
           return (
             <div key={`t${i}`} style={{
               position: "absolute", left: x, top: 0, width: 1, height: 8,
-              background: "#00F0FF",
+              background: "var(--color-accent)",
             }} />
           );
         })}
       </div>
       {/* Labels row: 0 on left, metric + imperial on right */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 2, fontWeight: 600, letterSpacing: 0.5 }}>
-        <span style={{ color: "#94A3B8", fontSize: 8 }}>0</span>
+        <span style={{ color: "var(--color-text-secondary)", fontSize: 8 }}>0</span>
         <span style={{ whiteSpace: "nowrap" }}>
-          <span style={{ color: "#00F0FF", fontSize: 9 }}>{labelM}</span>
-          <span style={{ color: "#334155", margin: "0 3px" }}>|</span>
-          <span style={{ color: "#FF2D78", fontSize: 9 }}>{labelImp}</span>
+          <span style={{ color: "var(--color-accent)", fontSize: 9 }}>{labelM}</span>
+          <span style={{ color: "var(--color-border)", margin: "0 3px" }}>|</span>
+          <span style={{ color: "var(--color-accent-pink)", fontSize: 9 }}>{labelImp}</span>
         </span>
       </div>
     </div>
@@ -315,6 +318,19 @@ function landUseStyle(feature: GeoJSON.Feature | undefined) {
     color: style.stroke,
     weight: 1.5,
     opacity: 0.6,
+  };
+}
+
+// ── Title boundary (INSPIRE) styles ──────────────────────────────────────────
+
+function titleBoundaryStyle(isSubject: boolean) {
+  return {
+    fillColor: isSubject ? "var(--color-accent)" : "var(--color-accent-pink)",
+    fillOpacity: isSubject ? 0.18 : 0.10,
+    color: isSubject ? "var(--color-accent)" : "var(--color-accent-pink)",
+    weight: isSubject ? 2.5 : 1.5,
+    opacity: isSubject ? 0.9 : 0.6,
+    dashArray: isSubject ? undefined : "4 4",
   };
 }
 
@@ -439,9 +455,9 @@ function useListedBuildings(lat: number, lon: number, enabled: boolean) {
 }
 
 const GRADE_COLOURS: Record<string, { bg: string; border: string }> = {
-  "I":   { bg: "#FF3131", border: "#FF6B6B" },
-  "II*": { bg: "#FFB800", border: "#FBBF24" },
-  "II":  { bg: "#67E8F9", border: "#00F0FF" },
+  "I":   { bg: "var(--color-status-danger)", border: "#FF6B6B" },
+  "II*": { bg: "var(--color-status-warning)", border: "#FBBF24" },
+  "II":  { bg: "var(--color-status-info)", border: "var(--color-accent)" },
 };
 
 // ── Comparable cluster layer ──────────────────────────────────────────────────
@@ -477,14 +493,16 @@ function ComparableClusterLayer({
       showCoverageOnHover: false,
       animate: true,
       chunkedLoading: true,
+      spiderfyDistanceMultiplier: 1.8,
+      zoomToBoundsOnClick: true,
       iconCreateFunction: (c) => {
         const count = c.getChildCount();
         // Check if subject marker is in this cluster (has zIndexOffset 10000)
         const hasSubject = c.getAllChildMarkers().some(m => (m.options.zIndexOffset ?? 0) >= 10000);
         const bg = hasSubject
-          ? "radial-gradient(circle at 35% 35%, #67E8F9, #00F0FF)"
-          : "radial-gradient(circle at 35% 35%, #FF6FA3, #FF2D78)";
-        const shadow = hasSubject ? "#00F0FF" : "#FF2D78";
+          ? "radial-gradient(circle at 35% 35%, var(--color-status-info), var(--color-accent))"
+          : "radial-gradient(circle at 35% 35%, #FF6FA3, var(--color-accent-pink))";
+        const shadow = hasSubject ? "var(--color-accent)" : "var(--color-accent-pink)";
         return L.divIcon({
           className: "",
           html: `<div style="
@@ -505,9 +523,9 @@ function ComparableClusterLayer({
       className: "",
       html: `<div style="
         width:16px;height:16px;border-radius:50%;
-        background:radial-gradient(circle at 35% 35%, #FF6FA3, #FF2D78);
+        background:radial-gradient(circle at 35% 35%, #FF6FA3, var(--color-accent-pink));
         border:2px solid #fff;
-        box-shadow:0 0 8px #FF2D78,0 0 16px #FF2D7866;
+        box-shadow:0 0 8px var(--color-accent-pink),0 0 16px color-mix(in srgb, var(--color-accent-pink) 40%, transparent);
       "></div>`,
       iconSize: [16, 16],
       iconAnchor: [8, 8],
@@ -515,7 +533,8 @@ function ComparableClusterLayer({
     });
 
     comparables.forEach((comp, i) => {
-      const coords = compCoords[comp.postcode];
+      // Prefer building-level coords (keyed by transaction_id) over postcode centroid
+      const coords = compCoords[comp.transaction_id || comp.postcode] || compCoords[comp.postcode];
       if (!coords || coords.lat == null || coords.lon == null) return;
 
       const marker = L.marker([coords.lat, coords.lon], { icon: compIcon });
@@ -526,37 +545,39 @@ function ComparableClusterLayer({
       const removeId = `remove-comp-${comp.transaction_id ?? i}`;
 
       marker.bindPopup(
-        `<div style="font-family:system-ui;min-width:180px">
-          <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px">
-            <span style="font-size:9px;color:#FF2D78;text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Comp ${i + 1}</span>
-            <span style="font-weight:700;font-size:11px;color:#E2E8F0">${price}</span>
-            ${psf ? `<span style="font-size:10px;color:#67E8F9;font-weight:600">${psf}</span>` : ""}
-            <span style="font-size:10px;color:#94A3B8">${comp.transaction_date.slice(0, 7)}</span>
+        `<div style="font-family:system-ui;min-width:270px;max-width:340px">
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+            <span style="font-size:13px;color:var(--color-accent-pink);text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Comp ${i + 1}</span>
+            <span style="font-weight:700;font-size:16px;color:var(--color-text-primary)">${price}</span>
+            ${psf ? `<span style="font-size:14px;color:var(--color-status-info);font-weight:600">${psf}</span>` : ""}
+            <span style="font-size:14px;color:var(--color-text-secondary)">${comp.transaction_date.slice(0, 7)}</span>
           </div>
-          <div style="font-size:11px;line-height:1.3;color:#E2E8F0;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${comp.address}</div>
+          <div style="font-size:14px;line-height:1.3;color:var(--color-text-primary);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${comp.address}</div>
           ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
-            ? `<iframe
-                width="100%" style="aspect-ratio:16/10;border:none;border-radius:6px;margin-bottom:${onRemoveRef.current ? 6 : 0}px"
-                loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-                src="https://www.google.com/maps/embed/v1/streetview?location=${coords.lat},${coords.lon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
-              </iframe>`
+            ? `<div style="width:100%;height:180px;margin-bottom:${onRemoveRef.current ? 8 : 0}px;border-radius:8px;overflow:hidden;background:#1a1a2e">
+                <iframe
+                  width="100%" height="100%" style="border:none;display:block"
+                  loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                  src="https://www.google.com/maps/embed/v1/streetview?location=${coords.lat},${coords.lon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
+                </iframe>
+              </div>`
             : `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${coords.lat},${coords.lon}" target="_blank" rel="noopener noreferrer" style="
-                display:inline-flex;align-items:center;gap:4px;margin-top:4px;margin-bottom:${onRemoveRef.current ? 8 : 0}px;
-                font-size:10px;font-weight:700;color:#FFB800;text-decoration:none;
+                display:inline-flex;align-items:center;gap:6px;margin-top:6px;margin-bottom:${onRemoveRef.current ? 10 : 0}px;
+                font-size:14px;font-weight:700;color:var(--color-status-warning);text-decoration:none;
                 text-transform:uppercase;letter-spacing:0.06em;
               ">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-status-warning)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
                 Street View
               </a>`
           }
           ${onRemoveRef.current ? `<button id="${removeId}" style="
-            width:100%;padding:5px 0;font-size:10px;font-weight:700;
+            width:100%;padding:7px 0;font-size:13px;font-weight:700;
             text-transform:uppercase;letter-spacing:0.06em;
-            background:#FF3131;color:#fff;border:none;
-            border-radius:4px;cursor:pointer;
+            background:var(--color-status-danger);color:#fff;border:none;
+            border-radius:6px;cursor:pointer;
           ">Remove Comparable</button>` : ""}
         </div>`,
-        { className: "propval-popup", minWidth: 470 }
+        { className: "propval-popup", maxWidth: 350, autoPanPadding: L.point(40, 40), autoPan: true, closeOnClick: false }
       );
 
       if (onRemoveRef.current) {
@@ -579,9 +600,9 @@ function ComparableClusterLayer({
       className: "",
       html: `<div style="
         width:24px;height:24px;border-radius:50%;
-        background:radial-gradient(circle at 35% 35%, #67E8F9, #00F0FF);
+        background:radial-gradient(circle at 35% 35%, var(--color-status-info), var(--color-accent));
         border:2.5px solid #fff;
-        box-shadow:0 0 12px #00F0FF,0 0 28px #00F0FF66;
+        box-shadow:0 0 12px var(--color-accent),0 0 28px color-mix(in srgb, var(--color-accent) 40%, transparent);
         animation:pulse-cyan 2s ease-in-out infinite;
       "></div>`,
       iconSize: [24, 24],
@@ -590,36 +611,48 @@ function ComparableClusterLayer({
     });
     const subjectMarker = L.marker([subjectLat, subjectLon], { icon: sIcon, zIndexOffset: 10000 });
     const floodBadge = subjectFloodRisk
-      ? `<span style="font-size:10px;font-weight:600;color:${subjectFloodRisk === "High" ? "#FF3131" : subjectFloodRisk === "Medium" ? "#FFB800" : "#39FF14"}">${subjectFloodRisk}</span>` : "";
+      ? `<span style="font-size:10px;font-weight:600;color:${subjectFloodRisk === "High" ? "var(--color-status-danger)" : subjectFloodRisk === "Medium" ? "var(--color-status-warning)" : "var(--color-status-success)"}">${subjectFloodRisk}</span>` : "";
     const epcBadge = subjectEpc
-      ? `<span style="font-size:10px;font-weight:700;color:#39FF14">${subjectEpc}</span>` : "";
-    const badges = [epcBadge, floodBadge].filter(Boolean).join('<span style="color:#334155;margin:0 4px">·</span>');
+      ? `<span style="font-size:10px;font-weight:700;color:var(--color-status-success)">${subjectEpc}</span>` : "";
+    const badges = [epcBadge, floodBadge].filter(Boolean).join('<span style="color:var(--color-border);margin:0 4px">·</span>');
     subjectMarker.bindPopup(
-      `<div style="font-family:system-ui;min-width:200px">
-        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px">
-          <span style="font-size:9px;color:#00F0FF;text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Subject</span>
+      `<div style="font-family:system-ui;min-width:270px;max-width:340px">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+          <span style="font-size:13px;color:var(--color-accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Subject</span>
           ${badges}
         </div>
-        <div style="font-size:11px;line-height:1.3;color:#E2E8F0;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${subjectAddress}</div>
+        <div style="font-size:14px;line-height:1.3;color:var(--color-text-primary);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${subjectAddress}</div>
         ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
-          ? `<iframe
-              width="100%" style="aspect-ratio:16/10;border:none;border-radius:6px"
-              loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-              src="https://www.google.com/maps/embed/v1/streetview?location=${subjectLat},${subjectLon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
-            </iframe>`
+          ? `<div style="width:100%;height:180px;border-radius:8px;overflow:hidden;background:#1a1a2e">
+              <iframe
+                width="100%" height="100%" style="border:none;display:block"
+                loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                src="https://www.google.com/maps/embed/v1/streetview?location=${subjectLat},${subjectLon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
+              </iframe>
+            </div>`
           : `<a href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${subjectLat},${subjectLon}" target="_blank" rel="noopener noreferrer" style="
-              display:inline-flex;align-items:center;gap:4px;margin-top:8px;
-              font-size:10px;font-weight:700;color:#FFB800;text-decoration:none;
+              display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+              font-size:14px;font-weight:700;color:var(--color-status-warning);text-decoration:none;
               text-transform:uppercase;letter-spacing:0.06em;
             ">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--color-status-warning)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
               Street View
             </a>`
         }
       </div>`,
-      { className: "propval-popup", minWidth: 500 }
+      { className: "propval-popup", maxWidth: 350, autoPanPadding: L.point(40, 40), autoPan: true, closeOnClick: false }
     );
     cluster.addLayer(subjectMarker);
+
+    // Close popups that auto-open during spiderfy animation (marker lands under cursor),
+    // but only if the popup opened within the spiderfy animation window (not user-initiated).
+    let spiderfyTime = 0;
+    cluster.on("spiderfied", () => { spiderfyTime = Date.now(); });
+    cluster.on("popupopen", () => {
+      if (Date.now() - spiderfyTime < 300) {
+        setTimeout(() => map.closePopup(), 50);
+      }
+    });
 
     map.addLayer(cluster);
     clusterRef.current = cluster;
@@ -667,12 +700,12 @@ function HeritageClusterLayer({ buildings }: { buildings: ListedBuildingMarker[]
           if (g === "I") hasGradeI = true;
           if (g === "II*") hasGradeIIStar = true;
         });
-        const color = hasGradeI ? "#FF3131" : hasGradeIIStar ? "#FFB800" : "#67E8F9";
+        const color = hasGradeI ? "var(--color-status-danger)" : hasGradeIIStar ? "var(--color-status-warning)" : "var(--color-status-info)";
         return L.divIcon({
           className: "",
           html: `<div style="
             width:24px;height:24px;border-radius:4px;
-            background:${color};color:#0A0E1A;
+            background:${color};color:var(--color-bg-base);
             display:flex;align-items:center;justify-content:center;
             font-size:11px;font-weight:800;
             border:2px solid #fff;
@@ -708,13 +741,13 @@ function HeritageClusterLayer({ buildings }: { buildings: ListedBuildingMarker[]
           <div style="font-size:10px;color:${gc.bg};text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:4px">
             Grade ${b.grade} Listed
           </div>
-          <div style="font-weight:600;font-size:12px;margin-bottom:6px;line-height:1.4;color:#E2E8F0">
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;line-height:1.4;color:var(--color-text-primary)">
             ${b.name}
           </div>
-          <div style="font-size:10px;color:#94A3B8;margin-bottom:${b.url ? 6 : 0}px">
+          <div style="font-size:10px;color:var(--color-text-secondary);margin-bottom:${b.url ? 6 : 0}px">
             List Entry: ${b.listEntry}
           </div>
-          ${b.url ? `<a href="${b.url}" target="_blank" rel="noopener noreferrer" style="font-size:10px;color:#00F0FF;text-decoration:underline">View on Historic England</a>` : ""}
+          ${b.url ? `<a href="${b.url}" target="_blank" rel="noopener noreferrer" style="font-size:10px;color:var(--color-accent);text-decoration:underline">View on Historic England</a>` : ""}
         </div>`,
         { className: "propval-popup" }
       );
@@ -799,7 +832,7 @@ function imdStyle(feature: GeoJSON.Feature | undefined) {
   return {
     fillColor: IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047",
     fillOpacity: 0.35,
-    color: "#334155",
+    color: "var(--color-border)",
     weight: 1,
     opacity: 0.6,
   };
@@ -876,7 +909,7 @@ function incomeStyle(feature: GeoJSON.Feature | undefined) {
   return {
     fillColor: IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047",
     fillOpacity: 0.35,
-    color: "#334155",
+    color: "var(--color-border)",
     weight: 1,
     opacity: 0.6,
   };
@@ -944,7 +977,7 @@ function educationStyle(feature: GeoJSON.Feature | undefined) {
   return {
     fillColor: IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047",
     fillOpacity: 0.35,
-    color: "#334155",
+    color: "var(--color-border)",
     weight: 1,
     opacity: 0.6,
   };
@@ -1180,8 +1213,8 @@ function DeferredOverlays({
         const ringLabelIcon = L.divIcon({
           className: "",
           html: `<div style="
-            font-size:9px;font-weight:700;color:#C4B5FD;
-            text-shadow:0 0 4px #7B2FBE,0 1px 2px #000;
+            font-size:9px;font-weight:700;color:var(--color-accent-purple-text);
+            text-shadow:0 0 4px var(--color-accent-purple),0 1px 2px #000;
             letter-spacing:0.06em;white-space:nowrap;
             pointer-events:none;
           ">${ring.label}</div>`,
@@ -1194,8 +1227,8 @@ function DeferredOverlays({
               center={[subjectLat, subjectLon]}
               radius={ring.radius}
               pathOptions={{
-                color: "#C4B5FD", weight: 2, opacity: 0.8,
-                fillColor: "#7B2FBE", fillOpacity: 0.03, dashArray: ring.dash,
+                color: "var(--color-accent-purple-text)", weight: 2, opacity: 0.8,
+                fillColor: "var(--color-accent-purple)", fillOpacity: 0.03, dashArray: ring.dash,
               }}
             />
             <Marker position={[labelLat, subjectLon]} icon={ringLabelIcon} interactive={false} />
@@ -1217,11 +1250,11 @@ function DeferredOverlays({
             pathOptions={{ fillColor: crimeColour(topCat), fillOpacity: 0.7, color: "#fff", weight: 1, opacity: 0.8 }}
           >
             <Popup className="propval-popup" minWidth={180}>
-              <div style={{ fontSize: 11, color: "#E2E8F0" }}>
+              <div style={{ fontSize: 11, color: "var(--color-text-primary)" }}>
                 <div style={{ fontWeight: 700, marginBottom: 4, color: "#FF6B6B" }}>
                   {cluster.count} crime{cluster.count > 1 ? "s" : ""}
                 </div>
-                <div style={{ fontSize: 10, color: "#94A3B8", marginBottom: 6 }}>
+                <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginBottom: 6 }}>
                   {cluster.street}
                 </div>
                 {Object.entries(cluster.categories)
@@ -1262,12 +1295,15 @@ export default function PropertyMap({
   showIncome, onShowIncomeChange: setShowIncome,
   showEducation, onShowEducationChange: setShowEducation,
   showHeritage, onShowHeritageChange: setShowHeritage,
+  showTitleBoundary, onShowTitleBoundaryChange: setShowTitleBoundary,
   tileLayer, onTileLayerChange: setTileLayer,
   landUseCache, onLandUseCacheChange,
   imdCache, onImdCacheChange,
   incomeCache, onIncomeCacheChange,
   educationCache, onEducationCacheChange,
   crimeCache, onCrimeCacheChange,
+  titleBoundaryData,
+  subjectInspireId,
 }: PropertyMapProps) {
   const { geojson: landUseData, geoKey: landUseKey } = useLandUseGeoJSON(subjectLat, subjectLon, showLandUse, landUseCache, onLandUseCacheChange);
   const { geojson: imdData, geoKey: imdKey } = useImdGeoJSON(subjectLat, subjectLon, showDeprivation, imdCache, onImdCacheChange);
@@ -1276,16 +1312,27 @@ export default function PropertyMap({
   const crimeData = useCrimeData(subjectLat, subjectLon, showCrime, crimeCache, onCrimeCacheChange);
   const heritageData = useListedBuildings(subjectLat, subjectLon, showHeritage);
 
+  // Toggle counters — force full Leaflet layer re-creation each time a layer is toggled on,
+  // preventing stale event bindings that cause click/popup glitches on GeoJSON features.
+  const [luToggle, setLuToggle] = useState(0);
+  const [imdToggle, setImdToggle] = useState(0);
+  const [incToggle, setIncToggle] = useState(0);
+  const [eduToggle, setEduToggle] = useState(0);
+  useEffect(() => { if (showLandUse) setLuToggle(n => n + 1); }, [showLandUse]);
+  useEffect(() => { if (showDeprivation) setImdToggle(n => n + 1); }, [showDeprivation]);
+  useEffect(() => { if (showIncome) setIncToggle(n => n + 1); }, [showIncome]);
+  useEffect(() => { if (showEducation) setEduToggle(n => n + 1); }, [showEducation]);
+
   const onEachImd = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
     const decile = feature.properties?.IMDDec0 as number | undefined;
     const name = feature.properties?.ls11nm as string | undefined;
     const code = feature.properties?.ls11cd as string | undefined;
     const colour = IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047";
     (layer as L.Path).bindPopup(
-      `<div style="font-size:11px;color:#E2E8F0">
+      `<div style="font-size:11px;color:var(--color-text-primary)">
         <b style="color:${colour}">IMD Decile ${decile ?? "?"}/10</b><br/>
         ${name ?? "Unknown LSOA"}<br/>
-        <span style="color:#94A3B8;font-size:10px">${code ?? ""}</span>
+        <span style="color:var(--color-text-secondary);font-size:10px">${code ?? ""}</span>
       </div>`,
       { className: "propval-popup" }
     );
@@ -1299,11 +1346,11 @@ export default function PropertyMap({
     const colour = IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047";
     const pct = score != null ? `${(score * 100).toFixed(1)}%` : "?";
     (layer as L.Path).bindPopup(
-      `<div style="font-size:11px;color:#E2E8F0">
+      `<div style="font-size:11px;color:var(--color-text-primary)">
         <b style="color:${colour}">Income Decile ${decile ?? "?"}/10</b><br/>
         <span style="font-size:10px">Income-deprived: ${pct} of population</span><br/>
         ${name ?? "Unknown LSOA"}<br/>
-        <span style="color:#94A3B8;font-size:10px">${code ?? ""}</span>
+        <span style="color:var(--color-text-secondary);font-size:10px">${code ?? ""}</span>
       </div>`,
       { className: "propval-popup" }
     );
@@ -1316,11 +1363,11 @@ export default function PropertyMap({
     const code = feature.properties?.lsoa11cd as string | undefined;
     const colour = IMD_DECILE_COLOURS[decile ?? 5] ?? "#FDE047";
     (layer as L.Path).bindPopup(
-      `<div style="font-size:11px;color:#E2E8F0">
+      `<div style="font-size:11px;color:var(--color-text-primary)">
         <b style="color:${colour}">Education Decile ${decile ?? "?"}/10</b><br/>
         <span style="font-size:10px">Education score: ${score?.toFixed(2) ?? "?"}</span><br/>
         ${name ?? "Unknown LSOA"}<br/>
-        <span style="color:#94A3B8;font-size:10px">${code ?? ""}</span>
+        <span style="color:var(--color-text-secondary);font-size:10px">${code ?? ""}</span>
       </div>`,
       { className: "propval-popup" }
     );
@@ -1332,10 +1379,45 @@ export default function PropertyMap({
     const style = LANDUSE_STYLES[landuse] ?? LANDUSE_STYLES.commercial;
     const label = name ? `<b>${name}</b><br/>${style.label}` : style.label;
     (layer as L.Path).bindPopup(
-      `<div style="font-size:11px;color:#E2E8F0">${label}</div>`,
+      `<div style="font-size:11px;color:var(--color-text-primary)">${label}</div>`,
       { className: "propval-popup" }
     );
+    // Prevent click events from bubbling to layers below, which causes
+    // popups to fail when multiple polygon overlays are stacked.
+    (layer as L.Path).on("click", (e: L.LeafletMouseEvent) => {
+      L.DomEvent.stopPropagation(e);
+    });
   }, []);
+
+  // Title boundary (INSPIRE) style + popup per feature
+  const titleBoundaryKey = useMemo(() => titleBoundaryData?.features?.length ?? 0, [titleBoundaryData]);
+
+  const titleBoundaryStyleFn = useCallback((feature: GeoJSON.Feature | undefined) => {
+    const iid = feature?.properties?.inspire_id;
+    const isSubject = iid != null && iid === subjectInspireId;
+    return titleBoundaryStyle(isSubject);
+  }, [subjectInspireId]);
+
+  const onEachTitleBoundary = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
+    const area = feature.properties?.area_sqm as number | undefined;
+    const label = feature.properties?.label as string | undefined;
+    const iid = feature.properties?.inspire_id;
+    const isSubject = iid != null && iid === subjectInspireId;
+    const areaStr = area != null ? `${area.toLocaleString("en-GB", { maximumFractionDigits: 0 })} m²` : "—";
+    const acresStr = area != null ? `${(area / 4047).toFixed(2)} acres` : "";
+    const tag = isSubject
+      ? '<span style="color:var(--color-accent);font-weight:bold">Subject Property</span>'
+      : '<span style="color:var(--color-accent-pink)">Comparable</span>';
+    (layer as L.Path).bindPopup(
+      `<div style="font-size:11px;color:var(--color-text-primary)">
+        ${tag}<br/>
+        ${label ? `<b>${label}</b><br/>` : ""}
+        <span style="font-size:10px">Site area: ${areaStr}</span><br/>
+        ${acresStr ? `<span style="font-size:10px;color:var(--color-text-secondary)">${acresStr}</span>` : ""}
+      </div>`,
+      { className: "propval-popup" }
+    );
+  }, [subjectInspireId]);
 
   const tile = TILE_LAYERS[tileLayer];
 
@@ -1345,25 +1427,25 @@ export default function PropertyMap({
       {/* Inject pulse animation + hide default Leaflet chrome */}
       <style>{`
         @keyframes pulse-cyan {
-          0%, 100% { box-shadow: 0 0 12px #00F0FF, 0 0 28px #00F0FF66; }
-          50% { box-shadow: 0 0 20px #00F0FF, 0 0 44px #00F0FFAA; }
+          0%, 100% { box-shadow: 0 0 12px var(--color-accent), 0 0 28px color-mix(in srgb, var(--color-accent) 40%, transparent); }
+          50% { box-shadow: 0 0 20px var(--color-accent), 0 0 44px color-mix(in srgb, var(--color-accent) 67%, transparent); }
         }
         .propval-popup .leaflet-popup-content-wrapper {
-          background: #111827 !important;
-          color: #E2E8F0 !important;
-          border: 1px solid #334155 !important;
+          background: var(--color-bg-panel) !important;
+          color: var(--color-text-primary) !important;
+          border: 1px solid var(--color-border) !important;
           border-radius: 8px !important;
-          box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 15px #00F0FF22 !important;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 15px color-mix(in srgb, var(--color-accent) 13%, transparent) !important;
         }
         .propval-popup .leaflet-popup-tip {
-          background: #111827 !important;
-          border: 1px solid #334155 !important;
+          background: var(--color-bg-panel) !important;
+          border: 1px solid var(--color-border) !important;
         }
         .propval-popup .leaflet-popup-close-button {
-          color: #94A3B8 !important;
+          color: var(--color-text-secondary) !important;
         }
         .propval-popup .leaflet-popup-close-button:hover {
-          color: #00F0FF !important;
+          color: var(--color-accent) !important;
         }
         /* Hide default Leaflet attribution & zoom controls */
         .leaflet-control-attribution { display: none !important; }
@@ -1388,7 +1470,7 @@ export default function PropertyMap({
       <div style={{
         display: "flex", gap: 2,
         background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
-        borderRadius: 8, border: "1px solid #334155",
+        borderRadius: 8, border: "1px solid var(--color-border)",
         boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
         overflow: "hidden",
       }}>
@@ -1400,8 +1482,8 @@ export default function PropertyMap({
               padding: "5px 10px", fontSize: 10, fontWeight: 600,
               letterSpacing: "0.05em", textTransform: "uppercase",
               cursor: "pointer", border: "none",
-              background: tileLayer === key ? "#00F0FF" : "transparent",
-              color: tileLayer === key ? "#0A0E1A" : "#94A3B8",
+              background: tileLayer === key ? "var(--color-accent)" : "transparent",
+              color: tileLayer === key ? "var(--color-bg-base)" : "var(--color-text-secondary)",
               transition: "all 0.2s",
             }}
           >
@@ -1420,8 +1502,8 @@ export default function PropertyMap({
         title="Fullscreen"
         style={{
           background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
-          color: "#E2E8F0",
-          border: "1px solid #334155", borderRadius: 8,
+          color: "var(--color-text-primary)",
+          border: "1px solid var(--color-border)", borderRadius: 8,
           width: 32, height: 32, fontSize: 16,
           cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
           boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
@@ -1438,7 +1520,7 @@ export default function PropertyMap({
         display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end",
         maxWidth: 380,
       }}>
-        <ToggleBtn label="Flood" active={showFlood} color="#FF2D78" onClick={() => setShowFlood(!showFlood)} />
+        <ToggleBtn label="Flood" active={showFlood} color="var(--color-accent-pink)" onClick={() => setShowFlood(!showFlood)} />
         <ToggleBtn label="Land Use" active={showLandUse} color="#FBBF24" onClick={() => setShowLandUse(!showLandUse)} />
         <ToggleBtnGroup label="Noise" color="#EF4444" active={showRoadNoise || showRailNoise}>
           <ToggleBtn label="Road Noise" active={showRoadNoise} color="#EF4444" onClick={() => setShowRoadNoise(!showRoadNoise)} />
@@ -1450,8 +1532,9 @@ export default function PropertyMap({
           <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
         </ToggleBtnGroup>
         <ToggleBtn label="Crime" active={showCrime} color="#DC2626" onClick={() => setShowCrime(!showCrime)} />
-        <ToggleBtn label="Heritage" active={showHeritage} color="#FFB800" onClick={() => setShowHeritage(!showHeritage)} />
-        <ToggleBtn label="Rings" active={showRings} color="#7B2FBE" onClick={() => setShowRings(!showRings)} />
+        <ToggleBtn label="Heritage" active={showHeritage} color="var(--color-status-warning)" onClick={() => setShowHeritage(!showHeritage)} />
+        <ToggleBtn label="Title" active={showTitleBoundary} color="var(--color-accent)" onClick={() => setShowTitleBoundary(!showTitleBoundary)} />
+        <ToggleBtn label="Rings" active={showRings} color="var(--color-accent-purple)" onClick={() => setShowRings(!showRings)} />
       </div>
 
       <MapContainer
@@ -1475,13 +1558,18 @@ export default function PropertyMap({
 
         <DeferredOverlays
           showFlood={showFlood} showRoadNoise={showRoadNoise} showRailNoise={showRailNoise}
-          showDeprivation={showDeprivation} imdData={imdData} imdKey={imdKey} onEachImd={onEachImd}
-          showIncome={showIncome} incomeData={incomeData} incomeKey={incomeKey} onEachIncome={onEachIncome}
-          showEducation={showEducation} educationData={educationData} educationKey={educationKey} onEachEducation={onEachEducation}
-          showLandUse={showLandUse} landUseData={landUseData} landUseKey={landUseKey} onEachLandUse={onEachLandUse}
+          showDeprivation={showDeprivation} imdData={imdData} imdKey={imdKey + imdToggle * 1000} onEachImd={onEachImd}
+          showIncome={showIncome} incomeData={incomeData} incomeKey={incomeKey + incToggle * 1000} onEachIncome={onEachIncome}
+          showEducation={showEducation} educationData={educationData} educationKey={educationKey + eduToggle * 1000} onEachEducation={onEachEducation}
+          showLandUse={showLandUse} landUseData={landUseData} landUseKey={landUseKey + luToggle * 1000} onEachLandUse={onEachLandUse}
           showRings={showRings} subjectLat={subjectLat} subjectLon={subjectLon}
           showCrime={showCrime} crimeData={crimeData}
         />
+
+        {/* Title boundary polygons (INSPIRE freehold extents) */}
+        {showTitleBoundary && titleBoundaryData && titleBoundaryData.features && titleBoundaryData.features.length > 0 && (
+          <GeoJSON key={`tb-${titleBoundaryKey}`} data={titleBoundaryData} style={titleBoundaryStyleFn} onEachFeature={onEachTitleBoundary} />
+        )}
 
         {/* Subject + Comparable markers — clustered together */}
         <ComparableClusterLayer
@@ -1505,31 +1593,32 @@ export default function PropertyMap({
       <div style={{
         position: "absolute", top: 100, left: 12, zIndex: 1000,
         background: "rgba(10, 14, 26, 0.85)", backdropFilter: "blur(8px)",
-        border: "1px solid #334155", borderRadius: 8,
+        border: "1px solid var(--color-border)", borderRadius: 8,
         boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
-        padding: "8px 12px", fontSize: 10, color: "#94A3B8",
+        padding: "8px 12px", fontSize: 10, color: "var(--color-text-secondary)",
         display: "flex", flexDirection: "column", gap: 5,
         maxHeight: "calc(100% - 120px)", overflowY: "auto",
       }}>
-        <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", color: "#64748B", marginBottom: 2 }}>Legend</div>
-        <LegendItem color="#00F0FF" glow label="Subject property" />
-        <LegendItem color="#FF2D78" label="Comparable" />
-        {showRings && <LegendItem color="#7B2FBE" dashed label="Distance rings" />}
+        <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--color-text-muted)", marginBottom: 2 }}>Legend</div>
+        <LegendItem color="var(--color-accent)" glow label="Subject property" />
+        <LegendItem color="var(--color-accent-pink)" label="Comparable" />
+        {showTitleBoundary && <LegendItem color="var(--color-accent)" filled label="Title boundary" />}
+        {showRings && <LegendItem color="var(--color-accent-purple)" dashed label="Distance rings" />}
         {showFlood && <LegendItem color="#3B82F6" filled label="Flood risk zone" />}
         {showRoadNoise && <LegendItem color="#EF4444" filled label="Road noise (Lden)" />}
         {showRailNoise && <LegendItem color="#A855F7" filled label="Rail noise (Lden)" />}
         {showIncome && (
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <span style={{ fontSize: 9, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.06em" }}>Income Deprivation</span>
+            <span style={{ fontSize: 9, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Income Deprivation</span>
             <div style={{ display: "flex", gap: 1 }}>
               {[1,2,3,4,5,6,7,8,9,10].map(d => (
                 <div key={d} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
                   <div style={{ width: 10, height: 8, borderRadius: 1, background: IMD_DECILE_COLOURS[d], opacity: 0.7 }} />
-                  <span style={{ fontSize: 7, color: "#94A3B8" }}>{d}</span>
+                  <span style={{ fontSize: 7, color: "var(--color-text-secondary)" }}>{d}</span>
                 </div>
               ))}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "#94A3B8" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "var(--color-text-secondary)" }}>
               <span>Most deprived</span>
               <span>Least</span>
             </div>
@@ -1537,16 +1626,16 @@ export default function PropertyMap({
         )}
         {showEducation && (
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <span style={{ fontSize: 9, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.06em" }}>Education Deprivation</span>
+            <span style={{ fontSize: 9, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Education Deprivation</span>
             <div style={{ display: "flex", gap: 1 }}>
               {[1,2,3,4,5,6,7,8,9,10].map(d => (
                 <div key={d} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
                   <div style={{ width: 10, height: 8, borderRadius: 1, background: IMD_DECILE_COLOURS[d], opacity: 0.7 }} />
-                  <span style={{ fontSize: 7, color: "#94A3B8" }}>{d}</span>
+                  <span style={{ fontSize: 7, color: "var(--color-text-secondary)" }}>{d}</span>
                 </div>
               ))}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "#94A3B8" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "var(--color-text-secondary)" }}>
               <span>Most deprived</span>
               <span>Least</span>
             </div>
@@ -1555,23 +1644,23 @@ export default function PropertyMap({
         {showCrime && <LegendItem color="#DC2626" label="Crime hotspot" />}
         {showHeritage && (
           <>
-            <LegendItem color="#FF3131" label="Grade I Listed" />
-            <LegendItem color="#FFB800" label="Grade II* Listed" />
-            <LegendItem color="#67E8F9" label="Grade II Listed" />
+            <LegendItem color="var(--color-status-danger)" label="Grade I Listed" />
+            <LegendItem color="var(--color-status-warning)" label="Grade II* Listed" />
+            <LegendItem color="var(--color-status-info)" label="Grade II Listed" />
           </>
         )}
         {showDeprivation && (
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            <span style={{ fontSize: 9, color: "#64748B", textTransform: "uppercase", letterSpacing: "0.06em" }}>IMD Deprivation</span>
+            <span style={{ fontSize: 9, color: "var(--color-text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>IMD Deprivation</span>
             <div style={{ display: "flex", gap: 1 }}>
               {[1,2,3,4,5,6,7,8,9,10].map(d => (
                 <div key={d} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
                   <div style={{ width: 10, height: 8, borderRadius: 1, background: IMD_DECILE_COLOURS[d], opacity: 0.7 }} />
-                  <span style={{ fontSize: 7, color: "#94A3B8" }}>{d}</span>
+                  <span style={{ fontSize: 7, color: "var(--color-text-secondary)" }}>{d}</span>
                 </div>
               ))}
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "#94A3B8" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 7, color: "var(--color-text-secondary)" }}>
               <span>Most deprived</span>
               <span>Least</span>
             </div>
@@ -1620,8 +1709,8 @@ function ToggleBtnGroup({ label, color, active, children }: {
           letterSpacing: "0.04em", cursor: "pointer", borderRadius: 6,
           background: active ? color : "rgba(10, 14, 26, 0.85)",
           backdropFilter: active ? undefined : "blur(8px)",
-          color: active ? "#fff" : "#94A3B8",
-          border: `1px solid ${active ? color : "#334155"}`,
+          color: active ? "#fff" : "var(--color-text-secondary)",
+          border: `1px solid ${active ? color : "var(--color-border)"}`,
           boxShadow: active ? `0 0 10px ${color}66, 0 2px 8px rgba(0,0,0,0.4)` : "0 2px 8px rgba(0,0,0,0.3)",
           transition: "all 0.2s",
           display: "flex", alignItems: "center", gap: 4,
@@ -1635,7 +1724,7 @@ function ToggleBtnGroup({ label, color, active, children }: {
           position: "absolute", top: "calc(100% + 4px)", right: 0,
           display: "flex", flexDirection: "column", gap: 3,
           background: "rgba(10, 14, 26, 0.95)", backdropFilter: "blur(12px)",
-          border: "1px solid #334155", borderRadius: 8,
+          border: "1px solid var(--color-border)", borderRadius: 8,
           padding: 4, minWidth: 110,
           boxShadow: "0 4px 20px rgba(0,0,0,0.6)",
           zIndex: 1001,
@@ -1658,8 +1747,8 @@ function ToggleBtn({ label, active, color, onClick }: {
         letterSpacing: "0.04em", cursor: "pointer", borderRadius: 6,
         background: active ? color : "rgba(10, 14, 26, 0.85)",
         backdropFilter: active ? undefined : "blur(8px)",
-        color: active ? "#fff" : "#94A3B8",
-        border: `1px solid ${active ? color : "#334155"}`,
+        color: active ? "#fff" : "var(--color-text-secondary)",
+        border: `1px solid ${active ? color : "var(--color-border)"}`,
         boxShadow: active ? `0 0 10px ${color}66, 0 2px 8px rgba(0,0,0,0.4)` : "0 2px 8px rgba(0,0,0,0.3)",
         transition: "all 0.2s",
       }}

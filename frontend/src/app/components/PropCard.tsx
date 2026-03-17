@@ -73,7 +73,7 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
           onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,240,255,0.18)"; }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 10L10 2M10 2H5M10 2V7" stroke="#00F0FF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M2 10L10 2M10 2H5M10 2V7" stroke="var(--color-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
       )}
@@ -94,7 +94,7 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
               padding: 8,
               display: "flex",
               gap: 4,
-              border: "1px solid #334155",
+              border: "1px solid var(--color-border)",
               boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
               animation: "propCardPopIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)",
             }}
@@ -116,7 +116,7 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
                     flexDirection: "column",
                     alignItems: "center",
                     gap: 5,
-                    outline: isActive ? "2px solid #00F0FF" : "2px solid transparent",
+                    outline: isActive ? "2px solid var(--color-accent)" : "2px solid transparent",
                     minWidth: 52,
                     transition: "background 0.12s",
                   }}
@@ -138,7 +138,7 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
                       );
                     })}
                   </div>
-                  <span style={{ fontSize: 10, fontWeight: 600, opacity: isActive ? 1 : 0.55, color: isActive ? "#00F0FF" : "white" }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, opacity: isActive ? 1 : 0.55, color: isActive ? "var(--color-accent)" : "white" }}>
                     {p.label}
                   </span>
                 </button>

@@ -12,10 +12,10 @@ interface HpiTabProps {
 export default function HpiTab({ result }: HpiTabProps) {
   if (!result.hpi) {
     return (
-      <div className="text-center py-20 text-[#94A3B8]/70 space-y-2">
+      <div className="text-center py-20 text-[var(--color-text-secondary)]/70 space-y-2">
         <p className="text-4xl">📊</p>
-        <p className="text-sm font-medium text-[#94A3B8]">Loading HPI data...</p>
-        <p className="text-xs text-[#94A3B8]/60">Fetching House Price Index from Land Registry...</p>
+        <p className="text-sm font-medium text-[var(--color-text-secondary)]">Loading HPI data...</p>
+        <p className="text-xs text-[var(--color-text-secondary)]/60">Fetching House Price Index from Land Registry...</p>
       </div>
     );
   }
@@ -50,16 +50,16 @@ export default function HpiTab({ result }: HpiTabProps) {
     : null;
 
   const INDEX_SERIES = [
-    { key: "hpi_detached" as const, label: "Detached",          shortLabel: "Detached",  color: "#7B2FBE", isSubject: isDetached },
-    { key: "hpi_semi"     as const, label: "Semi-detached",     shortLabel: "Semi-det.", color: "#FFB800", isSubject: isSemi     },
-    { key: "hpi_terraced" as const, label: "Terraced",          shortLabel: "Terraced",  color: "#39FF14", isSubject: isTerraced },
-    { key: "hpi_flat"     as const, label: "Flat / Maisonette", shortLabel: "Flat/Mais", color: "#00F0FF", isSubject: isFlat     },
+    { key: "hpi_detached" as const, label: "Detached",          shortLabel: "Detached",  color: "var(--color-accent-purple)", isSubject: isDetached },
+    { key: "hpi_semi"     as const, label: "Semi-detached",     shortLabel: "Semi-det.", color: "var(--color-status-warning)", isSubject: isSemi     },
+    { key: "hpi_terraced" as const, label: "Terraced",          shortLabel: "Terraced",  color: "var(--color-status-success)", isSubject: isTerraced },
+    { key: "hpi_flat"     as const, label: "Flat / Maisonette", shortLabel: "Flat/Mais", color: "var(--color-accent)", isSubject: isFlat     },
   ];
 
   const fmtChange = (v: number | null) =>
     v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
   const changeColor = (v: number | null) =>
-    v == null ? "#94A3B8" : v >= 0 ? "#39FF14" : "#FF3131";
+    v == null ? "var(--color-text-secondary)" : v >= 0 ? "var(--color-status-success)" : "var(--color-status-danger)";
 
   return (
     <div className="space-y-6">
@@ -67,10 +67,10 @@ export default function HpiTab({ result }: HpiTabProps) {
       {/* ── Header ──────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="font-orbitron font-bold text-lg text-[#00F0FF] uppercase tracking-wider">
+          <h2 className="font-orbitron font-bold text-lg text-[var(--color-accent)] uppercase tracking-wider">
             House Price Index
           </h2>
-          <p className="text-xs text-[#94A3B8] mt-1">
+          <p className="text-xs text-[var(--color-text-secondary)] mt-1">
             {hpi.local_authority} · Data as at {hpi.data_month} · Source: HMLR UK HPI
           </p>
         </div>
@@ -79,11 +79,11 @@ export default function HpiTab({ result }: HpiTabProps) {
       {/* ── KPI row ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {/* Avg price — type-specific, fall back to all if type unknown */}
-        <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-          <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-5 py-4 text-center">
+          <div className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide mb-2">
             Avg price{typeLabel ? ` (${typeLabel})` : " (all types)"}
           </div>
-          <div className="text-2xl font-bold text-[#E2E8F0] tabular-nums">
+          <div className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
             {(typeAvgPrice ?? hpi.avg_price) != null
               ? `£${Math.round((typeAvgPrice ?? hpi.avg_price)!).toLocaleString("en-GB")}`
               : "—"}
@@ -91,8 +91,8 @@ export default function HpiTab({ result }: HpiTabProps) {
         </div>
 
         {/* Annual change (type-specific) */}
-        <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-          <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-5 py-4 text-center">
+          <div className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide mb-2">
             Annual change{typeLabel ? ` (${typeLabel})` : " (all)"}
           </div>
           <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(typeAnnualChange ?? hpi.annual_change_pct) }}>
@@ -101,21 +101,21 @@ export default function HpiTab({ result }: HpiTabProps) {
         </div>
 
         {/* Annual change all types */}
-        <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-          <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">Annual change (all types)</div>
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-5 py-4 text-center">
+          <div className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide mb-2">Annual change (all types)</div>
           <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(hpi.annual_change_pct) }}>
             {fmtChange(hpi.annual_change_pct)}
           </div>
         </div>
 
         {/* Monthly change + sales volume */}
-        <div className="rounded-xl border border-[#334155] bg-[#111827] px-5 py-4 text-center">
-          <div className="text-[11px] text-[#94A3B8] uppercase tracking-wide mb-2">Monthly change</div>
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-5 py-4 text-center">
+          <div className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wide mb-2">Monthly change</div>
           <div className="text-2xl font-bold tabular-nums" style={{ color: changeColor(hpi.monthly_change_pct) }}>
             {fmtChange(hpi.monthly_change_pct)}
           </div>
           {hpi.sales_volume != null && (
-            <div className="text-[11px] text-[#94A3B8] mt-2">
+            <div className="text-xs text-[var(--color-text-secondary)] mt-2">
               {hpi.sales_volume.toLocaleString("en-GB")} sales
             </div>
           )}
@@ -135,12 +135,12 @@ export default function HpiTab({ result }: HpiTabProps) {
         const tMin = Math.min(...typePrices);
         const tMax = Math.max(...typePrices);
         return (
-          <div className="rounded-xl border border-[#334155] bg-[#111827] p-6">
-            <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider mb-4">
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-6">
+            <h3 className="text-xs font-orbitron font-bold text-[var(--color-text-secondary)] uppercase tracking-wider mb-4">
               {chartLabel} — {typePts[0]?.month} to {typePts[typePts.length - 1]?.month}
             </h3>
-            <HpiBarChart pts={typePts} getPrice={getPrice} barColor="#00F0FF" maColor="#FF2D78" />
-            <div className="flex justify-between text-[10px] text-[#475569] mt-2 tabular-nums">
+            <HpiBarChart pts={typePts} getPrice={getPrice} barColor="var(--color-accent)" maColor="var(--color-accent-pink)" />
+            <div className="flex justify-between text-[10px] text-[var(--color-text-muted)] mt-2 tabular-nums">
               <span>£{Math.round(tMin).toLocaleString("en-GB")}</span>
               <span>£{Math.round(tMax).toLocaleString("en-GB")}</span>
             </div>
@@ -150,18 +150,18 @@ export default function HpiTab({ result }: HpiTabProps) {
 
       {/* ── Property type breakdown table ────────────────────────── */}
       {latest && (
-        <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
-          <div className="px-6 py-4 border-b border-[#334155]/60">
-            <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider">
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+          <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
+            <h3 className="text-xs font-orbitron font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
               By property type — {hpi.data_month}
             </h3>
           </div>
           <table className="w-full text-sm">
             <thead>
-              <tr style={{ background: "linear-gradient(90deg, #00F0FF 0%, #FF2D78 100%)" }}>
-                <th className="px-6 py-3 text-left text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Type</th>
-                <th className="px-6 py-3 text-right text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Avg price</th>
-                <th className="px-6 py-3 text-right text-xs font-bold text-[#0A0E1A] uppercase tracking-wider">Annual change</th>
+              <tr style={{ background: "linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent-pink) 100%)" }}>
+                <th className="px-6 py-3 text-left text-xs font-bold text-[var(--color-bg-base)] uppercase tracking-wider">Type</th>
+                <th className="px-6 py-3 text-right text-xs font-bold text-[var(--color-bg-base)] uppercase tracking-wider">Avg price</th>
+                <th className="px-6 py-3 text-right text-xs font-bold text-[var(--color-bg-base)] uppercase tracking-wider">Annual change</th>
               </tr>
             </thead>
             <tbody>
@@ -178,14 +178,14 @@ export default function HpiTab({ result }: HpiTabProps) {
                   (row.label === "Terraced" && isTerraced);
                 return (
                   <tr key={row.label}
-                    className={i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"}
-                    style={highlight ? { boxShadow: "inset 3px 0 0 #00F0FF" } : undefined}
+                    className={i % 2 === 0 ? "bg-[var(--color-bg-panel)]" : "bg-[var(--color-bg-surface)]"}
+                    style={highlight ? { boxShadow: "inset 3px 0 0 var(--color-accent)" } : undefined}
                   >
-                    <td className="px-6 py-3 font-medium" style={{ color: highlight ? "#00F0FF" : "#E2E8F0" }}>
+                    <td className="px-6 py-3 font-medium" style={{ color: highlight ? "var(--color-accent)" : "var(--color-text-primary)" }}>
                       {row.label}
-                      {highlight && <span className="ml-2 text-[10px] text-[#00F0FF]/60 uppercase tracking-wide">subject</span>}
+                      {highlight && <span className="ml-2 text-[10px] text-[var(--color-accent)]/60 uppercase tracking-wide">subject</span>}
                     </td>
-                    <td className="px-6 py-3 text-right tabular-nums text-[#E2E8F0]">
+                    <td className="px-6 py-3 text-right tabular-nums text-[var(--color-text-primary)]">
                       {row.price != null ? `£${Math.round(row.price).toLocaleString("en-GB")}` : "—"}
                     </td>
                     <td className="px-6 py-3 text-right tabular-nums font-semibold" style={{ color: changeColor(row.change) }}>
@@ -204,11 +204,11 @@ export default function HpiTab({ result }: HpiTabProps) {
         const firstMonth = hpi.trend[0]?.month;
         const lastMonth  = hpi.trend[hpi.trend.length - 1]?.month;
         return (
-          <div className="rounded-xl border border-[#334155] bg-[#111827] p-6">
-            <h3 className="text-xs font-orbitron font-bold text-[#94A3B8] uppercase tracking-wider mb-1">
+          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-6">
+            <h3 className="text-xs font-orbitron font-bold text-[var(--color-text-secondary)] uppercase tracking-wider mb-1">
               House Price Index by type — {firstMonth} to {lastMonth}
             </h3>
-            <p className="text-[10px] text-[#475569] mb-4">3-month moving average · rebased Jan 2023 = 100 · subject type highlighted · drag to explore</p>
+            <p className="text-[10px] text-[var(--color-text-muted)] mb-4">3-month moving average · rebased Jan 2023 = 100 · subject type highlighted · drag to explore</p>
             <HpiIndexChart trend={hpi.trend} series={INDEX_SERIES} />
           </div>
         );

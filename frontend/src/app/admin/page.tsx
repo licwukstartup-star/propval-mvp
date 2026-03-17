@@ -120,36 +120,36 @@ export default function AdminPage() {
   const maxDayCalls = aiUsage ? Math.max(...aiUsage.daily_chart.map(d => d.calls), 1) : 1
 
   return (
-    <div className="min-h-screen p-6 md:p-8" style={{ backgroundColor: '#0a0e1a' }}>
+    <div className="min-h-screen p-6 md:p-8" style={{ backgroundColor: 'var(--color-bg-base)' }}>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1
           className="text-2xl font-bold font-[var(--font-orbitron)]"
-          style={{ color: '#00F0FF' }}
+          style={{ color: 'var(--color-accent)' }}
         >
           Admin Panel
         </h1>
         <button
           onClick={() => router.push('/')}
           className="text-xs px-3 py-1.5 rounded-lg"
-          style={{ backgroundColor: '#1E293B', color: '#94A3B8', border: '1px solid #334155' }}
+          style={{ backgroundColor: 'var(--color-bg-surface)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
         >
           Back to App
         </button>
       </div>
 
       {/* Tab switcher */}
-      <div className="flex gap-1 mb-6 p-1 rounded-lg w-fit" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
+      <div className="flex gap-1 mb-6 p-1 rounded-lg w-fit" style={{ backgroundColor: 'var(--color-bg-panel)', border: '1px solid var(--color-border)' }}>
         {(['ai', 'users'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             className="px-4 py-2 rounded-md text-xs font-semibold uppercase tracking-wider transition-all"
             style={activeTab === tab ? {
-              background: 'linear-gradient(135deg, #00F0FF 0%, #7B2FBE 100%)',
-              color: '#0A0E1A',
+              background: 'linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-purple) 100%)',
+              color: 'var(--color-bg-base)',
             } : {
-              color: '#94A3B8',
+              color: 'var(--color-text-secondary)',
             }}
           >
             {tab === 'ai' ? 'AI Usage' : 'Users'}
@@ -157,7 +157,7 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {error && <p className="mb-4 text-sm" style={{ color: '#FF3131' }}>{error}</p>}
+      {error && <p className="mb-4 text-sm" style={{ color: 'var(--color-status-danger)' }}>{error}</p>}
 
       {/* ── AI Usage Tab ─────────────────────────────────────────── */}
       {activeTab === 'ai' && (
@@ -166,38 +166,38 @@ export default function AdminPage() {
             <div className="animate-pulse space-y-4">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {[1,2,3,4].map(i => (
-                  <div key={i} className="h-24 rounded-xl" style={{ backgroundColor: '#111827' }} />
+                  <div key={i} className="h-24 rounded-xl" style={{ backgroundColor: 'var(--color-bg-panel)' }} />
                 ))}
               </div>
-              <div className="h-64 rounded-xl" style={{ backgroundColor: '#111827' }} />
+              <div className="h-64 rounded-xl" style={{ backgroundColor: 'var(--color-bg-panel)' }} />
             </div>
           ) : aiUsage ? (
             <>
               {/* Summary Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <SummaryCard label="Total AI Calls" value={formatNumber(aiUsage.summary.all_time_calls)} sub={`${aiUsage.summary.today_calls} today`} color="#00F0FF" />
-                <SummaryCard label="Total Tokens" value={formatNumber(aiUsage.summary.total_tokens)} sub={`${formatNumber(aiUsage.summary.total_input_tokens)} in / ${formatNumber(aiUsage.summary.total_output_tokens)} out`} color="#FF2D78" />
-                <SummaryCard label="Avg Latency" value={`${(aiUsage.summary.avg_latency_ms / 1000).toFixed(1)}s`} sub={`${aiUsage.summary.success_rate}% success`} color="#FFB800" />
-                <SummaryCard label="This Month" value={formatNumber(aiUsage.summary.month_calls)} sub={`${aiUsage.summary.week_calls} this week`} color="#39FF14" />
+                <SummaryCard label="Total AI Calls" value={formatNumber(aiUsage.summary.all_time_calls)} sub={`${aiUsage.summary.today_calls} today`} color="var(--color-accent)" />
+                <SummaryCard label="Total Tokens" value={formatNumber(aiUsage.summary.total_tokens)} sub={`${formatNumber(aiUsage.summary.total_input_tokens)} in / ${formatNumber(aiUsage.summary.total_output_tokens)} out`} color="var(--color-accent-pink)" />
+                <SummaryCard label="Avg Latency" value={`${(aiUsage.summary.avg_latency_ms / 1000).toFixed(1)}s`} sub={`${aiUsage.summary.success_rate}% success`} color="var(--color-status-warning)" />
+                <SummaryCard label="This Month" value={formatNumber(aiUsage.summary.month_calls)} sub={`${aiUsage.summary.week_calls} this week`} color="var(--color-status-success)" />
               </div>
 
               {/* Success/Fail strip */}
               {aiUsage.summary.all_time_calls > 0 && (
-                <div className="rounded-xl p-4" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
+                <div className="rounded-xl p-4" style={{ backgroundColor: 'var(--color-bg-panel)', border: '1px solid var(--color-border)' }}>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs uppercase tracking-wider" style={{ color: '#94A3B8' }}>Success Rate</span>
-                    <span className="text-xs" style={{ color: '#E2E8F0' }}>
-                      <span style={{ color: '#39FF14' }}>{aiUsage.summary.success_count}</span>
+                    <span className="text-xs uppercase tracking-wider" style={{ color: 'var(--color-text-secondary)' }}>Success Rate</span>
+                    <span className="text-xs" style={{ color: 'var(--color-text-primary)' }}>
+                      <span style={{ color: 'var(--color-status-success)' }}>{aiUsage.summary.success_count}</span>
                       {' / '}
-                      <span style={{ color: '#FF3131' }}>{aiUsage.summary.fail_count}</span>
+                      <span style={{ color: 'var(--color-status-danger)' }}>{aiUsage.summary.fail_count}</span>
                     </span>
                   </div>
-                  <div className="w-full h-3 rounded-full overflow-hidden" style={{ backgroundColor: '#1E293B' }}>
+                  <div className="w-full h-3 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--color-bg-surface)' }}>
                     <div
                       className="h-full rounded-full transition-all"
                       style={{
                         width: `${aiUsage.summary.success_rate}%`,
-                        background: 'linear-gradient(90deg, #39FF14 0%, #00F0FF 100%)',
+                        background: 'linear-gradient(90deg, var(--color-status-success) 0%, var(--color-accent) 100%)',
                       }}
                     />
                   </div>
@@ -205,8 +205,8 @@ export default function AdminPage() {
               )}
 
               {/* Daily Usage Chart */}
-              <div className="rounded-xl p-5" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
-                <h3 className="text-xs font-semibold uppercase tracking-wider mb-4" style={{ color: '#00F0FF' }}>
+              <div className="rounded-xl p-5" style={{ backgroundColor: 'var(--color-bg-panel)', border: '1px solid var(--color-border)' }}>
+                <h3 className="text-xs font-semibold uppercase tracking-wider mb-4" style={{ color: 'var(--color-accent)' }}>
                   Daily AI Calls — Last 30 Days
                 </h3>
                 <div className="flex items-end gap-[3px]" style={{ height: 180 }}>
@@ -221,25 +221,25 @@ export default function AdminPage() {
                             className="absolute bottom-0 left-0 right-0 rounded-t-sm transition-all group-hover:opacity-80"
                             style={{
                               height: h - failH,
-                              background: 'linear-gradient(180deg, #00F0FF 0%, #7B2FBE 100%)',
+                              background: 'linear-gradient(180deg, var(--color-accent) 0%, var(--color-accent-purple) 100%)',
                             }}
                           />
                           {/* Fail portion */}
                           {failH > 0 && (
                             <div
                               className="absolute bottom-0 left-0 right-0 rounded-t-sm"
-                              style={{ height: failH, backgroundColor: '#FF3131' }}
+                              style={{ height: failH, backgroundColor: 'var(--color-status-danger)' }}
                             />
                           )}
                           {/* Tooltip */}
-                          <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:block whitespace-nowrap text-[9px] px-1.5 py-0.5 rounded z-10"
-                            style={{ backgroundColor: '#0A0E1A', color: '#E2E8F0', border: '1px solid #334155' }}>
+                          <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:block whitespace-nowrap text-[10px] px-1.5 py-0.5 rounded z-10"
+                            style={{ backgroundColor: 'var(--color-bg-base)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)' }}>
                             {d.date.slice(5)}: {d.calls} calls
                           </div>
                         </div>
                         {/* X-axis label every 5th day */}
                         {i % 5 === 0 && (
-                          <span className="text-[8px] mt-1" style={{ color: '#94A3B8' }}>{d.date.slice(5)}</span>
+                          <span className="text-[10px] mt-1" style={{ color: 'var(--color-text-secondary)' }}>{d.date.slice(5)}</span>
                         )}
                       </div>
                     )
@@ -247,46 +247,46 @@ export default function AdminPage() {
                 </div>
                 {/* Legend */}
                 <div className="flex gap-4 mt-3">
-                  <span className="flex items-center gap-1.5 text-[9px]" style={{ color: '#94A3B8' }}>
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#00F0FF' }} /> Success
+                  <span className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-btn-primary-bg)' }} /> Success
                   </span>
-                  <span className="flex items-center gap-1.5 text-[9px]" style={{ color: '#94A3B8' }}>
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#FF3131' }} /> Failed
+                  <span className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-status-danger)' }} /> Failed
                   </span>
                 </div>
               </div>
 
               {/* Per-User Breakdown */}
               {aiUsage.per_user.length > 0 && (
-                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #334155' }}>
-                  <div className="px-5 py-3" style={{ backgroundColor: '#111827' }}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#00F0FF' }}>
+                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
+                  <div className="px-5 py-3" style={{ backgroundColor: 'var(--color-bg-panel)' }}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-accent)' }}>
                       Per-User Breakdown
                     </h3>
                   </div>
                   <table className="w-full text-sm">
                     <thead>
-                      <tr style={{ background: 'linear-gradient(90deg, #00F0FF 0%, #FF2D78 100%)' }}>
-                        <th className="text-left px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>User</th>
-                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>Calls</th>
-                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>Tokens</th>
-                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>Avg Latency</th>
-                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>Success</th>
-                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: '#0a0e1a' }}>Last Used</th>
+                      <tr style={{ background: 'linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent-pink) 100%)' }}>
+                        <th className="text-left px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>User</th>
+                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>Calls</th>
+                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>Tokens</th>
+                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>Avg Latency</th>
+                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>Success</th>
+                        <th className="text-right px-4 py-2.5 font-semibold text-xs" style={{ color: 'var(--color-bg-base)' }}>Last Used</th>
                       </tr>
                     </thead>
                     <tbody>
                       {aiUsage.per_user.map((u, i) => (
-                        <tr key={u.user_email} style={{ backgroundColor: i % 2 === 0 ? '#111827' : '#1E293B' }}>
-                          <td className="px-4 py-2.5 text-xs" style={{ color: '#E2E8F0' }}>{u.user_email}</td>
-                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: '#00F0FF' }}>{u.total_calls}</td>
-                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: '#FF2D78' }}>{formatNumber(u.total_tokens)}</td>
-                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: '#FFB800' }}>{(u.avg_latency_ms / 1000).toFixed(1)}s</td>
+                        <tr key={u.user_email} style={{ backgroundColor: i % 2 === 0 ? 'var(--color-bg-panel)' : 'var(--color-bg-surface)' }}>
+                          <td className="px-4 py-2.5 text-xs" style={{ color: 'var(--color-text-primary)' }}>{u.user_email}</td>
+                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--color-accent)' }}>{u.total_calls}</td>
+                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--color-accent-pink)' }}>{formatNumber(u.total_tokens)}</td>
+                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--color-status-warning)' }}>{(u.avg_latency_ms / 1000).toFixed(1)}s</td>
                           <td className="px-4 py-2.5 text-xs text-right">
-                            <span style={{ color: '#39FF14' }}>{u.success}</span>
-                            {u.fail > 0 && <span style={{ color: '#FF3131' }}> / {u.fail}</span>}
+                            <span style={{ color: 'var(--color-status-success)' }}>{u.success}</span>
+                            {u.fail > 0 && <span style={{ color: 'var(--color-status-danger)' }}> / {u.fail}</span>}
                           </td>
-                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: '#94A3B8' }}>
+                          <td className="px-4 py-2.5 text-xs text-right" style={{ color: 'var(--color-text-secondary)' }}>
                             {u.last_used ? timeAgo(u.last_used) : '-'}
                           </td>
                         </tr>
@@ -298,51 +298,51 @@ export default function AdminPage() {
 
               {/* Recent Calls Log */}
               {aiUsage.recent_calls.length > 0 && (
-                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #334155' }}>
-                  <div className="px-5 py-3" style={{ backgroundColor: '#111827' }}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#00F0FF' }}>
+                <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
+                  <div className="px-5 py-3" style={{ backgroundColor: 'var(--color-bg-panel)' }}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-accent)' }}>
                       Recent AI Calls
                     </h3>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
-                        <tr style={{ background: 'linear-gradient(90deg, #00F0FF 0%, #7B2FBE 100%)' }}>
-                          <th className="text-left px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>Time</th>
-                          <th className="text-left px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>User</th>
-                          <th className="text-left px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>Address</th>
-                          <th className="text-right px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>In</th>
-                          <th className="text-right px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>Out</th>
-                          <th className="text-right px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>Latency</th>
-                          <th className="text-center px-3 py-2 font-semibold" style={{ color: '#0a0e1a' }}>Status</th>
+                        <tr style={{ background: 'linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent-purple) 100%)' }}>
+                          <th className="text-left px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Time</th>
+                          <th className="text-left px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>User</th>
+                          <th className="text-left px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Address</th>
+                          <th className="text-right px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>In</th>
+                          <th className="text-right px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Out</th>
+                          <th className="text-right px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Latency</th>
+                          <th className="text-center px-3 py-2 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Status</th>
                         </tr>
                       </thead>
                       <tbody>
                         {aiUsage.recent_calls.map((c, i) => (
-                          <tr key={i} style={{ backgroundColor: i % 2 === 0 ? '#111827' : '#1E293B' }}>
-                            <td className="px-3 py-2 whitespace-nowrap" style={{ color: '#94A3B8' }}>
+                          <tr key={i} style={{ backgroundColor: i % 2 === 0 ? 'var(--color-bg-panel)' : 'var(--color-bg-surface)' }}>
+                            <td className="px-3 py-2 whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
                               {c.timestamp ? timeAgo(c.timestamp) : '-'}
                             </td>
-                            <td className="px-3 py-2" style={{ color: '#E2E8F0' }}>
+                            <td className="px-3 py-2" style={{ color: 'var(--color-text-primary)' }}>
                               {c.user_email.split('@')[0]}
                             </td>
-                            <td className="px-3 py-2 max-w-[200px] truncate" style={{ color: '#E2E8F0' }}>
+                            <td className="px-3 py-2 max-w-[200px] truncate" style={{ color: 'var(--color-text-primary)' }}>
                               {c.address || c.postcode || '-'}
                             </td>
-                            <td className="px-3 py-2 text-right" style={{ color: '#94A3B8' }}>
+                            <td className="px-3 py-2 text-right" style={{ color: 'var(--color-text-secondary)' }}>
                               {formatNumber(c.input_tokens)}
                             </td>
-                            <td className="px-3 py-2 text-right" style={{ color: '#94A3B8' }}>
+                            <td className="px-3 py-2 text-right" style={{ color: 'var(--color-text-secondary)' }}>
                               {formatNumber(c.output_tokens)}
                             </td>
-                            <td className="px-3 py-2 text-right" style={{ color: '#FFB800' }}>
+                            <td className="px-3 py-2 text-right" style={{ color: 'var(--color-status-warning)' }}>
                               {(c.latency_ms / 1000).toFixed(1)}s
                             </td>
                             <td className="px-3 py-2 text-center">
                               {c.success ? (
-                                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: '#39FF14', boxShadow: '0 0 6px #39FF14' }} />
+                                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-status-success)', boxShadow: '0 0 6px var(--color-status-success)' }} />
                               ) : (
-                                <span className="inline-block w-2 h-2 rounded-full" title={c.error_message || 'Failed'} style={{ backgroundColor: '#FF3131', boxShadow: '0 0 6px #FF3131' }} />
+                                <span className="inline-block w-2 h-2 rounded-full" title={c.error_message || 'Failed'} style={{ backgroundColor: 'var(--color-status-danger)', boxShadow: '0 0 6px var(--color-status-danger)' }} />
                               )}
                             </td>
                           </tr>
@@ -354,8 +354,8 @@ export default function AdminPage() {
               )}
             </>
           ) : (
-            <div className="text-center py-12 rounded-xl" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
-              <p className="text-sm" style={{ color: '#94A3B8' }}>No AI usage data yet. Run a property search to generate AI narratives.</p>
+            <div className="text-center py-12 rounded-xl" style={{ backgroundColor: 'var(--color-bg-panel)', border: '1px solid var(--color-border)' }}>
+              <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>No AI usage data yet. Run a property search to generate AI narratives.</p>
             </div>
           )}
         </div>
@@ -365,45 +365,45 @@ export default function AdminPage() {
       {activeTab === 'users' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <SummaryCard label="Total Users" value={users.length.toString()} color="#00F0FF" />
-            <SummaryCard label="Admins" value={users.filter(u => u.role === 'admin').length.toString()} color="#FF2D78" />
-            <SummaryCard label="Surveyors" value={users.filter(u => u.role !== 'admin').length.toString()} color="#39FF14" />
+            <SummaryCard label="Total Users" value={users.length.toString()} color="var(--color-accent)" />
+            <SummaryCard label="Admins" value={users.filter(u => u.role === 'admin').length.toString()} color="var(--color-accent-pink)" />
+            <SummaryCard label="Surveyors" value={users.filter(u => u.role !== 'admin').length.toString()} color="var(--color-status-success)" />
           </div>
 
           {loading ? (
-            <p style={{ color: '#94A3B8' }}>Loading users...</p>
+            <p style={{ color: 'var(--color-text-secondary)' }}>Loading users...</p>
           ) : (
-            <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #334155' }}>
+            <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
               <table className="w-full text-sm">
                 <thead>
-                  <tr style={{ background: 'linear-gradient(90deg, #00F0FF 0%, #FF2D78 100%)' }}>
-                    <th className="text-left px-4 py-3 font-semibold" style={{ color: '#0a0e1a' }}>Email</th>
-                    <th className="text-left px-4 py-3 font-semibold" style={{ color: '#0a0e1a' }}>Name</th>
-                    <th className="text-left px-4 py-3 font-semibold" style={{ color: '#0a0e1a' }}>Role</th>
-                    <th className="text-left px-4 py-3 font-semibold" style={{ color: '#0a0e1a' }}>Signed up</th>
+                  <tr style={{ background: 'linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent-pink) 100%)' }}>
+                    <th className="text-left px-4 py-3 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Email</th>
+                    <th className="text-left px-4 py-3 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Name</th>
+                    <th className="text-left px-4 py-3 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Role</th>
+                    <th className="text-left px-4 py-3 font-semibold" style={{ color: 'var(--color-bg-base)' }}>Signed up</th>
                   </tr>
                 </thead>
                 <tbody>
                   {users.map((u, i) => (
                     <tr
                       key={u.id}
-                      style={{ backgroundColor: i % 2 === 0 ? '#111827' : '#1E293B' }}
+                      style={{ backgroundColor: i % 2 === 0 ? 'var(--color-bg-panel)' : 'var(--color-bg-surface)' }}
                     >
-                      <td className="px-4 py-3" style={{ color: '#E2E8F0' }}>{u.email}</td>
-                      <td className="px-4 py-3" style={{ color: '#E2E8F0' }}>{u.full_name || '-'}</td>
+                      <td className="px-4 py-3" style={{ color: 'var(--color-text-primary)' }}>{u.email}</td>
+                      <td className="px-4 py-3" style={{ color: 'var(--color-text-primary)' }}>{u.full_name || '-'}</td>
                       <td className="px-4 py-3">
                         <span
                           className="text-xs px-2 py-0.5 rounded-full"
                           style={
                             u.role === 'admin'
-                              ? { backgroundColor: '#FF2D7833', color: '#FF2D78' }
-                              : { backgroundColor: '#00F0FF22', color: '#00F0FF' }
+                              ? { backgroundColor: 'color-mix(in srgb, var(--color-accent-pink) 20%, transparent)', color: 'var(--color-accent-pink)' }
+                              : { backgroundColor: 'color-mix(in srgb, var(--color-accent) 13%, transparent)', color: 'var(--color-accent)' }
                           }
                         >
                           {u.role === 'admin' ? 'Admin' : 'Surveyor'}
                         </span>
                       </td>
-                      <td className="px-4 py-3" style={{ color: '#94A3B8' }}>
+                      <td className="px-4 py-3" style={{ color: 'var(--color-text-secondary)' }}>
                         {new Date(u.created_at).toLocaleDateString()}
                       </td>
                     </tr>
@@ -420,10 +420,10 @@ export default function AdminPage() {
 
 function SummaryCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }) {
   return (
-    <div className="p-4 rounded-xl" style={{ backgroundColor: '#111827', border: '1px solid #334155' }}>
-      <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: '#94A3B8' }}>{label}</p>
+    <div className="p-4 rounded-xl" style={{ backgroundColor: 'var(--color-bg-panel)', border: '1px solid var(--color-border)' }}>
+      <p className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--color-text-secondary)' }}>{label}</p>
       <p className="text-2xl font-bold" style={{ color }}>{value}</p>
-      {sub && <p className="text-[10px] mt-0.5" style={{ color: '#94A3B8' }}>{sub}</p>}
+      {sub && <p className="text-[10px] mt-0.5" style={{ color: 'var(--color-text-secondary)' }}>{sub}</p>}
     </div>
   )
 }

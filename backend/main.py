@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+# force reload
 
 from pathlib import Path
 
@@ -22,6 +23,8 @@ from routers import snapshots as snapshots_router
 from routers.property import _load_green_belt_polygons, _load_schools_data
 from routers.rate_limit import limiter
 from services.inspire import InspireService
+from services.uprn_coords import UPRNCoordService
+from services.local_property_db import LocalPropertyDB
 
 # Load .env from project root (one level above /backend)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -38,6 +41,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logging.warning("INSPIRE service failed to load — INSPIRE lookup will be unavailable: %s", exc)
         app.state.inspire = None
+    try:
+        app.state.uprn_coords = await asyncio.to_thread(UPRNCoordService.load)
+    except Exception as exc:
+        logging.warning("UPRN coord service failed to load: %s", exc)
+        app.state.uprn_coords = None
+    try:
+        app.state.local_db = await asyncio.to_thread(LocalPropertyDB.load)
+        # Warm up DuckDB — forces data pages into OS page cache
+        if app.state.local_db:
+            await asyncio.to_thread(app.state.local_db.query_postcode, "SW1A 1AA", 1)
+            logging.info("Local property DB: warm-up query complete")
+    except Exception as exc:
+        logging.warning("Local property DB failed to load: %s", exc)
+        app.state.local_db = None
     await news_router.start_background_refresh()
     await news_router.start_market_refresh()
     await news_router.start_macro_refresh()
@@ -60,7 +77,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["Content-Type", "Authorization"],
 )
 

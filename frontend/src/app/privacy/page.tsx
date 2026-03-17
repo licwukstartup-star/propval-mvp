@@ -3,14 +3,14 @@ export const metadata = {
 };
 
 const S = {
-  page: "min-h-screen bg-[#0A0E1A] text-[#E2E8F0] px-6 py-16 flex justify-center",
+  page: "min-h-screen bg-[var(--color-bg-base)] text-[var(--color-text-primary)] px-6 py-16 flex justify-center",
   card: "max-w-3xl w-full",
-  h1: "text-2xl font-bold text-[#00F0FF] mb-2 tracking-wide",
-  updated: "text-xs text-[#94A3B8] mb-10",
-  h2: "text-lg font-semibold text-[#00F0FF] mt-10 mb-3 border-b border-[#334155] pb-1",
-  p: "text-sm leading-relaxed text-[#CBD5E1] mb-4",
-  ul: "list-disc list-inside text-sm text-[#CBD5E1] mb-4 space-y-1 pl-2",
-  a: "text-[#00F0FF] underline hover:text-[#67E8F9]",
+  h1: "text-2xl font-bold text-[var(--color-accent)] mb-2 tracking-wide",
+  updated: "text-xs text-[var(--color-text-secondary)] mb-10",
+  h2: "text-lg font-semibold text-[var(--color-accent)] mt-10 mb-3 border-b border-[var(--color-border)] pb-1",
+  p: "text-sm leading-relaxed text-[var(--color-text-secondary)] mb-4",
+  ul: "list-disc list-inside text-sm text-[var(--color-text-secondary)] mb-4 space-y-1 pl-2",
+  a: "text-[var(--color-accent)] underline hover:text-[var(--color-status-info)]",
 } as const;
 
 export default function PrivacyPage() {
@@ -125,7 +125,7 @@ export default function PrivacyPage() {
           </a>.
         </p>
 
-        <div className="mt-12 pt-6 border-t border-[#334155] text-center">
+        <div className="mt-12 pt-6 border-t border-[var(--color-border)] text-center">
           <a href="/" className={S.a}>← Back to PropVal</a>
         </div>
       </div>

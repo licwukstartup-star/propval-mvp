@@ -97,12 +97,12 @@ export function HpiBarChart({ pts, getPrice, barColor, maColor }: HpiBarChartPro
               <rect
                 x={i * bw + 0.5} y={H_PLOT - h}
                 width={Math.max(1, bw - 1)} height={h}
-                fill={isLast ? barColor : "#1E293B"}
+                fill={isLast ? barColor : "var(--color-bg-surface)"}
                 opacity={isLast ? 1 : 0.9}
               />
               {t.month.slice(5) === "01" && (
                 <text x={(i + 0.5) * bw} y={H_PLOT + H_LABEL - 2} textAnchor="middle"
-                  fontSize="8" fill="#475569" fontFamily="monospace">
+                  fontSize="8" fill="var(--color-text-muted)" fontFamily="monospace">
                   {t.month.slice(0, 4)}
                 </text>
               )}
@@ -129,26 +129,26 @@ export function HpiBarChart({ pts, getPrice, barColor, maColor }: HpiBarChartPro
             <line
               x1={ap.x.toFixed(1)} y1="0"
               x2={ap.x.toFixed(1)} y2={H_PLOT}
-              stroke="#475569" strokeWidth="1" strokeDasharray="3,2" opacity="0.55"
+              stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="3,2" opacity="0.55"
             />
             {/* Dot on monthly avg */}
             {monthlyDotY != null && (
               <circle
                 cx={ap.x.toFixed(1)} cy={monthlyDotY.toFixed(1)} r="4"
-                fill={barColor} stroke="#0A0E1A" strokeWidth="2"
+                fill={barColor} stroke="var(--color-bg-base)" strokeWidth="2"
               />
             )}
             {/* Dot on MA */}
             <circle
               cx={ap.x.toFixed(1)} cy={ap.y.toFixed(1)} r="5"
-              fill={maColor} stroke="#0A0E1A" strokeWidth="2"
+              fill={maColor} stroke="var(--color-bg-base)" strokeWidth="2"
             />
             {/* Tooltip background */}
             <rect x={ttX} y={ttY} width={TW} height={TH} rx="4"
-              fill="#0A0E1A" stroke="#334155" strokeWidth="1" opacity="0.92" />
+              fill="var(--color-bg-base)" stroke="var(--color-border)" strokeWidth="1" opacity="0.92" />
             {/* Month label */}
             <text x={ttX + TW / 2} y={ttY + 10} textAnchor="middle"
-              fontSize="7" fill="#94A3B8" fontFamily="monospace">
+              fontSize="7" fill="var(--color-text-secondary)" fontFamily="monospace">
               {ap.month}
             </text>
             {/* Monthly avg price */}

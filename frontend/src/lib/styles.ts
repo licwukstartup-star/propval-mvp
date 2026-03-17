@@ -74,11 +74,13 @@ export const SIZE_PRESETS: { key: CardSizeKey; label: string; cols: number; rows
   { key: "2x1", label: "Wide",  cols: 2, rows: 1 },
   { key: "3x1", label: "Full",  cols: 3, rows: 1 },
   { key: "1x2", label: "Tall",  cols: 1, rows: 2 },
+  { key: "2x2", label: "Large", cols: 2, rows: 2 },
 ];
 
 export const PROP_CARD_DEFAULTS: Record<string, CardSizeKey> = {
-  epc:          "2x1",
+  epc:          "2x2",
   tenure:       "1x1",
+  coordinates:  "1x1",
   sales:        "3x1",
   flood:        "1x1",
   conservation: "1x1",

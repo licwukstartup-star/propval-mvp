@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 
 const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
 
@@ -29,6 +29,13 @@ const SECTION_FIELDS: TemplateField[] = [
   { key: "fire_risk", label: "2.18 — Fire Risk & EWS1", section: "Section 2: The Property", placeholder: "We have not carried out a fire risk assessment. For buildings over 11m or 18m in height, an EWS1 form may be required…", rows: 4 },
   { key: "methodology", label: "4.1 — Methodology", section: "Section 4: Valuation", placeholder: "We have adopted the comparative method of valuation, having regard to recent comparable transactions in the locality, adjusted as appropriate for differences in…", rows: 5 },
   { key: "general_comments", label: "4.6 — General Comments", section: "Section 4: Valuation", placeholder: "Our valuation has been prepared on the basis of the information available at the date of valuation and reflects the state of the market at that date…", rows: 5 },
+  // AI prompt customisation
+  { key: "ai_prompt_location", label: "2.2 — Location Description", section: "AI Prompt Instructions", placeholder: "Required. Tell the AI what to write for this section. Example: Write 2-3 paragraphs covering neighbourhood character, amenities, schools, transport, broadband, heritage and flood designations. 200-350 words, formal third person.", rows: 5 },
+  { key: "ai_prompt_subject_development", label: "2.3a — Subject Development", section: "AI Prompt Instructions", placeholder: "Tell the AI what to write about the wider development (estate, complex, or scheme) the property sits within. Example: Describe the development/estate context, age, layout, communal areas, parking, and management arrangements. 100-200 words, formal third person.", rows: 5 },
+  { key: "ai_prompt_subject_building", label: "2.3b — Subject Building", section: "AI Prompt Instructions", placeholder: "Tell the AI what to write about the specific building. Example: Describe the building type, construction method, number of storeys, external walls, roof type, windows, and common parts. 100-200 words, formal third person.", rows: 5 },
+  { key: "ai_prompt_subject_property", label: "2.3c — Subject Property", section: "AI Prompt Instructions", placeholder: "Tell the AI what to write about the individual dwelling/unit. Example: Describe the accommodation, room layout, floor area, internal condition, fixtures, heating system, and EPC rating. 100-200 words, formal third person.", rows: 5 },
+  { key: "ai_prompt_market", label: "3.3 — Market Commentary", section: "AI Prompt Instructions", placeholder: "Required. Tell the AI what to write for this section. Example: Write 2-3 paragraphs covering HPI average price and trends, transaction history with capital growth, market direction and supply/demand. 200-350 words, formal third person.", rows: 5 },
+  { key: "ai_prompt_valuation", label: "3.6 — Valuation Considerations", section: "AI Prompt Instructions", placeholder: "Required. Tell the AI what to write for this section. Example: Write 2-4 paragraphs covering positive value factors, adverse/risk factors, tenure and legal constraints, brief summary. 250-400 words, formal third person.", rows: 5 },
 ]
 
 /* ── Group fields by section ─────────────────────────────────────────────── */
@@ -45,12 +52,21 @@ interface FirmTemplateSettingsProps {
   onSaved?: (template: FirmTemplate) => void
 }
 
+const AI_PROMPT_KEYS = new Set(["ai_prompt_location", "ai_prompt_subject_development", "ai_prompt_subject_building", "ai_prompt_subject_property", "ai_prompt_market", "ai_prompt_valuation"])
+
 export default function FirmTemplateSettings({ session, onClose, onSaved }: FirmTemplateSettingsProps) {
   const [template, setTemplate] = useState<FirmTemplate>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState<"ok" | "err" | null>(null)
   const [dirty, setDirty] = useState(false)
+  const aiTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+
+  const autoResize = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = el.scrollHeight + "px"
+  }, [])
 
   // Load existing template
   useEffect(() => {
@@ -70,6 +86,17 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
       .catch(err => console.error("Failed to load firm template:", err))
       .finally(() => setLoading(false))
   }, [session])
+
+  // Auto-resize AI prompt textareas after template loads
+  useEffect(() => {
+    if (!loading) {
+      requestAnimationFrame(() => {
+        for (const key of AI_PROMPT_KEYS) {
+          autoResize(aiTextareaRefs.current[key])
+        }
+      })
+    }
+  }, [loading, autoResize])
 
   const updateField = useCallback((key: string, value: string) => {
     setTemplate(prev => ({ ...prev, [key]: value }))
@@ -105,21 +132,21 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70" onClick={onClose}>
       <div
-        className="bg-[#0A0E1A] border border-[#334155] rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl"
+        className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}
-        style={{ boxShadow: "0 0 40px #7B2FBE22, 0 8px 32px rgba(0,0,0,0.6)" }}
+        style={{ boxShadow: "0 0 40px color-mix(in srgb, var(--color-accent-purple) 13%, transparent), 0 8px 32px rgba(0,0,0,0.6)" }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#334155]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)]">
           <div className="flex items-center gap-3">
-            <span className="text-[8px] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-semibold"
-              style={{ backgroundColor: "#7B2FBE22", color: "#C4B5FD" }}>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wider font-semibold"
+              style={{ backgroundColor: "color-mix(in srgb, var(--color-accent-purple) 13%, transparent)", color: "var(--color-accent-purple-text)" }}>
               A — Firm Template
             </span>
-            <h2 className="font-orbitron text-[#00F0FF] text-sm tracking-[2px] uppercase">Firm Template Settings</h2>
+            <h2 className="font-orbitron text-[var(--color-accent)] text-sm tracking-[2px] uppercase">Firm Template Settings</h2>
           </div>
           <button onClick={onClose}
-            className="text-[#94A3B8] hover:text-[#E2E8F0] transition-colors p-1">
+            className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors p-1">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -130,28 +157,35 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <svg className="animate-spin h-6 w-6 text-[#00F0FF]" viewBox="0 0 24 24" fill="none">
+              <svg className="animate-spin h-6 w-6 text-[var(--color-accent)]" viewBox="0 0 24 24" fill="none">
                 <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" />
               </svg>
-              <span className="ml-3 text-sm text-[#94A3B8]">Loading template…</span>
+              <span className="ml-3 text-sm text-[var(--color-text-secondary)]">Loading template…</span>
             </div>
           ) : (
             <>
-              <p className="text-[11px] text-[#94A3B8] leading-relaxed">
+              <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
                 Set your firm&apos;s standard boilerplate text for each RICS report section below.
                 This text auto-populates into every new case. Valuers can override per-case if needed.
               </p>
 
               {SECTIONS.map(section => (
                 <div key={section}>
-                  <h3 className="text-[10px] font-semibold uppercase tracking-wider mb-3"
-                    style={{ color: "#C4B5FD", borderBottom: "1px solid #7B2FBE33", paddingBottom: "6px" }}>
+                  <h3 className="text-[10px] font-semibold uppercase tracking-wider mb-1"
+                    style={{ color: section === "AI Prompt Instructions" ? "var(--color-status-warning)" : "var(--color-accent-purple-text)", borderBottom: `1px solid color-mix(in srgb, ${section === "AI Prompt Instructions" ? "var(--color-status-warning)" : "var(--color-accent-purple)"} 20%, transparent)`, paddingBottom: "6px" }}>
                     {section}
                   </h3>
+                  {section === "AI Prompt Instructions" && (
+                    <p className="text-[11px] leading-relaxed mb-3" style={{ color: "var(--color-text-secondary)" }}>
+                      Write bespoke instructions for each AI report section.
+                      Tell the AI what to focus on, what tone to use, and what to include or exclude.
+                      Each section requires a prompt before AI generation can be used. The AI always receives the property data automatically.
+                    </p>
+                  )}
                   <div className="space-y-3">
                     {SECTION_FIELDS.filter(f => f.section === section).map(field => (
                       <div key={field.key}>
-                        <label className="text-[10px] font-medium mb-1 block" style={{ color: "#94A3B8" }}>
+                        <label className="text-[10px] font-medium mb-1 block" style={{ color: "var(--color-text-secondary)" }}>
                           {field.label}
                         </label>
                         {field.rows <= 1 ? (
@@ -160,15 +194,21 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
                             value={template[field.key] ?? ""}
                             onChange={e => updateField(field.key, e.target.value)}
                             placeholder={field.placeholder}
-                            className="w-full text-xs px-3 py-2 rounded-lg bg-[#111827] border border-[#334155] text-[#E2E8F0] focus:border-[#7B2FBE]/60 focus:outline-none transition-colors placeholder:text-[#475569]"
+                            className="w-full text-xs px-3 py-2 rounded-lg bg-[var(--color-bg-panel)] border border-[var(--color-border)] text-[var(--color-text-primary)] focus:border-[var(--color-accent-purple)]/60 focus:outline-none transition-colors placeholder:text-[var(--color-text-muted)]"
                           />
                         ) : (
                           <textarea
+                            ref={AI_PROMPT_KEYS.has(field.key) ? (el) => { aiTextareaRefs.current[field.key] = el } : undefined}
                             value={template[field.key] ?? ""}
-                            onChange={e => updateField(field.key, e.target.value)}
+                            onChange={e => {
+                              updateField(field.key, e.target.value)
+                              if (AI_PROMPT_KEYS.has(field.key)) autoResize(e.target)
+                            }}
+                            onInput={AI_PROMPT_KEYS.has(field.key) ? e => autoResize(e.currentTarget) : undefined}
                             placeholder={field.placeholder}
-                            rows={field.rows}
-                            className="w-full text-xs px-3 py-2 rounded-lg bg-[#111827] border border-[#334155] text-[#E2E8F0] focus:border-[#7B2FBE]/60 focus:outline-none transition-colors resize-y placeholder:text-[#475569] leading-relaxed"
+                            rows={AI_PROMPT_KEYS.has(field.key) ? 2 : field.rows}
+                            className="w-full text-xs px-3 py-2 rounded-lg bg-[var(--color-bg-panel)] border border-[var(--color-border)] text-[var(--color-text-primary)] focus:border-[var(--color-accent-purple)]/60 focus:outline-none transition-colors placeholder:text-[var(--color-text-muted)] leading-relaxed"
+                            style={AI_PROMPT_KEYS.has(field.key) ? { resize: "none", overflow: "hidden" } : undefined}
                           />
                         )}
                       </div>
@@ -181,23 +221,23 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-[#334155]">
-          <div className="text-[10px]" style={{ color: dirty ? "#FFB800" : "#39FF14" }}>
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[var(--color-border)]">
+          <div className="text-[10px]" style={{ color: dirty ? "var(--color-status-warning)" : "var(--color-status-success)" }}>
             {dirty ? "Unsaved changes" : "All changes saved"}
           </div>
           <div className="flex items-center gap-3">
             <button onClick={onClose}
-              className="text-[11px] px-4 py-2 rounded-lg border border-[#334155] text-[#94A3B8] hover:bg-[#1E293B] transition-colors">
+              className="text-xs px-4 py-2 rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] transition-colors">
               {dirty ? "Discard & Close" : "Close"}
             </button>
             <button
               onClick={handleSave}
               disabled={saving || !dirty}
-              className="text-[11px] px-5 py-2 rounded-lg font-semibold transition-all duration-200 disabled:opacity-40"
+              className="text-xs px-5 py-2 rounded-lg font-semibold transition-all duration-200 disabled:opacity-40"
               style={{
-                background: flash === "ok" ? "#39FF14" : flash === "err" ? "#FF3131" : "#7B2FBE",
-                color: flash === "ok" || flash === "err" ? "#0A0E1A" : "#FFFFFF",
-                boxShadow: dirty ? "0 0 12px #7B2FBE44" : "none",
+                background: flash === "ok" ? "var(--color-status-success)" : flash === "err" ? "var(--color-status-danger)" : "var(--color-accent-purple)",
+                color: flash === "ok" || flash === "err" ? "var(--color-bg-base)" : "var(--color-btn-primary-text)",
+                boxShadow: dirty ? "0 0 12px color-mix(in srgb, var(--color-accent-purple) 27%, transparent)" : "none",
               }}
             >
               {saving ? "Saving…" : flash === "ok" ? "Saved!" : flash === "err" ? "Error" : "Save Template"}

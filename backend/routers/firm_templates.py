@@ -20,6 +20,10 @@ TEMPLATE_FIELDS = [
     "pi_insurance", "expertise", "inspection", "environmental",
     "asbestos", "fire_risk", "methodology", "general_comments",
     "firm_name", "firm_address", "firm_rics_number",
+    # AI prompt customisation fields
+    "ai_prompt_location",
+    "ai_prompt_subject_development", "ai_prompt_subject_building", "ai_prompt_subject_property",
+    "ai_prompt_market", "ai_prompt_valuation",
 ]
 
 
@@ -110,6 +114,13 @@ DEFAULT_BOILERPLATE: dict[str, str] = {
         "valuation date. This valuation is current only at the date stated and may "
         "not be valid at a later date."
     ),
+    # AI prompt customisation — empty string means "use system default"
+    "ai_prompt_location": "",
+    "ai_prompt_subject_development": "",
+    "ai_prompt_subject_building": "",
+    "ai_prompt_subject_property": "",
+    "ai_prompt_market": "",
+    "ai_prompt_valuation": "",
 }
 
 
@@ -129,6 +140,12 @@ class FirmTemplateUpdate(BaseModel):
     firm_name: str | None = None
     firm_address: str | None = None
     firm_rics_number: str | None = None
+    ai_prompt_location: str | None = None
+    ai_prompt_subject_development: str | None = None
+    ai_prompt_subject_building: str | None = None
+    ai_prompt_subject_property: str | None = None
+    ai_prompt_market: str | None = None
+    ai_prompt_valuation: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,22 +190,35 @@ async def upsert_firm_template(
         .execute()
     )
 
-    if existing.data:
-        # Update existing
-        resp = (
-            sb.table("firm_templates")
-            .update(updates)
-            .eq("surveyor_id", uid)
-            .execute()
-        )
-    else:
-        # Insert new
-        updates["surveyor_id"] = uid
-        resp = (
-            sb.table("firm_templates")
-            .insert(updates)
-            .execute()
-        )
+    try:
+        if existing.data:
+            resp = (
+                sb.table("firm_templates")
+                .update(updates)
+                .eq("surveyor_id", uid)
+                .execute()
+            )
+        else:
+            updates["surveyor_id"] = uid
+            resp = (
+                sb.table("firm_templates")
+                .insert(updates)
+                .execute()
+            )
+    except (Exception, BaseException):
+        # Retry without AI prompt fields (columns may not exist yet)
+        ai_keys = [k for k in updates if k.startswith("ai_prompt_")]
+        if ai_keys:
+            for k in ai_keys:
+                updates.pop(k)
+            if not updates or (len(updates) == 1 and "surveyor_id" in updates):
+                raise HTTPException(400, "No fields to update")
+            if existing.data:
+                resp = sb.table("firm_templates").update(updates).eq("surveyor_id", uid).execute()
+            else:
+                resp = sb.table("firm_templates").insert(updates).execute()
+        else:
+            raise
 
     if resp.data:
         return resp.data[0]

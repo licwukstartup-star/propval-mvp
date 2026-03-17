@@ -83,26 +83,26 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
     onClose();
   }
 
-  const inputCls = "w-full rounded-lg border border-[#334155] bg-[#0A0E1A] px-3 py-2 text-sm text-[#E2E8F0] placeholder-[#475569] focus:border-[#00F0FF] focus:outline-none focus:ring-1 focus:ring-[#00F0FF]/30 transition-colors";
-  const labelCls = "block text-xs font-medium text-[#94A3B8] uppercase tracking-wide mb-1";
+  const inputCls = "w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-base)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]/30 transition-colors";
+  const labelCls = "block text-xs font-medium text-[var(--color-text-secondary)] uppercase tracking-wide mb-1";
   const selectCls = `${inputCls} appearance-none`;
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose} role="presentation">
       <div
-        className="relative w-full max-w-lg mx-4 rounded-2xl border border-[#334155] bg-[#111827] shadow-2xl shadow-black/50 overflow-hidden"
+        className="relative w-full max-w-lg mx-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-2xl shadow-black/50 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="manual-comp-title"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#334155] bg-[#0A0E1A]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)] bg-[var(--color-bg-base)]">
           <div className="flex items-center gap-2">
             <span className="text-lg" aria-hidden="true">✏️</span>
-            <h3 id="manual-comp-title" className="font-orbitron font-bold text-sm tracking-widest text-[#00F0FF] uppercase">Add Manual Comparable</h3>
+            <h3 id="manual-comp-title" className="font-orbitron font-bold text-sm tracking-widest text-[var(--color-accent)] uppercase">Add Manual Comparable</h3>
           </div>
-          <button onClick={onClose} aria-label="Close dialog" className="text-[#94A3B8] hover:text-[#E2E8F0] transition-colors text-xl leading-none">&times;</button>
+          <button onClick={onClose} aria-label="Close dialog" className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors text-xl leading-none">&times;</button>
         </div>
 
         {/* Form */}
@@ -110,18 +110,18 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
 
           {/* Address */}
           <div>
-            <label htmlFor="mc-address" className={labelCls}>Address <span className="text-[#FF2D78]">*</span></label>
+            <label htmlFor="mc-address" className={labelCls}>Address <span className="text-[var(--color-accent-pink)]">*</span></label>
             <input id="mc-address" type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="e.g. Flat 4, 10 Marsh Wall" className={inputCls} autoFocus />
           </div>
 
           {/* Postcode + Price row */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelCls}>Postcode <span className="text-[#FF2D78]">*</span></label>
+              <label className={labelCls}>Postcode <span className="text-[var(--color-accent-pink)]">*</span></label>
               <input type="text" value={postcode} onChange={e => setPostcode(e.target.value)} placeholder="E14 9SJ" className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Price (£) <span className="text-[#FF2D78]">*</span></label>
+              <label className={labelCls}>Price (£) <span className="text-[var(--color-accent-pink)]">*</span></label>
               <input type="text" inputMode="numeric" value={price} onChange={e => setPrice(e.target.value.replace(/[^0-9,]/g, ""))} placeholder="450,000" className={inputCls} />
             </div>
           </div>
@@ -129,11 +129,11 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
           {/* Date + Tenure row */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={labelCls}>Transaction Date <span className="text-[#FF2D78]">*</span></label>
+              <label className={labelCls}>Transaction Date <span className="text-[var(--color-accent-pink)]">*</span></label>
               <input type="date" value={transactionDate} onChange={e => setTransactionDate(e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className={labelCls}>Tenure <span className="text-[#FF2D78]">*</span></label>
+              <label className={labelCls}>Tenure <span className="text-[var(--color-accent-pink)]">*</span></label>
               <select value={tenure} onChange={e => setTenure(e.target.value)} className={selectCls}>
                 <option value="">Select…</option>
                 <option value="freehold">Freehold</option>
@@ -187,8 +187,8 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
             </div>
             <div className="flex items-end pb-1">
               <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={newBuild} onChange={e => setNewBuild(e.target.checked)} className="rounded border-[#334155] bg-[#0A0E1A] text-[#00F0FF] focus:ring-[#00F0FF]/30" />
-                <span className="text-sm text-[#E2E8F0]">New Build</span>
+                <input type="checkbox" checked={newBuild} onChange={e => setNewBuild(e.target.checked)} className="rounded border-[var(--color-border)] bg-[var(--color-bg-base)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30" />
+                <span className="text-sm text-[var(--color-text-primary)]">New Build</span>
               </label>
             </div>
           </div>
@@ -197,21 +197,21 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
           <div>
             <label className={labelCls}>Source</label>
             <input type="text" value={source} onChange={e => setSource(e.target.value)} placeholder="e.g. Agent particulars, Rightmove, personal knowledge" className={inputCls} />
-            <p className="mt-1 text-[10px] text-[#475569]">Optional — helps you remember where this comp came from</p>
+            <p className="mt-1 text-[10px] text-[var(--color-text-muted)]">Optional — helps you remember where this comp came from</p>
           </div>
 
         </form>
 
         {/* Validation error */}
         {formError && (
-          <div className="mx-6 mb-0 mt-1 rounded-lg px-4 py-2 text-xs font-medium" style={{ backgroundColor: "#FF313118", color: "#FF3131", border: "1px solid #FF313133" }}>
+          <div className="mx-6 mb-0 mt-1 rounded-lg px-4 py-2 text-xs font-medium" style={{ backgroundColor: "color-mix(in srgb, var(--color-status-danger) 10%, transparent)", color: "var(--color-status-danger)", border: "1px solid color-mix(in srgb, var(--color-status-danger) 20%, transparent)" }}>
             {formError}
           </div>
         )}
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#334155] bg-[#0A0E1A]">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-[#94A3B8] hover:text-[#E2E8F0] transition-colors">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--color-border)] bg-[var(--color-bg-base)]">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors">
             Cancel
           </button>
           <button
@@ -219,8 +219,8 @@ export default function ManualComparableForm({ onAdd, onClose, subjectPostcode, 
             disabled={!canSubmit}
             className={`px-5 py-2 text-sm font-semibold rounded-lg transition-all ${
               canSubmit
-                ? "bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/90 shadow-lg shadow-[#00F0FF]/20"
-                : "bg-[#334155] text-[#475569] cursor-not-allowed"
+                ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-bg-base)] hover:bg-[var(--color-btn-primary-bg)]/90 shadow-lg shadow-[var(--color-accent)]/20"
+                : "bg-[var(--color-border)] text-[var(--color-text-muted)] cursor-not-allowed"
             }`}
           >
             Add Comparable

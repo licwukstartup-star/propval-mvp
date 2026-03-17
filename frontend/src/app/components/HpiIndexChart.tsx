@@ -121,13 +121,13 @@ export function HpiIndexChart({ trend, series }: HpiIndexChartProps) {
     >
       {/* Reference line at 100 */}
       <line x1="0" y1={ref100Y.toFixed(1)} x2={VW} y2={ref100Y.toFixed(1)}
-        stroke="#475569" strokeWidth="1" strokeDasharray="4,3" opacity="0.7" />
-      <text x={VW - 3} y={ref100Y - 3} textAnchor="end" fontSize="7.5" fill="#94A3B8">100</text>
+        stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="4,3" opacity="0.7" />
+      <text x={VW - 3} y={ref100Y - 3} textAnchor="end" fontSize="7.5" fill="var(--color-text-secondary)">100</text>
 
       {/* X-axis year labels */}
       {trend.map((t, i) => t.month.slice(5) === "01" ? (
         <text key={t.month} x={(i + 0.5) * bw} y={H_TOTAL - 2}
-          textAnchor="middle" fontSize="8" fill="#475569" fontFamily="monospace">
+          textAnchor="middle" fontSize="8" fill="var(--color-text-muted)" fontFamily="monospace">
           {t.month.slice(0, 4)}
         </text>
       ) : null)}
@@ -154,7 +154,7 @@ export function HpiIndexChart({ trend, series }: HpiIndexChartProps) {
           <line
             x1={ap.x.toFixed(1)} y1="0"
             x2={ap.x.toFixed(1)} y2={H_PLOT}
-            stroke="#475569" strokeWidth="1" strokeDasharray="3,2" opacity="0.55"
+            stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="3,2" opacity="0.55"
           />
           {/* Dot on each series */}
           {[...series].reverse().map(s => {
@@ -164,16 +164,16 @@ export function HpiIndexChart({ trend, series }: HpiIndexChartProps) {
               <circle key={s.key}
                 cx={ap.x.toFixed(1)} cy={y.toFixed(1)}
                 r={s.isSubject ? "5" : "3.5"}
-                fill={s.color} stroke="#0A0E1A" strokeWidth="1.5"
+                fill={s.color} stroke="var(--color-bg-base)" strokeWidth="1.5"
               />
             );
           })}
           {/* Tooltip */}
           <rect x={ttX} y={ttY} width={TW} height={TH} rx="4"
-            fill="#0A0E1A" stroke="#334155" strokeWidth="1" opacity="0.92" />
+            fill="var(--color-bg-base)" stroke="var(--color-border)" strokeWidth="1" opacity="0.92" />
           {/* Month */}
           <text x={ttX + TW / 2} y={ttY + 11} textAnchor="middle"
-            fontSize="7" fill="#94A3B8" fontFamily="monospace">
+            fontSize="7" fill="var(--color-text-secondary)" fontFamily="monospace">
             {ap.month}
           </text>
           {/* One row per series */}

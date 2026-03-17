@@ -410,7 +410,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
   const sortArrow = (key: SortKey) =>
     sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "";
 
-  const headerClass = "px-2 py-1.5 text-left text-[10px] font-semibold cursor-pointer select-none hover:text-[#00F0FF] transition-colors whitespace-nowrap relative";
+  const headerClass = "px-2 py-1.5 text-left text-[10px] font-semibold cursor-pointer select-none hover:text-[var(--color-accent)] transition-colors whitespace-nowrap relative";
 
   const resizeHandle = (col: string) => (
     <span
@@ -430,32 +430,32 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
       <>
         <button
           onClick={(e) => { e.stopPropagation(); setOpenFilter(prev => prev === col ? null : col); setFilterSearch(""); }}
-          className={`ml-1 inline-flex items-center text-[8px] ${hasFilter ? "text-[#00F0FF]" : "text-current opacity-50 hover:opacity-100"}`}
+          className={`ml-1 inline-flex items-center text-[10px] ${hasFilter ? "text-[var(--color-accent)]" : "text-current opacity-50 hover:opacity-100"}`}
           title="Filter"
         >▼</button>
         {openFilter === col && (
           <div
             ref={filterDropdownRef}
-            className="absolute top-full left-0 z-50 mt-0.5 bg-[#1E293B] border border-[#334155] rounded shadow-lg shadow-black/40"
+            className="absolute top-full left-0 z-50 mt-0.5 bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded shadow-lg shadow-black/40"
             style={{ minWidth: 160, maxHeight: 280 }}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Search box */}
-            <div className="p-1.5 border-b border-[#334155]">
+            <div className="p-1.5 border-b border-[var(--color-border)]">
               <input
                 type="text"
                 value={filterSearch}
                 onChange={e => setFilterSearch(e.target.value)}
                 placeholder="Search..."
                 autoFocus
-                className="w-full bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0] outline-none focus:border-[#00F0FF]"
+                className="w-full bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
                 style={{ colorScheme: "dark" }}
               />
             </div>
             {/* Select All / Clear All */}
-            <div className="flex gap-2 px-2 py-1 border-b border-[#334155] text-[9px]">
-              <button onClick={() => selectAllFilter(col)} className="text-[#00F0FF] hover:underline">Select All</button>
-              <button onClick={() => clearAllFilter(col)} className="text-[#FF2D78] hover:underline">Clear All</button>
+            <div className="flex gap-2 px-2 py-1 border-b border-[var(--color-border)] text-[10px]">
+              <button onClick={() => selectAllFilter(col)} className="text-[var(--color-accent)] hover:underline">Select All</button>
+              <button onClick={() => clearAllFilter(col)} className="text-[var(--color-accent-pink)] hover:underline">Clear All</button>
             </div>
             {/* Value checkboxes */}
             <div className="overflow-y-auto" style={{ maxHeight: 200 }}>
@@ -464,7 +464,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                 .map(val => {
                   const checked = !columnFilters[col] || columnFilters[col].has(val);
                   return (
-                    <label key={val} className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] text-[#E2E8F0] hover:bg-[#334155]/40 cursor-pointer">
+                    <label key={val} className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] text-[var(--color-text-primary)] hover:bg-[var(--color-border)]/40 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={checked}
@@ -478,7 +478,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                             toggleFilterValue(col, val);
                           }
                         }}
-                        className="w-3 h-3 rounded accent-[#00F0FF]"
+                        className="w-3 h-3 rounded accent-[var(--color-accent)]"
                       />
                       <span className="truncate">{val || "(blank)"}</span>
                     </label>
@@ -505,7 +505,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
   return (
     <div className="space-y-4">
       {/* ── Compact toolbar ──────────────────────────────────────────── */}
-      <div className="bg-[#111827] border border-[#334155] rounded-lg px-4 py-2">
+      <div className="bg-[var(--color-bg-panel)] border border-[var(--color-border)] rounded-lg px-4 py-2">
         <div className="flex flex-wrap items-center gap-3">
           {/* Search scope */}
           <select value={searchPostcode}
@@ -518,7 +518,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                 setColumnFilters(prev => { const next = { ...prev }; delete next.postcode; return next; });
               }
             }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Postcodes</option>
             {[...new Set(rows.map(r => r.postcode))].sort().map(pc => (
               <option key={pc} value={pc}>{pc}</option>
@@ -533,7 +533,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                 setColumnFilters(prev => { const next = { ...prev }; delete next.outward; return next; });
               }
             }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Outward</option>
             {[...new Set(rows.map(r => r.postcode.split(/\s+/)[0]))].sort().map(ow => (
               <option key={ow} value={ow}>{ow}</option>
@@ -548,7 +548,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                 setColumnFilters(prev => { const next = { ...prev }; delete next.paon; return next; });
               }
             }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Buildings</option>
             {[...new Set(rows.map(r => r._paon || "(blank)"))].sort().map(v => (
               <option key={v} value={v}>{v}</option>
@@ -563,16 +563,16 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                 setColumnFilters(prev => { const next = { ...prev }; delete next.street; return next; });
               }
             }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Streets</option>
             {[...new Set(rows.map(r => r._street || "(blank)"))].sort().map(v => (
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
-          <span className="text-[#334155]">|</span>
+          <span className="text-[var(--color-border)]">|</span>
           {/* Server-side filters */}
           <select value={filterType} onChange={e => { setFilterType(e.target.value); setFetched(false); }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Types</option>
             <option value="F">Flats</option>
             <option value="D,S,T">Houses</option>
@@ -581,43 +581,43 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
             <option value="T">Terraced</option>
           </select>
           <select value={filterTenure} onChange={e => { setFilterTenure(e.target.value); setFetched(false); }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">All Tenure</option>
             <option value="F">Freehold</option>
             <option value="L">Leasehold</option>
           </select>
           <input type="date" value={filterMinDate} onChange={e => { setFilterMinDate(e.target.value); setFetched(false); }}
             style={{ colorScheme: "dark" }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]" />
-          <span className="text-[#94A3B8] text-[10px]">to</span>
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]" />
+          <span className="text-[var(--color-text-secondary)] text-[10px]">to</span>
           <input type="date" value={filterMaxDate} onChange={e => { setFilterMaxDate(e.target.value); setFetched(false); }}
             style={{ colorScheme: "dark" }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]" />
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]" />
           <input type="number" value={filterMinPrice} onChange={e => { setFilterMinPrice(e.target.value); setFetched(false); }}
-            placeholder="Min £" className="w-20 bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]" />
+            placeholder="Min £" className="w-20 bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]" />
           <input type="number" value={filterMaxPrice} onChange={e => { setFilterMaxPrice(e.target.value); setFetched(false); }}
-            placeholder="Max £" className="w-20 bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]" />
+            placeholder="Max £" className="w-20 bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]" />
           <select value={filterNewBuild} onChange={e => { setFilterNewBuild(e.target.value); setFetched(false); }}
-            className="bg-[#0A0E1A] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#E2E8F0]">
+            className="bg-[var(--color-bg-base)] border border-[var(--color-border)] rounded px-2 py-1 text-[10px] text-[var(--color-text-primary)]">
             <option value="">New Build?</option>
             <option value="N">Existing</option>
             <option value="Y">New Build</option>
           </select>
 
           <button onClick={() => { setFetched(false); }} disabled={loading}
-            className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded bg-[#00F0FF] text-[#0A0E1A] hover:bg-[#00F0FF]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            className="flex items-center gap-1 px-2.5 py-1 text-[10px] font-medium rounded bg-[var(--color-btn-primary-bg)] text-[var(--color-bg-base)] hover:bg-[var(--color-btn-primary-bg)]/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             {loading && <svg className="animate-spin h-2.5 w-2.5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" strokeLinecap="round" /></svg>}
             {loading ? "Loading…" : "Apply"}
           </button>
           <button onClick={() => { fetchData(true); }} disabled={loading}
-            className="px-2.5 py-1 text-[10px] font-medium rounded border border-[#334155] text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#94A3B8] transition-colors disabled:opacity-40"
+            className="px-2.5 py-1 text-[10px] font-medium rounded border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-secondary)] transition-colors disabled:opacity-40"
             title="Force re-download from HMLR">
             Refresh
           </button>
 
           {/* Survivor count */}
           {!loading && rows.length > 0 && (
-            <span className="text-[10px] tabular-nums" style={{ color: sorted.length <= 100 ? "#39FF14" : "#FFB800" }}>
+            <span className="text-[10px] tabular-nums" style={{ color: sorted.length <= 100 ? "var(--color-status-success)" : "var(--color-status-warning)" }}>
               {sorted.length}{sorted.length !== rows.length ? `/${rows.length}` : ""} result{sorted.length !== 1 ? "s" : ""}
             </span>
           )}
@@ -625,7 +625,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
           {/* Clear column filters */}
           {activeFilterCount > 0 && (
             <button onClick={() => setColumnFilters({})}
-              className="px-2 py-0.5 text-[9px] rounded border border-[#FF2D78]/40 text-[#FF2D78] hover:bg-[#FF2D78]/10 transition-colors">
+              className="px-2 py-0.5 text-[10px] rounded border border-[var(--color-accent-pink)]/40 text-[var(--color-accent-pink)] hover:bg-[var(--color-accent-pink)]/10 transition-colors">
               Clear {activeFilterCount} filter{activeFilterCount > 1 ? "s" : ""}
             </button>
           )}
@@ -633,34 +633,34 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
           {/* EPC enrich — survivors only, max 100 */}
           {sorted.length > 0 && sorted.length <= 100 ? (
             <button onClick={enrichAll} disabled={enriching}
-              className="px-2.5 py-1 text-[10px] font-medium rounded border border-[#7B2FBE]/40 text-[#c084fc] hover:bg-[#7B2FBE]/10 transition-colors disabled:opacity-40">
+              className="px-2.5 py-1 text-[10px] font-medium rounded border border-[var(--color-accent-purple)]/40 text-[#c084fc] hover:bg-[var(--color-accent-purple)]/10 transition-colors disabled:opacity-40">
               {enriching ? `Enriching... (${enrichedCount}/${filtered.filter(r => r.epc_matched === undefined).length})` :
                enrichedCount > 0 ? `EPC Enriched (${enrichedCount}/${sorted.length})` :
                `Enrich EPC (${sorted.length})`}
             </button>
           ) : sorted.length > 100 ? (
-            <span className="text-[9px] text-[#FFB800]/80">{"\u2264"}100 survivors to enrich</span>
+            <span className="text-[10px] text-[var(--color-status-warning)]/80">{"\u2264"}100 survivors to enrich</span>
           ) : null}
         </div>
       </div>
 
       {/* ── Error ─────────────────────────────────────────────────── */}
       {error && (
-        <div className="bg-[#FF3131]/10 border border-[#FF3131]/30 rounded-lg p-3 text-xs text-[#FF3131]">{error}</div>
+        <div className="bg-[var(--color-status-danger)]/10 border border-[var(--color-status-danger)]/30 rounded-lg p-3 text-xs text-[var(--color-status-danger)]">{error}</div>
       )}
 
       {/* ── Loading ───────────────────────────────────────────────── */}
       {loading && (
-        <div className="text-center py-8 text-[#94A3B8] text-sm">Loading transactions...</div>
+        <div className="text-center py-8 text-[var(--color-text-secondary)] text-sm">Loading transactions...</div>
       )}
 
       {/* ── Table ─────────────────────────────────────────────────── */}
       {!loading && rows.length > 0 && (
-        <div className="border border-[#334155] rounded-lg overflow-hidden">
+        <div className="border border-[var(--color-border)] rounded-lg overflow-hidden">
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
             <table className="w-full min-w-max text-xs table-fixed">
               <thead className="sticky top-0 z-10" ref={theadRef}>
-                <tr className="bg-gradient-to-r from-[#00F0FF] to-[#FF2D78] text-[#0A0E1A]">
+                <tr className="bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-pink)] text-[var(--color-bg-base)]">
                   <th className="px-2 py-1.5 text-left text-[10px] font-semibold" style={{ width: 32 }}></th>
                   <th className={headerClass} style={colWidths.saon ? { width: colWidths.saon } : {}} onClick={() => toggleSort("saon")}>Flat/Apt{sortArrow("saon")}{filterDropdown("saon")}{resizeHandle("saon")}</th>
                   <th className={headerClass} style={colWidths.paon ? { width: colWidths.paon } : {}} onClick={() => toggleSort("paon")}>Building{sortArrow("paon")}{filterDropdown("paon")}{resizeHandle("paon")}</th>
@@ -687,34 +687,34 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
                   style={{ top: `${headerH}px`, background: "#0F1620", boxShadow: "0 4px 0 0 rgba(0,240,255,0.3)" }}
                 >
                   <td className="px-2 py-2">
-                    <span className="inline-block px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider" style={{ background: "#00F0FF22", color: "#00F0FF" }}>S</span>
+                    <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider" style={{ background: "color-mix(in srgb, var(--color-accent) 13%, transparent)", color: "var(--color-accent)" }}>S</span>
                   </td>
-                  <td className="px-2 py-2 text-[#00F0FF] font-semibold text-xs break-words">{subjectSaon || "—"}</td>
-                  <td className="px-2 py-2 text-[#00F0FF] font-semibold text-xs break-words">{subjectPaon || "—"}</td>
-                  <td className="px-2 py-2 text-[#00F0FF] font-semibold text-xs break-words">{subjectStreet || "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)] font-semibold text-xs break-words">{subjectSaon || "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)] font-semibold text-xs break-words">{subjectPaon || "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)] font-semibold text-xs break-words">{subjectStreet || "—"}</td>
                   {/* Hidden: Locality, Town, District, County */}
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-xs">{subjectPostcode}</td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-xs">{subjectPostcode.trim().split(/\s+/)[0]}</td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-xs">{subjectPostcode.trim().split(/\s+/)[1] ?? ""}</td>
-                  <td className="px-2 py-2 text-[#475569] text-right">—</td>
-                  <td className="px-2 py-2 text-[#475569]">—</td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-xs">{subjectPropertyType ?? "—"}</td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-xs">
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-xs">{subjectPostcode}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-xs">{subjectPostcode.trim().split(/\s+/)[0]}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-xs">{subjectPostcode.trim().split(/\s+/)[1] ?? ""}</td>
+                  <td className="px-2 py-2 text-[var(--color-text-muted)] text-right">—</td>
+                  <td className="px-2 py-2 text-[var(--color-text-muted)]">—</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-xs">{subjectPropertyType ?? "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-xs">
                     {subjectTenure ? subjectTenure.charAt(0).toUpperCase() + subjectTenure.slice(1) : "—"}
-                    {leaseRemaining && subjectTenure?.toLowerCase() === "leasehold" ? <span className="text-[#94A3B8] text-[10px] ml-1">({leaseRemaining})</span> : null}
+                    {leaseRemaining && subjectTenure?.toLowerCase() === "leasehold" ? <span className="text-[var(--color-text-secondary)] text-[10px] ml-1">({leaseRemaining})</span> : null}
                   </td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-center text-xs tabular-nums">{subjectRooms ?? "—"}</td>
-                  <td className="px-2 py-2 text-[#00F0FF]/80 text-right text-xs tabular-nums">{subjectFloorArea ?? "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-center text-xs tabular-nums">{subjectRooms ?? "—"}</td>
+                  <td className="px-2 py-2 text-[var(--color-accent)]/80 text-right text-xs tabular-nums">{subjectFloorArea ?? "—"}</td>
                   <td className="px-2 py-2 text-center">
                     {subjectEpcRating ? (
                       <span className={`inline-block w-5 h-5 rounded text-[10px] font-bold leading-5 text-center ${
-                        subjectEpcRating <= "B" ? "bg-[#39FF14]/20 text-[#39FF14]" :
-                        subjectEpcRating <= "D" ? "bg-[#FFB800]/20 text-[#FFB800]" :
-                        "bg-[#FF3131]/20 text-[#FF3131]"
+                        subjectEpcRating <= "B" ? "bg-[var(--color-status-success)]/20 text-[var(--color-status-success)]" :
+                        subjectEpcRating <= "D" ? "bg-[var(--color-status-warning)]/20 text-[var(--color-status-warning)]" :
+                        "bg-[var(--color-status-danger)]/20 text-[var(--color-status-danger)]"
                       }`}>{subjectEpcRating}</span>
-                    ) : <span className="text-[#475569]">—</span>}
+                    ) : <span className="text-[var(--color-text-muted)]">—</span>}
                   </td>
-                  <td className="px-2 py-2 text-[#475569] text-right">—</td>
+                  <td className="px-2 py-2 text-[var(--color-text-muted)] text-right">—</td>
                 </tr>
                 {sorted.map((row, i) => {
                   const isAdopted = adoptedIds.has(row.transaction_id);
@@ -723,56 +723,56 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
 
                   return (
                     <tr key={`${row.transaction_id}-${i}`}
-                      className={`border-t border-[#334155]/40 transition-colors ${
-                        isAdopted ? "bg-[#39FF14]/10" :
-                        isSamePostcode ? "bg-[#00F0FF]/5" :
-                        i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"
-                      } hover:bg-[#334155]/40`}
+                      className={`border-t border-[var(--color-border)]/40 transition-colors ${
+                        isAdopted ? "bg-[var(--color-status-success)]/10" :
+                        isSamePostcode ? "bg-[var(--color-btn-primary-bg)]/5" :
+                        i % 2 === 0 ? "bg-[var(--color-bg-panel)]" : "bg-[var(--color-bg-surface)]"
+                      } hover:bg-[var(--color-border)]/40`}
                     >
                       <td className="px-2 py-1.5 text-center">
                         <button
                           onClick={() => handleAdopt(row)}
                           className={`w-5 h-5 rounded text-[10px] font-bold transition-colors ${
                             isAdopted
-                              ? "bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/40"
-                              : "bg-[#334155]/40 text-[#94A3B8] border border-[#334155] hover:border-[#00F0FF] hover:text-[#00F0FF]"
+                              ? "bg-[var(--color-status-success)]/20 text-[var(--color-status-success)] border border-[var(--color-status-success)]/40"
+                              : "bg-[var(--color-border)]/40 text-[var(--color-text-secondary)] border border-[var(--color-border)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                           }`}
                           title={isAdopted ? "Remove from adopted" : "Adopt this comparable"}
                         >
                           {isAdopted ? "✓" : "+"}
                         </button>
                       </td>
-                      <td className="px-2 py-1.5 text-[#E2E8F0] break-words">{row.raw_saon || "—"}</td>
-                      <td className="px-2 py-1.5 text-[#E2E8F0] break-words">{row._paon || "—"}</td>
-                      <td className="px-2 py-1.5 text-[#E2E8F0] break-words">{row._street || "—"}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] break-words">{row.raw_saon || "—"}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] break-words">{row._paon || "—"}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] break-words">{row._street || "—"}</td>
                       {/* Hidden: Locality, Town, District, County */}
-                      <td className="px-2 py-1.5 text-[#94A3B8]">{row.postcode}</td>
-                      <td className="px-2 py-1.5 text-[#94A3B8]">{row.postcode.split(/\s+/)[0]}</td>
-                      <td className="px-2 py-1.5 text-[#94A3B8]">{row.postcode.split(/\s+/)[1] ?? ""}</td>
-                      <td className="px-2 py-1.5 text-[#E2E8F0] font-mono tabular-nums text-right">
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{row.postcode}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{row.postcode.split(/\s+/)[0]}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{row.postcode.split(/\s+/)[1] ?? ""}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] font-mono tabular-nums text-right">
                         £{row.price.toLocaleString()}
                       </td>
-                      <td className="px-2 py-1.5 text-[#94A3B8] tabular-nums">{row.date}</td>
-                      <td className="px-2 py-1.5 text-[#94A3B8]">{row.property_type}</td>
-                      <td className="px-2 py-1.5 text-[#94A3B8]">{row.tenure}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)] tabular-nums">{row.date}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{row.property_type}</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-secondary)]">{row.tenure}</td>
                       {/* EPC columns */}
-                      <td className="px-2 py-1.5 text-[#E2E8F0] text-center tabular-nums">
-                        {row.bedrooms != null ? row.bedrooms : <span className="text-[#475569]">—</span>}
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] text-center tabular-nums">
+                        {row.bedrooms != null ? row.bedrooms : <span className="text-[var(--color-text-muted)]">—</span>}
                       </td>
-                      <td className="px-2 py-1.5 text-[#E2E8F0] text-right tabular-nums">
-                        {row.floor_area_sqm != null ? row.floor_area_sqm.toFixed(0) : <span className="text-[#475569]">—</span>}
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] text-right tabular-nums">
+                        {row.floor_area_sqm != null ? row.floor_area_sqm.toFixed(0) : <span className="text-[var(--color-text-muted)]">—</span>}
                       </td>
                       <td className="px-2 py-1.5 text-center">
                         {row.epc_rating ? (
                           <span className={`inline-block w-5 h-5 rounded text-[10px] font-bold leading-5 text-center ${
-                            row.epc_rating <= "B" ? "bg-[#39FF14]/20 text-[#39FF14]" :
-                            row.epc_rating <= "D" ? "bg-[#FFB800]/20 text-[#FFB800]" :
-                            "bg-[#FF3131]/20 text-[#FF3131]"
+                            row.epc_rating <= "B" ? "bg-[var(--color-status-success)]/20 text-[var(--color-status-success)]" :
+                            row.epc_rating <= "D" ? "bg-[var(--color-status-warning)]/20 text-[var(--color-status-warning)]" :
+                            "bg-[var(--color-status-danger)]/20 text-[var(--color-status-danger)]"
                           }`}>{row.epc_rating}</span>
-                        ) : <span className="text-[#475569]">—</span>}
+                        ) : <span className="text-[var(--color-text-muted)]">—</span>}
                       </td>
-                      <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[#94A3B8]">
-                        {ppm2 ? `£${ppm2.toLocaleString()}` : <span className="text-[#475569]">—</span>}
+                      <td className="px-2 py-1.5 text-right font-mono tabular-nums text-[var(--color-text-secondary)]">
+                        {ppm2 ? `£${ppm2.toLocaleString()}` : <span className="text-[var(--color-text-muted)]">—</span>}
                       </td>
                     </tr>
                   );
@@ -785,7 +785,7 @@ export default function BrowseSales({ outwardCode, subjectAddress, subjectSaon, 
 
       {/* ── Empty state ───────────────────────────────────────────── */}
       {!loading && fetched && rows.length === 0 && (
-        <div className="text-center py-8 text-[#94A3B8] text-sm">
+        <div className="text-center py-8 text-[var(--color-text-secondary)] text-sm">
           No transactions found. Try adjusting your filters.
         </div>
       )}

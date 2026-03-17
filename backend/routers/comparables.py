@@ -140,7 +140,9 @@ class ComparableCandidate(BaseModel):
     months_ago:          int | None = None
     lease_remaining:     str | None = None
     distance_m:          float | None = None  # haversine distance from subject (metres)
-    coord_source:        str | None = None    # 'inspire' | 'postcode' | None
+    coord_source:        str | None = None    # 'os_open_uprn' | 'inspire' | 'postcode' | None
+    lat:                 float | None = None  # WGS84 latitude (building-level when UPRN resolved)
+    lon:                 float | None = None  # WGS84 longitude
 
 
 class SearchMetadata(BaseModel):
@@ -714,6 +716,8 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
         months_ago            = _months_ago(raw["sale_date"], val_date),
         distance_m            = raw.get("_dist_m"),
         coord_source          = raw.get("_coord_source"),
+        lat                   = raw.get("_lat"),
+        lon                   = raw.get("_lon"),
     )
 
 # ---------------------------------------------------------------------------
@@ -847,6 +851,88 @@ async def _process_rows(
                     tier, labels[tier], len(passed), len(candidates), len(pre_passed))
     return passed
 
+
+def _process_local_rows(
+    rows:        list[dict],
+    subject:     SubjectPropertyInput,
+    val_date:    date,
+    seen:        set[str],
+    relaxations: list[str],
+    tier:        int,
+    months:      int,
+    *,
+    geo_filter=None,
+    exclude_addr: set[str] = frozenset(),
+) -> list[dict]:
+    """Process pre-enriched rows from LocalPropertyDB.
+
+    Unlike _process_rows, this skips _parse_ppd_row and _enrich because
+    LocalPropertyDB returns rows already in internal format with EPC data
+    and coordinates pre-attached. Only applies time-window, hard-deck
+    filtering, and dedup.
+    """
+    is_flat = subject.property_type == "flat"
+    labels = FLAT_TIER_LABELS if is_flat else HOUSE_TIER_LABELS
+
+    # Filter
+    candidates: list[dict] = []
+    for raw in rows:
+        if not raw or not raw.get("sale_date") or not raw.get("price"):
+            continue
+        if not _within_window(raw["sale_date"], val_date, months):
+            continue
+        if geo_filter and not geo_filter(raw):
+            continue
+        k = _dedup_key(raw)
+        if k in seen:
+            continue
+        candidates.append(raw)
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda r: r["sale_date"], reverse=True)
+
+    passed: list[dict] = []
+    for raw in candidates:
+        k = _dedup_key(raw)
+        if k in seen:
+            continue
+
+        # Exclude subject itself
+        if subject.saon and subject.postcode:
+            if (raw["saon"].upper() == subject.saon.upper() and
+                    raw["postcode"] == subject.postcode):
+                continue
+        elif subject.uprn and raw.get("epc_uprn") == subject.uprn:
+            continue
+
+        # Cross-tab exclusion
+        if exclude_addr:
+            addr_key = f"{raw['saon'].upper()}|{raw['postcode']}"
+            if addr_key in exclude_addr:
+                continue
+
+        # Hard-deck filter (EPC data already present in row)
+        if not _passes_hard_deck(
+            raw.get("tenure"), raw.get("property_type"),
+            raw.get("house_sub_type"), raw.get("building_era"),
+            raw.get("bedrooms"), subject, relaxations,
+        ):
+            continue
+
+        seen.add(k)
+        raw["_tier"]   = tier
+        raw["_label"]  = labels[tier]
+        raw["_window"] = months
+        raw["_relax"]  = list(relaxations)
+        passed.append(raw)
+
+    logging.warning("Tier %d (%s) [LOCAL]: %d/%d passed",
+                    tier, labels[tier], len(passed), len(candidates))
+    return passed
+
+
 # ---------------------------------------------------------------------------
 # Adjacent outward codes
 # ---------------------------------------------------------------------------
@@ -961,19 +1047,35 @@ async def _run_flat_tier(
                                     exclude_addr=exclude_addr)
 
     elif tier == 2:
-        # Same development: outward + development_name fuzzy
-        if not subject.development_name:
+        # Same development (named block) OR same street (numbered building)
+        if subject.development_name:
+            dev_norm = normalise_building(subject.development_name)
+
+            def geo2(raw: dict) -> bool:
+                paon_norm = normalise_building(raw["paon"])
+                return (paon_norm == dev_norm or
+                        fuzz.token_sort_ratio(dev_norm, paon_norm) >= 80)
+
+            rows = await sc.outward(oc, months)
+            return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
+                                        geo_filter=geo2, exclude_addr=exclude_addr)
+        elif subject.street_name:
+            # Flat in numbered building (e.g. "27 Albert Embankment") — street walk
+            sn_norm = normalise_street(subject.street_name)
+
+            def geo_street(raw: dict) -> bool:
+                return bool(raw.get("street")) and normalise_street(raw["street"]) == sn_norm
+
+            search_codes = [oc] + adj
+            rows = await sc.street_multi(search_codes, subject.street_name, months)
+            logging.warning(
+                "Flat Tier 2 street fallback: %s across %d codes → %d rows",
+                subject.street_name, len(search_codes), len(rows),
+            )
+            return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
+                                        geo_filter=geo_street, exclude_addr=exclude_addr)
+        else:
             return []
-        dev_norm = normalise_building(subject.development_name)
-
-        def geo2(raw: dict) -> bool:
-            paon_norm = normalise_building(raw["paon"])
-            return (paon_norm == dev_norm or
-                    fuzz.token_sort_ratio(dev_norm, paon_norm) >= 80)
-
-        rows = await sc.outward(oc, months)
-        return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    geo_filter=geo2, exclude_addr=exclude_addr)
 
     elif tier == 3:
         rows = await sc.outward(oc, months)
@@ -1100,41 +1202,183 @@ async def _annotate_pool_with_distances(
     subj_lat: float,
     subj_lng: float,
     inspire,   # InspireService | None
+    uprn_coords=None,  # UPRNCoordService | None
 ) -> list[dict]:
     """
-    For each comparable in pool:
-      1. Look up postcode centroid via postcodes.io (bulk, one request).
-      2. Try INSPIRE nearest-centroid lookup from that postcode centroid.
-      3. Compute haversine distance to subject.
-      4. Store _dist_m and _coord_source on the raw dict.
+    For each comparable in pool, resolve coordinates and compute distance.
 
-    Returns pool with distances annotated (in-place modification).
-    Comparables where geocoding fails get _dist_m = None.
+    Coordinate resolution priority:
+      1. OS Open UPRN (building-level, ~1-5m) — via epc_uprn
+      2. INSPIRE centroid (polygon-level, ~10-50m) — London only
+      3. Postcode centroid (~100m) — last resort
+
+    Stores _dist_m, _coord_source, _lat, _lon on the raw dict.
     """
-    unique_postcodes = list({r["postcode"] for r in pool})
-    pc_coords = await _bulk_geocode_postcodes(unique_postcodes)
-
+    # Fast path: records from local DB already have pre-resolved coordinates
+    needs_resolution = []
     for r in pool:
-        pc = r["postcode"]
-        pc_latlon = pc_coords.get(pc)
-        if not pc_latlon:
-            continue
+        if r.get("_lat") is not None and r.get("_lon") is not None:
+            r["_dist_m"] = _haversine_m(subj_lat, subj_lng, r["_lat"], r["_lon"])
+        else:
+            needs_resolution.append(r)
 
-        pc_lat, pc_lng = pc_latlon
-        comp_lat, comp_lng = pc_lat, pc_lng
-        coord_source = "postcode"
+    if not needs_resolution:
+        return pool
 
-        if inspire and inspire.loaded:
-            hit = inspire.lookup(pc_lat, pc_lng)
-            if hit:
-                comp_lat    = hit["lat"]
-                comp_lng    = hit["lng"]
-                coord_source = "inspire"
+    # Batch UPRN lookup (fastest path — no API calls)
+    uprn_map = {}
+    if uprn_coords and uprn_coords.loaded:
+        uprns = [str(r["epc_uprn"]) for r in needs_resolution if r.get("epc_uprn")]
+        if uprns:
+            uprn_map = uprn_coords.lookup_batch(uprns)
 
-        r["_dist_m"]        = _haversine_m(subj_lat, subj_lng, comp_lat, comp_lng)
-        r["_coord_source"]  = coord_source
+    # Fallback: bulk postcode geocode for anything without UPRN coords
+    needs_postcode = [r["postcode"] for r in needs_resolution
+                      if not uprn_map.get(str(r.get("epc_uprn", "")))]
+    pc_coords = {}
+    if needs_postcode:
+        unique_postcodes = list(set(needs_postcode))
+        pc_coords = await _bulk_geocode_postcodes(unique_postcodes)
+
+    for r in needs_resolution:
+        epc_uprn = str(r.get("epc_uprn", "")) if r.get("epc_uprn") else ""
+
+        # 1. OS Open UPRN — building-level
+        if epc_uprn and epc_uprn in uprn_map:
+            comp_lat, comp_lng = uprn_map[epc_uprn]
+            coord_source = "os_open_uprn"
+        else:
+            # 2. Postcode centroid (will try INSPIRE upgrade)
+            pc_latlon = pc_coords.get(r["postcode"])
+            if not pc_latlon:
+                continue
+            pc_lat, pc_lng = pc_latlon
+            comp_lat, comp_lng = pc_lat, pc_lng
+            coord_source = "postcode"
+
+            # 3. INSPIRE upgrade from postcode centroid
+            if inspire and inspire.loaded:
+                hit = inspire.lookup(pc_lat, pc_lng)
+                if hit:
+                    comp_lat = hit["lat"]
+                    comp_lng = hit["lng"]
+                    coord_source = "inspire"
+
+        r["_dist_m"]       = _haversine_m(subj_lat, subj_lng, comp_lat, comp_lng)
+        r["_coord_source"] = coord_source
+        r["_lat"]          = comp_lat
+        r["_lon"]          = comp_lng
 
     return pool
+
+
+async def _orchestrate_local(
+    subject:              SubjectPropertyInput,
+    target:               int,
+    val_date:             date,
+    local_db,
+    max_tier:             int       = 4,
+    building_months:      int       = 30,
+    neighbouring_months:  int       = 12,
+    exclude_ids:          list[str] = [],
+    exclude_address_keys: list[str] = [],
+) -> tuple[list[dict], int]:
+    """
+    Local DB orchestrator: queries the pre-enriched DuckDB (1.1M PPD+EPC+coordinates).
+    Zero external API calls. Returns (raw_pool, total_candidates_scanned).
+    """
+    pool:  list[dict] = []
+    seen:  set[str]   = set(exclude_ids)
+    exclude_addr_set: set[str] = {k.upper() for k in exclude_address_keys if k}
+    total  = 0
+    is_flat  = subject.property_type == "flat"
+    oc       = _outward(subject.postcode)
+    labels   = FLAT_TIER_LABELS if is_flat else HOUSE_TIER_LABELS
+
+    _t0 = time.monotonic()
+    adj = await _adjacent_outcodes(oc) if max_tier >= 4 else []
+
+    for phase_relax in [[], ["type"], ["type", "bedrooms"]]:
+        for tier_num in range(1, max_tier + 1):
+            _tt = time.monotonic()
+            months = building_months if tier_num in (1, 2) else neighbouring_months
+
+            # Determine which query to run based on tier
+            # All local_db queries are synchronous DuckDB calls — wrap in to_thread
+            if tier_num == 1:
+                if is_flat and subject.paon_number and subject.street_name:
+                    # Flat in numbered building (e.g. "27 ALBERT EMBANKMENT") — use paon+street
+                    rows = await asyncio.to_thread(local_db.query_paon_street, oc, subject.paon_number, subject.street_name, months, val_date)
+                    pc_rows = await asyncio.to_thread(local_db.query_postcode, subject.postcode, months, val_date)
+                    seen_tids = {r["transaction_id"] for r in rows if r.get("transaction_id")}
+                    for r in pc_rows:
+                        if r.get("transaction_id") not in seen_tids:
+                            rows.append(r)
+                elif is_flat and subject.building_name:
+                    # Flat in named building (e.g. "COMPASS HOUSE") — use building name
+                    rows = await asyncio.to_thread(local_db.query_building, oc, subject.building_name, months, val_date)
+                    pc_rows = await asyncio.to_thread(local_db.query_postcode, subject.postcode, months, val_date)
+                    seen_tids = {r["transaction_id"] for r in rows if r.get("transaction_id")}
+                    for r in pc_rows:
+                        if r.get("transaction_id") not in seen_tids:
+                            rows.append(r)
+                elif not is_flat and subject.paon_number and subject.street_name:
+                    rows = await asyncio.to_thread(local_db.query_paon_street, oc, subject.paon_number, subject.street_name, months, val_date)
+                    pc_rows = await asyncio.to_thread(local_db.query_postcode, subject.postcode, months, val_date)
+                    seen_tids = {r["transaction_id"] for r in rows if r.get("transaction_id")}
+                    for r in pc_rows:
+                        if r.get("transaction_id") not in seen_tids:
+                            rows.append(r)
+                else:
+                    rows = await asyncio.to_thread(local_db.query_postcode, subject.postcode, months, val_date)
+
+            elif tier_num == 2:
+                if is_flat and subject.development_name:
+                    rows = await asyncio.to_thread(local_db.query_building, oc, subject.development_name, months, val_date)
+                elif subject.street_name:
+                    # Street walk: find all sales on the same street (any building number)
+                    # Works for both flats and houses — e.g. 25, 27, 29 Albert Embankment
+                    rows = await asyncio.to_thread(local_db.query_street, oc, subject.street_name, months, val_date)
+                else:
+                    rows = []
+
+            elif tier_num == 3:
+                rows = await asyncio.to_thread(local_db.query_outward, oc, months, val_date)
+
+            else:  # tier 4 — adjacent outward codes
+                rows = []
+                for code in adj:
+                    batch = await asyncio.to_thread(local_db.query_outward, code, months, val_date)
+                    rows.extend(batch)
+
+            # Apply geo_filter for specific tiers
+            geo_filter = None
+            if tier_num == 2 and is_flat and subject.development_name:
+                dev_norm = normalise_building(subject.development_name)
+                def geo_filter(raw, dn=dev_norm):
+                    paon_norm = normalise_building(raw["paon"])
+                    return paon_norm == dn or fuzz.token_sort_ratio(dn, paon_norm) >= 80
+            elif tier_num == 2 and subject.street_name:
+                sn_norm = normalise_street(subject.street_name)
+                def geo_filter(raw, sn=sn_norm):
+                    return bool(raw["street"]) and normalise_street(raw["street"]) == sn
+
+            results = _process_local_rows(
+                rows, subject, val_date, seen, phase_relax, tier_num, months,
+                geo_filter=geo_filter, exclude_addr=exclude_addr_set,
+            )
+            logging.warning("⏱ Comp [LOCAL]: Tier %d relax=%s → %d results in %.0fms",
+                            tier_num, phase_relax, len(results), (time.monotonic() - _tt) * 1000)
+            total += len(results)
+            pool.extend(results)
+            if len(pool) >= target:
+                break
+        if len(pool) >= target:
+            break
+
+    logging.warning("⏱ Comp [LOCAL]: TOTAL orchestrator %.0fms, pool=%d",
+                    (time.monotonic() - _t0) * 1000, len(pool))
+    return pool, total
 
 
 async def _orchestrate(
@@ -1150,7 +1394,7 @@ async def _orchestrate(
     exclude_address_keys: list[str] = [],
 ) -> tuple[list[dict], int]:
     """
-    3-phase orchestrator per spec §6.
+    3-phase orchestrator per spec §6. Falls back to Supabase pipeline.
     Returns (raw_pool, total_candidates_scanned).
     """
     sc     = PpdCache(val_date=val_date)
@@ -1279,28 +1523,56 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
         except Exception:
             pass
 
-    try:
-        pool, total_scanned = await asyncio.wait_for(
-            _orchestrate(req.subject, req.target_count, val_date, epc_email, epc_key,
-                         max_tier=req.max_tier, building_months=req.building_months,
-                         neighbouring_months=req.neighbouring_months,
-                         exclude_ids=req.exclude_transaction_ids,
-                         exclude_address_keys=req.exclude_address_keys),
-            timeout=TOTAL_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logging.warning("Comparable search timed out after %.0fs — returning partial results", TOTAL_TIMEOUT)
-        pool, total_scanned = [], 0
+    # Try local DB first (1.1M pre-enriched London records with building-level coords)
+    local_db = getattr(request.app.state, "local_db", None)
+    pool, total_scanned = [], 0
+    used_local = False
+    oc_check = _outward(req.subject.postcode)
+
+    if local_db and local_db.loaded and local_db.has_outward(oc_check):
+        try:
+            pool, total_scanned = await asyncio.wait_for(
+                _orchestrate_local(req.subject, req.target_count, val_date, local_db,
+                                   max_tier=req.max_tier, building_months=req.building_months,
+                                   neighbouring_months=req.neighbouring_months,
+                                   exclude_ids=req.exclude_transaction_ids,
+                                   exclude_address_keys=req.exclude_address_keys),
+                timeout=TOTAL_TIMEOUT,
+            )
+            used_local = True
+            logging.warning("⏱ Comp: LOCAL DB returned %d results", len(pool))
+        except Exception as exc:
+            logging.warning("Local DB search failed, falling back to Supabase: %s", exc)
+            pool, total_scanned = [], 0
+
+    # Fallback to Supabase pipeline if local DB unavailable or returned insufficient results
+    if not used_local or len(pool) < req.target_count:
+        try:
+            fb_pool, fb_total = await asyncio.wait_for(
+                _orchestrate(req.subject, req.target_count - len(pool), val_date, epc_email, epc_key,
+                             max_tier=req.max_tier, building_months=req.building_months,
+                             neighbouring_months=req.neighbouring_months,
+                             exclude_ids=req.exclude_transaction_ids + [r.get("transaction_id", "") for r in pool],
+                             exclude_address_keys=req.exclude_address_keys),
+                timeout=TOTAL_TIMEOUT,
+            )
+            pool.extend(fb_pool)
+            total_scanned += fb_total
+        except asyncio.TimeoutError:
+            logging.warning("Comparable search timed out after %.0fs — returning partial results", TOTAL_TIMEOUT)
+        except Exception:
+            logging.exception("Supabase fallback failed")
 
     # Annotate pool with distances if subject coordinates are available
     subj_lat = req.subject.lat
     subj_lng = req.subject.lon
-    inspire  = getattr(request.app.state, "inspire", None)
+    inspire      = getattr(request.app.state, "inspire", None)
+    uprn_coords  = getattr(request.app.state, "uprn_coords", None)
 
     if subj_lat is not None and subj_lng is not None and pool:
         try:
             pool = await asyncio.wait_for(
-                _annotate_pool_with_distances(pool, subj_lat, subj_lng, inspire),
+                _annotate_pool_with_distances(pool, subj_lat, subj_lng, inspire, uprn_coords),
                 timeout=5.0,
             )
         except asyncio.TimeoutError:
@@ -1469,16 +1741,97 @@ def _match_ppd_to_epc(ppd_rows: list[dict], epc_rows: list[dict]) -> dict[str, d
 
 
 @router.post("/browse")
-async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_user)):
+async def browse_sales(request: Request, req: BrowseRequest, _user: dict = Depends(get_current_user)):
     """Return all PPD transactions for an outward code, with optional filters.
-    Auto-enriches with cached EPC data if available.
+    Tries local DuckDB first (pre-enriched with EPC + coordinates), falls back to Supabase.
     """
     t0 = time.monotonic()
     outward = req.outward_code.strip().upper()
+
+    # --- Try local DB first (1.1M pre-enriched London records) ---
+    local_db = getattr(request.app.state, "local_db", None)
+    if local_db and local_db.loaded and local_db.has_outward(outward) and not req.force_refresh:
+        try:
+            filters = {}
+            if req.property_type:
+                filters["property_type"] = req.property_type
+            if req.estate_type:
+                filters["estate_type"] = req.estate_type
+            if req.min_date:
+                filters["min_date"] = req.min_date
+            if req.max_date:
+                filters["max_date"] = req.max_date
+            if req.min_price:
+                filters["min_price"] = req.min_price
+            if req.max_price:
+                filters["max_price"] = req.max_price
+            if req.new_build:
+                filters["new_build"] = req.new_build
+            if req.exclude_postcode:
+                filters["exclude_postcode"] = req.exclude_postcode
+
+            local_rows = await asyncio.to_thread(local_db.query_browse, outward, filters)
+
+            # Format local rows for frontend (already enriched with EPC + coords)
+            results = []
+            for r in local_rows:
+                saon = r.get("saon", "")
+                paon = r.get("paon", "")
+                street = r.get("street", "")
+                address = " ".join(filter(None, [saon, paon, street])).title()
+
+                ppd_type = r.get("house_sub_type") or r.get("property_type") or ""
+                type_label = ppd_type.title() if ppd_type else ""
+                tenure_label = (r.get("tenure") or "").title()
+
+                row_data = {
+                    "transaction_id":  r.get("transaction_id", ""),
+                    "address":         address,
+                    "postcode":        r.get("postcode", ""),
+                    "price":           r.get("price", 0),
+                    "date":            r.get("sale_date", ""),
+                    "property_type":   type_label,
+                    "tenure":          tenure_label,
+                    "new_build":       r.get("new_build", False),
+                    "category":        r.get("category", ""),
+                    "_type_code":      r.get("property_type", ""),
+                    "_tenure_code":    "F" if r.get("tenure") == "freehold" else "L" if r.get("tenure") == "leasehold" else "",
+                    "raw_saon":        saon,
+                    "_paon":           paon,
+                    "_street":         street,
+                    # Pre-enriched EPC data
+                    "epc_matched":     r.get("epc_matched", False),
+                    "floor_area_sqm":  r.get("floor_area_sqm"),
+                    "build_year":      r.get("build_year"),
+                    "building_era":    r.get("building_era"),
+                    "epc_rating":      r.get("epc_rating"),
+                    "building_name":   r.get("building_name"),
+                    # Pre-resolved coordinates
+                    "lat":             r.get("_lat"),
+                    "lon":             r.get("_lon"),
+                    "coord_source":    r.get("_coord_source"),
+                }
+                results.append(row_data)
+
+            duration = int((time.monotonic() - t0) * 1000)
+            epc_count = sum(1 for r in results if r.get("epc_matched"))
+            logging.warning("Browse %s [LOCAL]: %d results (%d EPC-enriched) in %dms",
+                            outward, len(results), epc_count, duration)
+            return {
+                "outward_code": outward,
+                "total":        len(results),
+                "epc_matched":  epc_count,
+                "duration_ms":  duration,
+                "source":       "local_db",
+                "results":      results,
+            }
+        except Exception:
+            logging.exception("Local DB browse failed for %s, falling back to Supabase", outward)
+
+    # --- Supabase fallback ---
     if req.force_refresh:
         await ppd_cache.force_refresh(outward)
     else:
-        # Warm PPD + EPC caches in parallel so EPC enrichment has data
         await asyncio.gather(
             ppd_cache.ensure_cache(outward),
             ppd_cache._ensure_epc_background(outward),
@@ -1504,7 +1857,6 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
             q = q.eq("new_build", req.new_build.upper())
         q = q.order("deed_date", desc=True)
 
-        # Paginate past Supabase 1000-row default limit
         all_rows: list[dict] = []
         offset = 0
         while True:
@@ -1518,12 +1870,10 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
 
     rows = await asyncio.to_thread(_query)
 
-    # Optionally exclude subject's postcode
     if req.exclude_postcode:
         pc = req.exclude_postcode.strip().upper()
         rows = [r for r in rows if r.get("postcode") != pc]
 
-    # Try to pre-match with cached EPC data (non-blocking — if cache not ready, skip)
     epc_match: dict[str, dict] = {}
     try:
         epc_rows = await ppd_cache.query_epc_outward(outward)
@@ -1533,7 +1883,6 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
     except Exception:
         logging.exception("EPC pre-match failed for %s (non-fatal)", outward)
 
-    # Format for frontend
     results = []
     for r in rows:
         saon = r.get("saon", "")
@@ -1552,10 +1901,8 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
             "tenure":          _TENURE_LABELS.get(r.get("estate_type", ""), r.get("estate_type", "")),
             "new_build":       r.get("new_build", "") == "Y",
             "category":        r.get("transaction_category", ""),
-            # Raw codes for filtering
             "_type_code":      r.get("property_type", ""),
             "_tenure_code":    r.get("estate_type", ""),
-            # Address parts for EPC matching
             "raw_saon":        saon,
             "_paon":           paon,
             "_street":         street,
@@ -1565,7 +1912,6 @@ async def browse_sales(req: BrowseRequest, _user: dict = Depends(get_current_use
             "_county":         r.get("county", ""),
         }
 
-        # Merge pre-matched EPC data if available
         epc = epc_match.get(tid)
         if epc:
             row_data.update(epc)
@@ -1753,15 +2099,39 @@ async def address_lookup(request: Request, req: AddressLookupRequest, _user: dic
 
     # Fuzzy-match to the selected address to find the specific property
     target_addr = _normalise_addr(req.address)
+
+    # Extract the flat/apartment identifier (SAON) from the target address
+    # so we can enforce it matches for multi-unit buildings
+    import re as _re
+    _saon_pat = _re.compile(
+        r"(?:FLAT|APARTMENT|APT|UNIT|ROOM|STUDIO)\s+[A-Z0-9][\w\-]*",
+        _re.IGNORECASE,
+    )
+    target_saon_m = _saon_pat.search(req.address)
+    target_saon = _normalise_addr(target_saon_m.group()) if target_saon_m else None
+
     matched_rows = []
     for r in ppd_rows:
-        ppd_addr = _normalise_addr(" ".join(filter(None, [
-            r.get("saon", ""), r.get("paon", ""), r.get("street", ""),
-        ])))
-        # Try exact match first, then fuzzy
+        ppd_saon_raw = r.get("saon", "") or ""
+        ppd_paon = r.get("paon", "") or ""
+        ppd_street = r.get("street", "") or ""
+        ppd_addr = _normalise_addr(" ".join(filter(None, [ppd_saon_raw, ppd_paon, ppd_street])))
+
+        # Exact normalised match — always accept
         if ppd_addr == target_addr:
             matched_rows.append(r)
-        elif fuzz.token_sort_ratio(ppd_addr, target_addr) >= 75:
+            continue
+
+        # For flat/apartment addresses, the SAON must match to avoid
+        # pulling in every unit in the same building (e.g. 64 flats in Luma House)
+        if target_saon:
+            row_saon_m = _saon_pat.search(ppd_saon_raw)
+            row_saon = _normalise_addr(row_saon_m.group()) if row_saon_m else _normalise_addr(ppd_saon_raw)
+            if row_saon != target_saon:
+                continue  # different flat — skip regardless of overall fuzzy score
+
+        # Fuzzy fallback for non-flat addresses or same-SAON rows
+        if fuzz.token_sort_ratio(ppd_addr, target_addr) >= 75:
             matched_rows.append(r)
 
     # EPC enrichment

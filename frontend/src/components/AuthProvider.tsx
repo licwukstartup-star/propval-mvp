@@ -60,8 +60,8 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0a0e1a' }}>
-        <p style={{ color: '#94A3B8' }}>Loading...</p>
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: 'var(--color-bg-base)' }}>
+        <p style={{ color: 'var(--color-text-secondary)' }}>Loading...</p>
       </div>
     )
   }

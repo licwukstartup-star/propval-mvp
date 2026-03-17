@@ -318,7 +318,9 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
         <Row label="Built Form" value={r.built_form} />
         <Row label="Construction Era" value={r.construction_age_band} even />
         <Row label="Heating" value={r.heating_type} />
-        {ai.building_description && <Para>{ai.building_description}</Para>}
+        {ai.subject_development && <><SSH num="2.3a">Subject Development</SSH><Para>{ai.subject_development}</Para></>}
+        {ai.subject_building && <><SSH num="2.3b">Subject Building</SSH><Para>{ai.subject_building}</Para></>}
+        {ai.subject_property && <><SSH num="2.3c">Subject Property</SSH><Para>{ai.subject_property}</Para></>}
       </Page>
 
       {/* ── SECTION 2 CONTINUED ─────────────────────────────────────────── */}
@@ -433,7 +435,7 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
             <div style={{
               display: "grid", gridTemplateColumns: "3fr 1fr 1fr 1fr 1fr",
               fontSize: "9pt", fontWeight: 700, color: "white", padding: "4pt 6pt",
-              background: "linear-gradient(90deg, #007AFF 0%, #FF2D78 100%)", borderRadius: "3pt 3pt 0 0",
+              background: "linear-gradient(90deg, #007AFF 0%, var(--color-accent-pink) 100%)", borderRadius: "3pt 3pt 0 0",
             }}>
               <span>Address</span><span>Price</span><span>Date</span><span>Type</span><span>Area</span>
             </div>
@@ -445,9 +447,9 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
               }}>
                 <span style={{ color: "#1C1C1E" }}>{c.address || "—"}</span>
                 <span style={{ color: "#1C1C1E" }}>£{typeof c.price === "number" ? c.price.toLocaleString() : c.price}</span>
-                <span style={{ color: "#636366" }}>{c.date || "—"}</span>
+                <span style={{ color: "#636366" }}>{c.transaction_date || c.date || "—"}</span>
                 <span style={{ color: "#636366" }}>{c.property_type || "—"}</span>
-                <span style={{ color: "#636366" }}>{c.floor_area ? `${c.floor_area}m²` : "—"}</span>
+                <span style={{ color: "#636366" }}>{c.floor_area_sqm ? `${Math.round(c.floor_area_sqm)}m²` : (c.floor_area ? `${c.floor_area}m²` : "—")}</span>
               </div>
             ))}
           </div>

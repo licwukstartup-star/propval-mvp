@@ -92,6 +92,9 @@ export interface PropertyResult {
   coord_source: string | null;
   inspire_lat: number | null;
   inspire_lon: number | null;
+  inspire_area_sqm: number | null;
+  inspire_id: string | null;
+  all_coords: Record<string, { lat: number; lon: number }> | null;
   admin_district: string | null;
   region: string | null;
   lsoa: string | null;
@@ -167,7 +170,7 @@ export interface PropertyResult {
   } | null;
 }
 
-export type CardSizeKey = "1x1" | "2x1" | "3x1" | "1x2";
+export type CardSizeKey = "1x1" | "2x1" | "3x1" | "1x2" | "2x2";
 
 export type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
 

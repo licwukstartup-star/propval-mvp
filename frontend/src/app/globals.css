@@ -2,6 +2,84 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme CSS Custom Properties ─────────────────────────────────────────── */
+
+/* Dark theme (default) */
+:root, [data-theme="dark"] {
+  --color-bg-base: #0A0E1A;
+  --color-bg-panel: #111827;
+  --color-bg-surface: #1E293B;
+  --color-bg-input: #0A0E1A;
+  --color-border: #334155;
+  --color-border-dim: #334155;
+  --color-text-primary: #E2E8F0;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #475569;
+  --color-accent: #00F0FF;
+  --color-accent-dim: #00f0ff33;
+  --color-accent-hover: #00f0ff66;
+  --color-accent-subtle: #00F0FF1a;
+  --color-accent-pink: #FF2D78;
+  --color-accent-pink-dim: #FF2D7833;
+  --color-accent-purple: #7B2FBE;
+  --color-accent-purple-dim: #7B2FBE33;
+  --color-accent-purple-text: #C4B5FD;
+  --color-btn-primary-bg: #00F0FF;
+  --color-btn-primary-text: #0A0E1A;
+  --color-status-success: #39FF14;
+  --color-status-warning: #FFB800;
+  --color-status-danger: #FF3131;
+  --color-status-info: #67E8F9;
+  --color-glow-cyan: 0 0 8px #00F0FF33, 0 0 20px #00F0FF33;
+  --color-glow-pink: 0 0 8px #FF2D7833;
+  --color-navbar-bg: #111827;
+  --color-navbar-border: #334155;
+  --color-badge-admin-bg: #FF2D7833;
+  --color-badge-admin-text: #FF2D78;
+  --color-badge-surveyor-bg: #00F0FF22;
+  --color-badge-surveyor-text: #00F0FF;
+  --color-leaflet-popup-bg: #111827;
+  --color-leaflet-popup-shadow: rgba(0,0,0,0.6);
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --color-bg-base: #F8FAFC;
+  --color-bg-panel: #FFFFFF;
+  --color-bg-surface: #F1F5F9;
+  --color-bg-input: #FFFFFF;
+  --color-border: #CBD5E1;
+  --color-border-dim: #E2E8F0;
+  --color-text-primary: #1E293B;
+  --color-text-secondary: #64748B;
+  --color-text-muted: #94A3B8;
+  --color-accent: #0891B2;
+  --color-accent-dim: #0891B233;
+  --color-accent-hover: #0891B266;
+  --color-accent-subtle: #0891B21a;
+  --color-accent-pink: #DB2777;
+  --color-accent-pink-dim: #DB277733;
+  --color-accent-purple: #7C3AED;
+  --color-accent-purple-dim: #7C3AED33;
+  --color-accent-purple-text: #6D28D9;
+  --color-btn-primary-bg: #0891B2;
+  --color-btn-primary-text: #FFFFFF;
+  --color-status-success: #16A34A;
+  --color-status-warning: #D97706;
+  --color-status-danger: #DC2626;
+  --color-status-info: #0284C7;
+  --color-glow-cyan: 0 1px 3px rgba(0,0,0,0.1);
+  --color-glow-pink: 0 1px 3px rgba(0,0,0,0.1);
+  --color-navbar-bg: #FFFFFF;
+  --color-navbar-border: #E2E8F0;
+  --color-badge-admin-bg: #DB277722;
+  --color-badge-admin-text: #DB2777;
+  --color-badge-surveyor-bg: #0891B222;
+  --color-badge-surveyor-text: #0891B2;
+  --color-leaflet-popup-bg: #FFFFFF;
+  --color-leaflet-popup-shadow: rgba(0,0,0,0.15);
+}
+
 /* ── Drag-and-drop card handles ─────────────────────────────────────────── */
 .drag-handle { cursor: grab; user-select: none; }
 .drag-handle:active { cursor: grabbing; }
@@ -10,31 +88,54 @@
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 
-/* ── Cyberpunk dark base ─────────────────────────────────────────────────── */
+/* ── Theme-aware base ────────────────────────────────────────────────────── */
 body {
-  background-color: #0A0E1A;
-  color: #E2E8F0;
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+}
+
+/* Smooth theme transitions — only active during theme switch.
+   The .theme-transitioning class is added/removed by ThemeProvider. */
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, fill 0.3s ease, stroke 0.3s ease !important;
+}
+
+/* Exclude map internals, iframes, and animated elements even during theme switch */
+html.theme-transitioning .leaflet-container *,
+html.theme-transitioning .leaflet-container *::before,
+html.theme-transitioning .leaflet-container *::after,
+html.theme-transitioning iframe,
+html.theme-transitioning .animate-spin,
+html.theme-transitioning canvas {
+  transition: none !important;
 }
 
 /* ── Print / Save as PDF ────────────────────────────────────────────────── */
 
 /* ── Leaflet map popup — dark theme override ─────────────────────────────── */
 .leaflet-popup-content-wrapper {
-  background: #111827 !important;
-  color: #E2E8F0 !important;
-  border: 1px solid #334155 !important;
+  background: var(--color-leaflet-popup-bg) !important;
+  color: var(--color-text-primary) !important;
+  border: 1px solid var(--color-border) !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important;
+  box-shadow: 0 4px 20px var(--color-leaflet-popup-shadow) !important;
 }
 .leaflet-popup-tip {
-  background: #111827 !important;
+  background: var(--color-leaflet-popup-bg) !important;
 }
 .leaflet-popup-close-button {
-  color: #94A3B8 !important;
+  color: var(--color-text-secondary) !important;
+  font-size: 20px !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  z-index: 10 !important;
 }
 .leaflet-popup-content {
   margin: 10px 14px !important;
-  font-family: Inter, -apple-system, sans-serif;
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
   font-size: 12px;
   line-height: 1.5;
 }

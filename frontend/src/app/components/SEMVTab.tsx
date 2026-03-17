@@ -1,5 +1,7 @@
 "use client";
 import { useMemo, useState, useRef, useCallback } from "react";
+import { fmtK, fmtPsf, fmtDateShort } from "@/lib/formatters";
+import { computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjustments";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ComparableCandidate {
@@ -36,6 +38,16 @@ interface SEMVTabProps {
   subjectHouseSubType: string | null;
   subjectEpcScore: number | null;
   subjectSaon: string | null;
+  subjectAreaM2: number | null;
+  hpiCorrelation: number;
+  onHpiCorrelationChange: (v: number) => void;
+  compSizeElasticity: number;
+  onCompSizeElasticityChange: (v: number) => void;
+  epcBeta: number;
+  onEpcBetaChange: (v: number) => void;
+  floorPremium: number;
+  onFloorPremiumChange: (v: number) => void;
+  onAdoptedMVChange?: (mv: number) => void;
 }
 
 // ── Floor level inference from SAON / flat number ────────────────────────────
@@ -128,6 +140,55 @@ function getHpiForMonth(
   return val ?? (point.hpi_all as number | null);
 }
 
+// ── Layer 1 Auto-Selection ───────────────────────────────────────────────────
+// Ranks the full comparable universe by similarity to the subject and returns
+// the top MAX_LAYER1 comps. Ensures the Monte Carlo engine works with a tight,
+// high-quality set rather than a noisy 50+ comp dump.
+const MAX_LAYER1 = 10;
+
+function selectBestComps(
+  allComps: ComparableCandidate[],
+  subjectSizeSqft: number,
+  valuationDate: string,
+  subjectEpcScore: number | null,
+): ComparableCandidate[] {
+  if (allComps.length <= MAX_LAYER1) return allComps;
+
+  const valDateMs = new Date(valuationDate).getTime();
+  const maxAgeDays = 365 * 3;
+
+  const scored = allComps.map((c) => {
+    // Size similarity (requires floor area)
+    let sizeSim = 0.3; // neutral if no data
+    if (c.floor_area_sqm != null && c.floor_area_sqm > 0 && subjectSizeSqft > 0) {
+      const sqft = c.floor_area_sqm * 10.764;
+      const sizeDiff = Math.abs(subjectSizeSqft - sqft) / Math.max(subjectSizeSqft, sqft);
+      sizeSim = Math.exp(-8 * sizeDiff);
+    }
+
+    // Date recency
+    const txMs = new Date(c.transaction_date).getTime();
+    const ageDays = Math.max(0, (valDateMs - txMs) / 86_400_000);
+    const dateSim = Math.exp(-2 * (ageDays / maxAgeDays));
+
+    // EPC similarity
+    let epcSim = 0.5;
+    if (subjectEpcScore != null && c.epc_score != null) {
+      const epcDiff = Math.abs(subjectEpcScore - c.epc_score) / 100;
+      epcSim = Math.exp(-3 * epcDiff);
+    }
+
+    // Has floor area data? Strong bonus — comps without size are much less useful
+    const hasSize = c.floor_area_sqm != null && c.floor_area_sqm > 0 ? 1.0 : 0.2;
+
+    const score = hasSize * sizeSim * (dateSim * 0.6 + epcSim * 0.4);
+    return { comp: c, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, MAX_LAYER1).map((s) => s.comp);
+}
+
 // ── Monte Carlo Engine ───────────────────────────────────────────────────────
 interface SimulationResult {
   simMVs: number[];
@@ -149,7 +210,11 @@ function runMonteCarlo(
   subjectPropertyType: string | null,
   subjectHouseSubType: string | null,
   subjectEpcScore: number | null,
-  subjectSaon: string | null
+  subjectSaon: string | null,
+  sizeElasticityOverride: number | null = null,
+  hpiCorrelationPct: number = 50,
+  epcBetaPct: number = 50,
+  floorPremiumPct: number = 50
 ): SimulationResult {
   const N_SIMS = 100_000;
   const rng = mulberry32(hashInputs(layer1, adoptedMV));
@@ -233,21 +298,25 @@ function runMonteCarlo(
     cumSim[i] = cumSim[i - 1] + similarityScores[i] / simTotal;
   }
 
-  // Weighted random pick: returns comp index proportional to similarity
-  function weightedPick(rng: () => number, excluded: Set<number>): number {
-    // Retry up to 20 times to find a non-excluded comp
+  // Pre-allocate reusable buffers to avoid per-iteration heap allocations
+  const pickedBuf = new Int32Array(n);
+  const excludedBuf = new Uint8Array(n); // boolean flags, faster than Set
+  const weightsBuf = new Float64Array(n);
+  const adjPricesBuf = new Float64Array(n);
+
+  // Weighted random pick using exclusion flags array (no Set allocation)
+  function weightedPick(rng: () => number, excl: Uint8Array): number {
     for (let attempt = 0; attempt < 20; attempt++) {
       const r = rng();
       for (let i = 0; i < n; i++) {
         if (r <= cumSim[i]) {
-          if (!excluded.has(i)) return i;
+          if (!excl[i]) return i;
           break;
         }
       }
     }
-    // Fallback: pick first non-excluded
     for (let i = 0; i < n; i++) {
-      if (!excluded.has(i)) return i;
+      if (!excl[i]) return i;
     }
     return 0;
   }
@@ -256,31 +325,32 @@ function runMonteCarlo(
     // Randomness 1 — How many comps to pick (1 to N)
     const pickCount = Math.floor(rng() * n) + 1;
 
-    // Similarity-weighted selection: more similar comps are more likely to be chosen
-    // (replaces uniform Fisher-Yates shuffle)
-    const picked: number[] = [];
-    const excluded = new Set<number>();
+    // Reset exclusion flags (only the portion we need)
+    excludedBuf.fill(0);
+
+    // Similarity-weighted selection into pre-allocated buffer
     for (let i = 0; i < pickCount; i++) {
-      const idx = weightedPick(rng, excluded);
-      picked.push(idx);
-      excluded.add(idx);
+      const idx = weightedPick(rng, excludedBuf);
+      pickedBuf[i] = idx;
+      excludedBuf[idx] = 1;
     }
 
     // Randomness 2 — Adjustment parameters
-    const passthroughRate = rng(); // Uniform[0, 1] — full range of HPI indexation
-    const betaEpc = rng() * 0.005; // Uniform[0, 0.005] — 0–0.5% per EPC point
-    const sizeAlpha = rng() * 0.5; // Uniform[0, 0.5] — size elasticity, capped at 50%
-    const floorPremium = 0.001 + rng() * 0.019; // Uniform[0.1%, 2%] per floor — higher floor = more expensive
+    const hpiCentre = hpiCorrelationPct / 100;
+    const passthroughRate = Math.max(0, Math.min(1, hpiCentre + (rng() - 0.5) * 0.4));
+    const epcCentre = (epcBetaPct / 100) * 0.005;
+    const betaEpc = Math.max(0, epcCentre + (rng() - 0.5) * 0.002);
+    const sizeAlpha = sizeElasticityOverride != null
+      ? sizeElasticityOverride
+      : -0.15 + rng() * 0.65;
+    const floorCentre = 0.001 + (floorPremiumPct / 100) * 0.019;
+    const floorPrem = Math.max(0, floorCentre + (rng() - 0.5) * 0.008);
 
-    // Randomness 3 — Similarity-biased weights
-    // Base weight = similarity score; noise = rng() in [0.2, 1.8]
-    // More similar comps naturally get higher weight, but with per-sim variation
+    // Randomness 3 — Similarity-biased weights (reuse pre-allocated buffers)
     let weightSum = 0;
-    const weights: number[] = [];
-    const adjPrices: number[] = [];
 
     for (let i = 0; i < pickCount; i++) {
-      const compIdx = picked[i];
+      const compIdx = pickedBuf[i];
       const comp = compsWithData[compIdx];
 
       // Time adjustment (HPI-based)
@@ -290,72 +360,72 @@ function runMonteCarlo(
           ((comp.subjectHpi - comp.compHpi) / comp.compHpi) * passthroughRate;
       }
 
-      // EPC adjustment — better EPC = premium, worse = discount
+      // EPC adjustment
       let epcAdj = 0;
       if (subjectEpcScore != null && comp.epcScore != null && comp.epcScore > 0) {
         epcAdj = (subjectEpcScore - comp.epcScore) * betaEpc;
       }
 
-      // Size adjustment — elasticity-based, capped at 50%, with monotonicity guard.
-      // If subject is larger than comp, price adjusts up (but not by more than alpha
-      // of the proportional size difference). Vice versa for smaller subject.
+      // Size adjustment
       let sizeAdj = 0;
       if (subjectSizeSqft > 0 && comp.sqft > 0) {
         sizeAdj = sizeAlpha * (subjectSizeSqft - comp.sqft) / comp.sqft;
       }
 
-      // Floor level adjustment — higher floors command a premium
+      // Floor level adjustment
       let floorAdj = 0;
       if (subjectFloor != null && comp.compFloor != null) {
-        const floorDiff = subjectFloor - comp.compFloor;
-        floorAdj = floorDiff * floorPremium;
+        floorAdj = (subjectFloor - comp.compFloor) * floorPrem;
       }
 
       let adjPrice = comp.price * (1 + timeAdj + epcAdj + sizeAdj + floorAdj);
 
-      // Monotonicity clamp: a smaller subject must not produce a higher price
-      // than the comp's raw price; a larger subject must not produce a lower price.
-      if (subjectSizeSqft < comp.sqft) {
-        adjPrice = Math.min(adjPrice, comp.price);
-      } else if (subjectSizeSqft > comp.sqft) {
-        adjPrice = Math.max(adjPrice, comp.price);
+      // Monotonicity clamp
+      if (sizeAlpha >= 0) {
+        if (subjectSizeSqft < comp.sqft) {
+          adjPrice = Math.min(adjPrice, comp.price);
+        } else if (subjectSizeSqft > comp.sqft) {
+          adjPrice = Math.max(adjPrice, comp.price);
+        }
       }
-      adjPrices.push(adjPrice);
+      adjPricesBuf[i] = adjPrice;
 
-      // Similarity-biased weight: similarity * random noise [0.2, 1.8]
       const noise = 0.2 + rng() * 1.6;
       const w = similarityScores[compIdx] * noise;
-      weights.push(w);
+      weightsBuf[i] = w;
       weightSum += w;
     }
 
     // Weighted average adjusted price → simulated MV
     let simMV = 0;
     for (let i = 0; i < pickCount; i++) {
-      simMV += (weights[i] / weightSum) * adjPrices[i];
+      simMV += (weightsBuf[i] / weightSum) * adjPricesBuf[i];
     }
     simMVs[sim] = simMV;
   }
 
-  // Sort for percentile calculation
-  const sorted = Array.from(simMVs).sort((a, b) => a - b);
-  const mean = sorted.reduce((a, b) => a + b, 0) / N_SIMS;
-  const variance =
-    sorted.reduce((acc, v) => acc + (v - mean) ** 2, 0) / N_SIMS;
-  const stdDev = Math.sqrt(variance);
+  // Sort Float64Array in-place (no copy needed)
+  simMVs.sort();
+  const sorted = simMVs;
+  let sum = 0;
+  for (let i = 0; i < N_SIMS; i++) sum += sorted[i];
+  const mean = sum / N_SIMS;
+  let varSum = 0;
+  for (let i = 0; i < N_SIMS; i++) { const d = sorted[i] - mean; varSum += d * d; }
+  const stdDev = Math.sqrt(varSum / N_SIMS);
   const p5 = sorted[Math.floor(N_SIMS * 0.05)];
   const p95 = sorted[Math.floor(N_SIMS * 0.95)];
 
-  // Percentile of adopted MV
-  let below = 0;
-  for (const v of sorted) {
-    if (v < adoptedMV) below++;
-    else break;
+  // Percentile of adopted MV (binary search on sorted array)
+  let lo = 0, hi = N_SIMS;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < adoptedMV) lo = mid + 1; else hi = mid;
   }
-  const percentile = Math.round((below / N_SIMS) * 100);
+  const percentile = Math.round((lo / N_SIMS) * 100);
   const sigma = stdDev > 0 ? (adoptedMV - mean) / stdDev : 0;
 
-  return { simMVs: sorted, mean, stdDev, p5, p95, percentile, sigma, compsUsed: n };
+  return { simMVs: Array.from(sorted), mean, stdDev, p5, p95, percentile, sigma, compsUsed: n };
 }
 
 // ── PDF Chart (SVG) ──────────────────────────────────────────────────────────
@@ -366,6 +436,7 @@ function PdfChart({
   p5,
   p95,
   stdDev,
+  onAdoptedMVChange,
 }: {
   simMVs: number[];
   mean: number;
@@ -373,15 +444,21 @@ function PdfChart({
   p5: number;
   p95: number;
   stdDev: number;
+  onAdoptedMVChange?: (mv: number) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<{ x: number; y: number; value: number; pct: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [dragMV, setDragMV] = useState<number | null>(null);
+
+  // The displayed MV: use drag value while dragging, otherwise prop
+  const displayMV = dragMV ?? adoptedMV;
 
   const W = 800;
   const H = 300;
   const PAD_L = 70;
   const PAD_R = 30;
-  const PAD_T = 20;
+  const PAD_T = 35;
   const PAD_B = 60;
   const plotW = W - PAD_L - PAD_R;
   const plotH = H - PAD_T - PAD_B;
@@ -429,8 +506,47 @@ function PdfChart({
     return Math.round((lo / simMVs.length) * 100);
   }, [simMVs]);
 
-  // Mouse/touch → SVG coordinate → nearest curve point
+  // Convert client X → value on the chart axis
+  const clientXToValue = useCallback((clientX: number) => {
+    const svg = svgRef.current;
+    if (!svg) return adoptedMV;
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((clientX - rect.left) / rect.width) * W;
+    const clampedX = Math.max(PAD_L, Math.min(PAD_L + plotW, svgX));
+    const val = minV + ((clampedX - PAD_L) / plotW) * range;
+    // Round to nearest £1,000 for clean values
+    return Math.round(val / 1000) * 1000;
+  }, [W, plotW, minV, range, adoptedMV]);
+
+  // ── MV line drag handlers ──
+  const handleDragStart = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as Element).setPointerCapture(e.pointerId);
+    setDragging(true);
+    setDragMV(clientXToValue(e.clientX));
+  }, [clientXToValue]);
+
+  const handleDragMove = useCallback((e: React.PointerEvent) => {
+    if (!dragging) return;
+    e.stopPropagation();
+    setDragMV(clientXToValue(e.clientX));
+  }, [dragging, clientXToValue]);
+
+  const handleDragEnd = useCallback((e: React.PointerEvent) => {
+    if (!dragging) return;
+    e.stopPropagation();
+    (e.target as Element).releasePointerCapture(e.pointerId);
+    setDragging(false);
+    const finalMV = clientXToValue(e.clientX);
+    setDragMV(null);
+    if (onAdoptedMVChange && finalMV > 0) {
+      onAdoptedMVChange(finalMV);
+    }
+  }, [dragging, clientXToValue, onAdoptedMVChange]);
+
+  // Mouse/touch → SVG coordinate → nearest curve point (hover tooltip)
   const handlePointer = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    if (dragging) return; // Don't show hover tooltip while dragging MV line
     const svg = svgRef.current;
     if (!svg || points.length === 0) return;
     const rect = svg.getBoundingClientRect();
@@ -449,7 +565,7 @@ function PdfChart({
     } else {
       setHover(null);
     }
-  }, [points, pctBelow, W, plotW]);
+  }, [points, pctBelow, W, plotW, dragging]);
 
   if (simMVs.length < 2) return null;
 
@@ -487,7 +603,7 @@ function PdfChart({
   }
 
   const meanX = xScale(mean);
-  const mvX = xScale(adoptedMV);
+  const mvX = xScale(displayMV);
 
   // X-axis labels — snap to clean round numbers so labels align with actual values
   const niceStep = (() => {
@@ -524,19 +640,19 @@ function PdfChart({
     >
       {/* P5-P95 shaded area */}
       {shadePath && (
-        <path d={shadePath} fill="#00F0FF" opacity={0.1} />
+        <path d={shadePath} fill="var(--color-accent)" opacity={0.1} />
       )}
 
       {/* Distribution curve */}
-      <path d={path} fill="none" stroke="#00F0FF" strokeWidth={2} opacity={0.8} />
+      <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth={2} opacity={0.8} />
 
       {/* Filled area under curve */}
-      <path d={path + " Z"} fill="#00F0FF" opacity={0.05} />
+      <path d={path + " Z"} fill="var(--color-accent)" opacity={0.05} />
 
       {/* ±1σ and ±2σ bands */}
       {[
-        { n: 1, color: "#7B2FBE", opacity: 0.08 },
-        { n: 2, color: "#7B2FBE", opacity: 0.04 },
+        { n: 1, color: "var(--color-accent-purple)", opacity: 0.08 },
+        { n: 2, color: "var(--color-accent-purple)", opacity: 0.04 },
       ].map(({ n, color, opacity: fillOp }) => {
         const lo = xScale(Math.max(minV, mean - n * stdDev));
         const hi = xScale(Math.min(maxV, mean + n * stdDev));
@@ -563,42 +679,67 @@ function PdfChart({
       {/* Mean dashed line */}
       <line
         x1={meanX} y1={PAD_T} x2={meanX} y2={PAD_T + plotH}
-        stroke="#00F0FF" strokeWidth={1.5} strokeDasharray="6,4" opacity={0.7}
+        stroke="var(--color-accent)" strokeWidth={1.5} strokeDasharray="6,4" opacity={0.7}
       />
-      <text x={meanX} y={PAD_T - 5} fill="#00F0FF" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
+      <text x={meanX} y={PAD_T - 5} fill="var(--color-accent)" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
         Mean {fmtFull(mean)}
       </text>
 
-      {/* Adopted MV solid line */}
-      <line
-        x1={mvX} y1={PAD_T} x2={mvX} y2={PAD_T + plotH}
-        stroke="#FF2D78" strokeWidth={2} opacity={0.9}
-      />
-      {/* Triangle marker */}
-      <polygon
-        points={`${mvX},${PAD_T + plotH + 2} ${mvX - 6},${PAD_T + plotH + 12} ${mvX + 6},${PAD_T + plotH + 12}`}
-        fill="#FF2D78"
-      />
-      <text x={mvX} y={PAD_T - 5} fill="#FF2D78" fontSize={11} textAnchor="middle" fontWeight="bold" fontFamily="Inter, sans-serif">
-        Adopted {fmtFull(adoptedMV)}
-      </text>
+      {/* Adopted MV — draggable line + marker */}
+      <g
+        style={{ cursor: dragging ? "grabbing" : "ew-resize" }}
+        onPointerDown={handleDragStart}
+        onPointerMove={handleDragMove}
+        onPointerUp={handleDragEnd}
+        onPointerCancel={handleDragEnd}
+      >
+        {/* Wide invisible hit area for easy grab */}
+        <rect
+          x={mvX - 12} y={PAD_T - 10}
+          width={24} height={plotH + 30}
+          fill="transparent"
+        />
+        {/* Visible line */}
+        <line
+          x1={mvX} y1={PAD_T} x2={mvX} y2={PAD_T + plotH}
+          stroke="var(--color-accent-pink)" strokeWidth={dragging ? 3 : 2} opacity={0.9}
+        />
+        {/* Glow while dragging */}
+        {dragging && (
+          <line
+            x1={mvX} y1={PAD_T} x2={mvX} y2={PAD_T + plotH}
+            stroke="var(--color-accent-pink)" strokeWidth={8} opacity={0.15}
+          />
+        )}
+        {/* Triangle marker */}
+        <polygon
+          points={`${mvX},${PAD_T + plotH + 2} ${mvX - 8},${PAD_T + plotH + 14} ${mvX + 8},${PAD_T + plotH + 14}`}
+          fill="var(--color-accent-pink)"
+          stroke={dragging ? "var(--color-text-primary)" : "none"}
+          strokeWidth={dragging ? 1 : 0}
+        />
+        {/* Label — offset higher to avoid overlap with Mean label */}
+        <text x={mvX} y={PAD_T - 18} fill="var(--color-accent-pink)" fontSize={11} textAnchor="middle" fontWeight="bold" fontFamily="Inter, sans-serif">
+          {dragging ? fmtFull(displayMV) : `Adopted ${fmtFull(displayMV)}`}
+        </text>
+      </g>
 
       {/* X axis */}
-      <line x1={PAD_L} y1={PAD_T + plotH} x2={PAD_L + plotW} y2={PAD_T + plotH} stroke="#334155" strokeWidth={1} />
+      <line x1={PAD_L} y1={PAD_T + plotH} x2={PAD_L + plotW} y2={PAD_T + plotH} stroke="var(--color-border)" strokeWidth={1} />
       {ticks.map((t, i) => (
         <g key={i}>
-          <line x1={t.x} y1={PAD_T + plotH} x2={t.x} y2={PAD_T + plotH + 6} stroke="#334155" />
-          <text x={t.x} y={PAD_T + plotH + 22} fill="#94A3B8" fontSize={10} textAnchor="middle" fontFamily="Inter, sans-serif">
+          <line x1={t.x} y1={PAD_T + plotH} x2={t.x} y2={PAD_T + plotH + 6} stroke="var(--color-border)" />
+          <text x={t.x} y={PAD_T + plotH + 22} fill="var(--color-text-secondary)" fontSize={10} textAnchor="middle" fontFamily="Inter, sans-serif">
             {fmt(t.v)}
           </text>
         </g>
       ))}
 
       {/* Axis labels */}
-      <text x={PAD_L + plotW / 2} y={H - 5} fill="#94A3B8" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
+      <text x={PAD_L + plotW / 2} y={H - 5} fill="var(--color-text-secondary)" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
         Market Value
       </text>
-      <text x={15} y={PAD_T + plotH / 2} fill="#94A3B8" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif" transform={`rotate(-90, 15, ${PAD_T + plotH / 2})`}>
+      <text x={15} y={PAD_T + plotH / 2} fill="var(--color-text-secondary)" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif" transform={`rotate(-90, 15, ${PAD_T + plotH / 2})`}>
         Density
       </text>
 
@@ -607,14 +748,14 @@ function PdfChart({
         <g>
           {/* Vertical crosshair */}
           <line x1={hover.x} y1={PAD_T} x2={hover.x} y2={PAD_T + plotH}
-            stroke="#E2E8F0" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.4} />
+            stroke="var(--color-text-primary)" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.4} />
           {/* Horizontal crosshair */}
           <line x1={PAD_L} y1={hover.y} x2={PAD_L + plotW} y2={hover.y}
-            stroke="#E2E8F0" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.3} />
+            stroke="var(--color-text-primary)" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.3} />
           {/* Glow ring */}
-          <circle cx={hover.x} cy={hover.y} r={8} fill="#00F0FF" opacity={0.15} />
+          <circle cx={hover.x} cy={hover.y} r={8} fill="var(--color-accent)" opacity={0.15} />
           {/* Dot */}
-          <circle cx={hover.x} cy={hover.y} r={4.5} fill="#00F0FF" stroke="#0A0E1A" strokeWidth={2} />
+          <circle cx={hover.x} cy={hover.y} r={4.5} fill="var(--color-accent)" stroke="var(--color-bg-base)" strokeWidth={2} />
           {/* Tooltip background — flips below dot when near top */}
           {(() => {
             const label = `${fmtFull(hover.value)}  ·  P${hover.pct}`;
@@ -631,12 +772,12 @@ function PdfChart({
             return (
               <g>
                 <rect x={tx} y={ty} width={tw} height={th} rx={6}
-                  fill="#0A0E1A" stroke="#00F0FF" strokeWidth={0.8} opacity={0.92} />
-                <text x={tx + tw / 2} y={ty + 16} fill="#E2E8F0" fontSize={11} textAnchor="middle"
+                  fill="var(--color-bg-base)" stroke="var(--color-accent)" strokeWidth={0.8} opacity={0.92} />
+                <text x={tx + tw / 2} y={ty + 16} fill="var(--color-text-primary)" fontSize={11} textAnchor="middle"
                   fontFamily="JetBrains Mono, Fira Code, monospace" fontWeight="600">
                   {fmtFull(hover.value)}
-                  <tspan fill="#94A3B8" fontWeight="400">  ·  </tspan>
-                  <tspan fill="#00F0FF">P{hover.pct}</tspan>
+                  <tspan fill="var(--color-text-secondary)" fontWeight="400">  ·  </tspan>
+                  <tspan fill="var(--color-accent)">P{hover.pct}</tspan>
                 </text>
               </g>
             );
@@ -731,11 +872,11 @@ function DeltaGauge({ percentile, sigma }: { percentile: number; sigma: number }
   // Arc gradient: always shows the full spectrum green→yellow→orange→red
   const arcGradStops = [
     { offset: "0%", color: "#00C853" },
-    { offset: "25%", color: "#39FF14" },
+    { offset: "25%", color: "var(--color-status-success)" },
     { offset: "50%", color: "#A8E600" },
-    { offset: "70%", color: "#FFB800" },
+    { offset: "70%", color: "var(--color-status-warning)" },
     { offset: "85%", color: "#FF8A00" },
-    { offset: "100%", color: "#FF3131" },
+    { offset: "100%", color: "var(--color-status-danger)" },
   ];
 
   return (
@@ -762,7 +903,7 @@ function DeltaGauge({ percentile, sigma }: { percentile: number; sigma: number }
             <line
               key={i}
               x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
-              stroke={t.isLit ? t.tickColor : "#1E293B"}
+              stroke={t.isLit ? t.tickColor : "var(--color-bg-surface)"}
               strokeWidth={t.isMajor ? 2 : 1}
               opacity={t.isLit ? 0.8 : 0.25}
               strokeLinecap="round"
@@ -772,13 +913,13 @@ function DeltaGauge({ percentile, sigma }: { percentile: number; sigma: number }
           {/* Background ring */}
           <circle
             cx={cx} cy={cy} r={rOuter}
-            fill="none" stroke="#1E293B" strokeWidth={strokeW}
+            fill="none" stroke="var(--color-bg-surface)" strokeWidth={strokeW}
           />
 
           {/* Faint inner ring */}
           <circle
             cx={cx} cy={cy} r={rInner}
-            fill="none" stroke="#1E293B" strokeWidth={thinStroke}
+            fill="none" stroke="var(--color-bg-surface)" strokeWidth={thinStroke}
             opacity={0.4}
           />
 
@@ -805,7 +946,7 @@ function DeltaGauge({ percentile, sigma }: { percentile: number; sigma: number }
           />
 
           {/* Centre dark fill */}
-          <circle cx={cx} cy={cy} r={rInner - 6} fill="#0A0E1A" opacity={0.6} />
+          <circle cx={cx} cy={cy} r={rInner - 6} fill="var(--color-bg-base)" opacity={0.6} />
         </svg>
 
         {/* Centre text */}
@@ -820,7 +961,7 @@ function DeltaGauge({ percentile, sigma }: { percentile: number; sigma: number }
           >
             P{percentile}
           </span>
-          <span className="text-[10px] text-[#94A3B8] tracking-[0.2em] mt-1">PERCENTILE</span>
+          <span className="text-[10px] text-[var(--color-text-secondary)] tracking-[0.2em] mt-1">PERCENTILE</span>
         </div>
       </div>
       <span
@@ -843,10 +984,6 @@ function fmtGBP(v: number): string {
   return "£" + Math.round(v).toLocaleString("en-GB");
 }
 
-function fmtPsf(v: number): string {
-  return "£" + v.toFixed(0) + "/ft²";
-}
-
 // ── Main Component ───────────────────────────────────────────────────────────
 export default function SEMVTab({
   layer1Comps,
@@ -859,6 +996,16 @@ export default function SEMVTab({
   subjectHouseSubType,
   subjectEpcScore,
   subjectSaon,
+  subjectAreaM2,
+  hpiCorrelation,
+  onHpiCorrelationChange,
+  compSizeElasticity,
+  onCompSizeElasticityChange,
+  epcBeta,
+  onEpcBetaChange,
+  floorPremium,
+  onFloorPremiumChange,
+  onAdoptedMVChange,
 }: SEMVTabProps) {
   // Validation
   const hasLayer1 = layer1Comps.length >= 3;
@@ -866,28 +1013,120 @@ export default function SEMVTab({
   const hasMV = adoptedMV != null && adoptedMV > 0;
   const hasSize = subjectSizeSqft != null && subjectSizeSqft > 0;
 
+  // ── Adopted comparable statistics ──────────────────────────────────────────
+  const adoptedStats = useMemo(() => {
+    const prices = adoptedComparables.map(c => c.price);
+    const priceMin = prices.length ? Math.min(...prices) : 0;
+    const priceMax = prices.length ? Math.max(...prices) : 0;
+    const priceAvg = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
+
+    const withArea = adoptedComparables.filter(c => c.floor_area_sqm != null && c.floor_area_sqm > 0);
+    const psfs = withArea.map(c => c.price / (c.floor_area_sqm! * 10.764));
+    const psfMin = psfs.length ? Math.min(...psfs) : null;
+    const psfMax = psfs.length ? Math.max(...psfs) : null;
+    const psfAvg = psfs.length ? psfs.reduce((a, b) => a + b, 0) / psfs.length : null;
+
+    const sizes = withArea.map(c => c.floor_area_sqm!);
+    const sizeMin = sizes.length ? Math.min(...sizes) : null;
+    const sizeMax = sizes.length ? Math.max(...sizes) : null;
+    const sizeAvg = sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length : null;
+
+    const dates = adoptedComparables.map(c => c.transaction_date).filter(Boolean).sort();
+    const dateMin = dates[0] ?? null;
+    const dateMax = dates[dates.length - 1] ?? null;
+
+    // Time-adjusted PSF
+    const adjFactors = adoptedComparables.map(c => computeAdjFactor(c, hpiTrend, hpiCorrelation));
+    const adjPsfsWithArea = adoptedComparables
+      .map((c, i) => c.floor_area_sqm != null && c.floor_area_sqm > 0
+        ? Math.round(c.price * adjFactors[i] / (c.floor_area_sqm * 10.764))
+        : null)
+      .filter((v): v is number => v != null);
+    const adjPsfAvg = adjPsfsWithArea.length ? Math.round(adjPsfsWithArea.reduce((a, b) => a + b, 0) / adjPsfsWithArea.length) : null;
+    const adjPsfMin = adjPsfsWithArea.length ? Math.min(...adjPsfsWithArea) : null;
+
+    // Size-adjusted PSF
+    const betaFloat = compSizeElasticity / 100;
+    const sizeAdjPsfsArr: number[] = [];
+    adoptedComparables.forEach((c, i) => {
+      const sqft = c.floor_area_sqm != null && c.floor_area_sqm > 0 ? c.floor_area_sqm * 10.764 : null;
+      const timeAdjPsf = sqft != null ? (c.price * adjFactors[i]) / sqft : null;
+      if (sqft != null && timeAdjPsf != null && subjectSizeSqft != null && betaFloat !== 0) {
+        const { adjPsf } = computeSizeAdj(sqft, subjectSizeSqft, timeAdjPsf, c.price, betaFloat);
+        sizeAdjPsfsArr.push(Math.round(adjPsf));
+      }
+    });
+    const sizeAdjPsfMin = sizeAdjPsfsArr.length ? Math.min(...sizeAdjPsfsArr) : null;
+    const sizeAdjPsfMax = sizeAdjPsfsArr.length ? Math.max(...sizeAdjPsfsArr) : null;
+    const sizeAdjPsfAvg = sizeAdjPsfsArr.length ? Math.round(sizeAdjPsfsArr.reduce((a, b) => a + b, 0) / sizeAdjPsfsArr.length) : null;
+
+    // Indicative valuation
+    const subSqft = subjectSizeSqft;
+    const useSize = compSizeElasticity !== 0 && subSqft != null && sizeAdjPsfMin != null;
+    const useAdj = !useSize && hpiCorrelation > 0 && hpiTrend.length > 0 && adjPsfMin != null;
+    const indLow = useSize ? Math.round(sizeAdjPsfMin! * subSqft!) : useAdj ? Math.round(adjPsfMin! * subSqft!) : (psfMin != null && subSqft != null ? Math.round(psfMin * subSqft) : null);
+    const indHigh = useSize ? Math.round(sizeAdjPsfMax! * subSqft!) : useAdj ? Math.round(Math.max(...adjPsfsWithArea) * subSqft!) : (psfMax != null && subSqft != null ? Math.round(psfMax * subSqft) : null);
+    const indMid = useSize ? Math.round(sizeAdjPsfAvg! * subSqft!) : useAdj ? Math.round(adjPsfAvg! * subSqft!) : (psfAvg != null && subSqft != null ? Math.round(psfAvg * subSqft) : null);
+    const indPsf = useSize ? sizeAdjPsfAvg : useAdj ? adjPsfAvg : (psfAvg != null ? Math.round(psfAvg) : null);
+
+    return {
+      priceMin, priceMax, priceAvg,
+      psfMin, psfMax, psfAvg, adjPsfAvg, sizeAdjPsfAvg,
+      sizeMin, sizeMax, sizeAvg,
+      dateMin, dateMax,
+      withAreaCount: withArea.length,
+      indLow, indHigh, indMid, indPsf,
+      useSize, useAdj,
+    };
+  }, [adoptedComparables, hpiTrend, hpiCorrelation, compSizeElasticity, subjectSizeSqft]);
+
+  // Layer 1 = adopted comps + auto-selected best comps (deduped)
+  const selectedLayer1 = useMemo(() => {
+    // Start with adopted comparables
+    const adoptedIds = new Set(adoptedComparables.map(c => c.transaction_id ?? c.address));
+    // Auto-select from HMLR universe, excluding those already adopted
+    const nonAdopted = layer1Comps.filter(c => !adoptedIds.has(c.transaction_id ?? c.address));
+    const autoSelected = hasSize
+      ? selectBestComps(nonAdopted, subjectSizeSqft!, valuationDate, subjectEpcScore)
+      : nonAdopted.slice(0, MAX_LAYER1);
+    // Merge: adopted first, then fill with auto-selected up to MAX_LAYER1
+    const remaining = Math.max(0, MAX_LAYER1 - adoptedComparables.length);
+    return [...adoptedComparables, ...autoSelected.slice(0, remaining)];
+  }, [layer1Comps, adoptedComparables, subjectSizeSqft, valuationDate, subjectEpcScore, hasSize]);
+
   const compsWithSize = useMemo(
-    () => layer1Comps.filter((c) => c.floor_area_sqm != null && c.floor_area_sqm > 0),
-    [layer1Comps]
+    () => selectedLayer1.filter((c) => c.floor_area_sqm != null && c.floor_area_sqm > 0),
+    [selectedLayer1]
   );
 
-  const ready = hasLayer1 && hasAdopted && hasMV && hasSize && compsWithSize.length >= 3;
+  // Derive Monte Carlo size elasticity override from the unified prop
+  const sizeElasticityOverride = compSizeElasticity === 0 ? null : compSizeElasticity / 100;
 
-  // Run simulation
+  // Effective MV: use adopted MV from Report Typing, or fall back to indicative mid from comparables
+  const effectiveMV = hasMV ? adoptedMV! : (adoptedStats.indMid ?? null);
+  const hasEffectiveMV = effectiveMV != null && effectiveMV > 0;
+
+  const ready = hasLayer1 && hasAdopted && hasEffectiveMV && hasSize && compsWithSize.length >= 3;
+
+  // Run simulation on selected Layer 1 (max 20 best comps)
   const sim = useMemo(() => {
     if (!ready) return null;
     return runMonteCarlo(
-      layer1Comps,
+      selectedLayer1,
       subjectSizeSqft!,
-      adoptedMV!,
+      effectiveMV!,
       hpiTrend,
       valuationDate,
       subjectPropertyType,
       subjectHouseSubType,
       subjectEpcScore,
-      subjectSaon
+      subjectSaon,
+      sizeElasticityOverride,
+      hpiCorrelation,
+      epcBeta,
+      floorPremium
     );
-  }, [layer1Comps, subjectSizeSqft, adoptedMV, hpiTrend, valuationDate, subjectPropertyType, subjectHouseSubType, subjectEpcScore, subjectSaon, ready]);
+  }, [selectedLayer1, subjectSizeSqft, effectiveMV, hpiTrend, valuationDate, subjectPropertyType, subjectHouseSubType, subjectEpcScore, subjectSaon, sizeElasticityOverride, hpiCorrelation, epcBeta, floorPremium, ready]);
 
   // Build adopted set for quick lookup
   const adoptedIds = useMemo(() => {
@@ -898,18 +1137,27 @@ export default function SEMVTab({
     return ids;
   }, [adoptedComparables]);
 
+  // Build selected Layer 1 set for table display
+  const selectedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of selectedLayer1) {
+      ids.add(c.transaction_id ?? c.address);
+    }
+    return ids;
+  }, [selectedLayer1]);
+
   if (!ready) {
     const missing: string[] = [];
     if (!hasLayer1) missing.push("comparable search (minimum 3 results)");
     if (!hasAdopted) missing.push("adopted comparables");
-    if (!hasMV) missing.push("Market Value in Report Typing");
+    if (!hasEffectiveMV) missing.push("adopted comparables with floor area (for indicative MV)");
     if (!hasSize) missing.push("subject property floor area");
     if (hasLayer1 && compsWithSize.length < 3) missing.push("at least 3 comparables with floor area data");
 
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
-        <div className="text-[#94A3B8] text-sm max-w-md">
-          <p className="text-[#00F0FF] font-semibold text-base mb-3" style={{ fontFamily: "Orbitron, Inter, sans-serif" }}>
+        <div className="text-[var(--color-text-secondary)] text-sm max-w-md">
+          <p className="text-[var(--color-accent)] font-semibold text-base mb-3" style={{ fontFamily: "Orbitron, Inter, sans-serif" }}>
             SEMV ANALYSIS
           </p>
           <p className="mb-4">
@@ -918,7 +1166,7 @@ export default function SEMVTab({
           <ul className="text-left space-y-1.5">
             {missing.map((m, i) => (
               <li key={i} className="flex items-start gap-2">
-                <span className="text-[#FF3131] mt-0.5">&#x2717;</span>
+                <span className="text-[var(--color-status-danger)] mt-0.5">&#x2717;</span>
                 <span>{m}</span>
               </li>
             ))}
@@ -931,69 +1179,146 @@ export default function SEMVTab({
   const { simMVs, mean, stdDev, p5, p95, percentile, sigma } = sim!;
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* 1. Delta Gauge */}
-      <div className="flex flex-col items-center gap-4 py-6">
-        <DeltaGauge percentile={percentile} sigma={sigma} />
-        <p className="text-[#94A3B8] text-sm text-center">
-          Adopted MV is <span className="text-[#E2E8F0] font-semibold">{sigma >= 0 ? "+" : ""}{sigma.toFixed(2)}&sigma;</span> from distribution mean
-        </p>
-        <p className="text-[#E2E8F0] text-sm text-center max-w-lg">
-          The adopted MV of <span className="font-semibold text-[#FF2D78]">{fmtGBP(adoptedMV!)}</span> sits at the <span className="font-semibold" style={{ color: sigmaToColor(Math.abs(sigma)) }}>{percentile === 0 ? "<1" : percentile === 100 ? ">99" : percentile}th percentile</span> of the modelled distribution.
-        </p>
-      </div>
-
-      {/* 2. Stats Row */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {[
-          { label: "Adopted MV", value: fmtGBP(adoptedMV!), accent: "#FF2D78" },
-          { label: "Distribution Mean", value: fmtGBP(mean), accent: "#00F0FF" },
-          { label: "Std Deviation (1σ)", value: fmtGBP(stdDev), accent: "#7B2FBE" },
-          { label: "1σ Range (68%)", value: `${fmtGBP(mean - stdDev)} – ${fmtGBP(mean + stdDev)}`, accent: "#7B2FBE" },
-          { label: "2σ Range (95%)", value: `${fmtGBP(mean - 2 * stdDev)} – ${fmtGBP(mean + 2 * stdDev)}`, accent: "#7B2FBE" },
-          { label: "90% Interval (P5–P95)", value: `${fmtGBP(p5)} – ${fmtGBP(p95)}`, accent: "#00F0FF" },
-        ].map((s, i) => (
-          <div
-            key={i}
-            className="rounded-xl border border-[#334155] bg-[#111827] p-4 text-center"
-          >
-            <p className="text-[10px] tracking-[0.12em] text-[#94A3B8] uppercase mb-1">{s.label}</p>
-            <p className="text-lg font-bold" style={{ color: s.accent }}>
-              {s.value}
-            </p>
+    <div className="space-y-3 pb-6">
+      {/* Row 1: Adjustment sliders (2x2 grid) + Key stats */}
+      <div className="grid grid-cols-[1fr_1fr] gap-3">
+        {/* Left: 2x2 slider grid */}
+        <div className="grid grid-cols-2 gap-2 no-print">
+          {/* HPI */}
+          {hpiTrend.length > 0 && (
+            <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide font-medium">HPI</span>
+                <span className="text-xs font-bold text-[var(--color-accent)] tabular-nums">{hpiCorrelation}%</span>
+              </div>
+              <input type="range" min={0} max={100} step={5} value={hpiCorrelation}
+                onChange={e => onHpiCorrelationChange(Number(e.target.value))}
+                list="hpi-ticks" className="w-full h-1.5 accent-[var(--color-accent)]" />
+              <datalist id="hpi-ticks">{Array.from({ length: 21 }, (_, i) => <option key={i} value={i * 5} />)}</datalist>
+            </div>
+          )}
+          {/* Size */}
+          <div className={`rounded-lg border px-3 py-2 transition-colors ${compSizeElasticity !== 0 ? "border-[#F59E0B]/40 bg-[#F59E0B]/5" : "border-[var(--color-border)] bg-[var(--color-bg-panel)]"}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide font-medium">Size</span>
+              <span className={`text-xs font-bold tabular-nums ${compSizeElasticity !== 0 ? "text-[#F59E0B]" : "text-[var(--color-text-secondary)]"}`}>{compSizeElasticity}%</span>
+            </div>
+            <input type="range" min={-50} max={50} step={5} value={compSizeElasticity}
+              onChange={e => onCompSizeElasticityChange(Number(e.target.value))}
+              list="size-ticks" className={`w-full h-1.5 ${compSizeElasticity !== 0 ? "accent-[#F59E0B]" : "accent-[var(--color-border)]"}`} />
+            <datalist id="size-ticks">{Array.from({ length: 21 }, (_, i) => <option key={i} value={-50 + i * 5} />)}</datalist>
           </div>
-        ))}
+          {/* EPC */}
+          <div className={`rounded-lg border px-3 py-2 transition-colors ${epcBeta !== 50 ? "border-[#10B981]/40 bg-[#10B981]/5" : "border-[var(--color-border)] bg-[var(--color-bg-panel)]"}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide font-medium">EPC</span>
+              <span className={`text-xs font-bold tabular-nums ${epcBeta !== 50 ? "text-[#10B981]" : "text-[var(--color-text-secondary)]"}`}>{epcBeta}%</span>
+            </div>
+            <input type="range" min={0} max={100} step={5} value={epcBeta}
+              onChange={e => onEpcBetaChange(Number(e.target.value))}
+              list="epc-ticks" className={`w-full h-1.5 ${epcBeta !== 50 ? "accent-[#10B981]" : "accent-[var(--color-border)]"}`} />
+            <datalist id="epc-ticks">{Array.from({ length: 21 }, (_, i) => <option key={i} value={i * 5} />)}</datalist>
+          </div>
+          {/* Floor */}
+          <div className={`rounded-lg border px-3 py-2 transition-colors ${floorPremium !== 50 ? "border-[#8B5CF6]/40 bg-[#8B5CF6]/5" : "border-[var(--color-border)] bg-[var(--color-bg-panel)]"}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide font-medium">Floor</span>
+              <span className={`text-xs font-bold tabular-nums ${floorPremium !== 50 ? "text-[#8B5CF6]" : "text-[var(--color-text-secondary)]"}`}>{floorPremium}%</span>
+            </div>
+            <input type="range" min={0} max={100} step={5} value={floorPremium}
+              onChange={e => onFloorPremiumChange(Number(e.target.value))}
+              list="floor-ticks" className={`w-full h-1.5 ${floorPremium !== 50 ? "accent-[#8B5CF6]" : "accent-[var(--color-border)]"}`} />
+            <datalist id="floor-ticks">{Array.from({ length: 21 }, (_, i) => <option key={i} value={i * 5} />)}</datalist>
+          </div>
+        </div>
+
+        {/* Right: Comparable stats compact */}
+        {hasAdopted && (
+          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg-base)]">
+              <span className="text-[9px] font-bold tracking-[1.5px] text-[var(--color-accent)] uppercase">Comparables</span>
+              <span className="text-[9px] text-[var(--color-text-secondary)]">{adoptedComparables.length} adopted</span>
+            </div>
+            <div className="grid grid-cols-2 gap-px bg-[var(--color-border)]">
+              {[
+                { label: "Price Range", value: `${fmtK(adoptedStats.priceMin)}–${fmtK(adoptedStats.priceMax)}`, sub: `avg ${fmtK(adoptedStats.priceAvg)}` },
+                { label: "£/sqft", value: adoptedStats.psfMin != null ? `${fmtPsf(adoptedStats.psfMin)}–${fmtPsf(adoptedStats.psfMax!)}` : "—", sub: adoptedStats.psfAvg != null ? `avg ${fmtPsf(adoptedStats.psfAvg)}${adoptedStats.adjPsfAvg != null && hpiCorrelation > 0 && adoptedStats.adjPsfAvg !== Math.round(adoptedStats.psfAvg!) ? ` · adj ${fmtPsf(adoptedStats.adjPsfAvg)}` : ""}` : undefined },
+                { label: "Floor Area", value: adoptedStats.sizeMin != null ? `${Math.round(adoptedStats.sizeMin)}–${Math.round(adoptedStats.sizeMax!)} m²` : "—", sub: adoptedStats.sizeAvg != null ? `avg ${Math.round(adoptedStats.sizeAvg)} m²` : undefined },
+                { label: "Date Range", value: adoptedStats.dateMin ? fmtDateShort(adoptedStats.dateMin) : "—", sub: adoptedStats.dateMax ? `to ${fmtDateShort(adoptedStats.dateMax)}` : undefined },
+              ].map((s, i) => (
+                <div key={i} className="bg-[var(--color-bg-panel)] px-3 py-2">
+                  <p className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide mb-0.5">{s.label}</p>
+                  <p className="text-xs font-bold text-[var(--color-text-primary)] tabular-nums leading-tight">{s.value}</p>
+                  {s.sub && <p className="text-[10px] text-[var(--color-text-secondary)] tabular-nums mt-0.5">{s.sub}</p>}
+                </div>
+              ))}
+            </div>
+            {/* Indicative valuation */}
+            {adoptedStats.indLow != null && (
+              <div className="px-3 py-2 border-t border-[var(--color-border)] bg-[var(--color-bg-base)]">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="text-[9px] text-[var(--color-accent)] uppercase tracking-wide font-bold">Indicative</span>
+                  <span className="text-sm font-bold text-[var(--color-accent)] tabular-nums" style={{ textShadow: "0 0 8px var(--color-accent-dim)" }}>
+                    {fmtK(adoptedStats.indLow)}–{fmtK(adoptedStats.indHigh!)}
+                  </span>
+                  {adoptedStats.indMid != null && <span className="text-xs font-semibold text-[var(--color-status-info)] tabular-nums">mid {fmtK(adoptedStats.indMid)}</span>}
+                  {adoptedStats.indPsf != null && <span className="text-[10px] text-[var(--color-text-secondary)] tabular-nums">@ {fmtPsf(adoptedStats.indPsf)}/sqft</span>}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* 3. PDF Chart */}
-      <div className="rounded-xl border border-[#334155] bg-[#111827] p-4">
-        <p className="text-[10px] tracking-[0.12em] text-[#94A3B8] uppercase mb-3">PROBABILITY DENSITY FUNCTION</p>
-        <PdfChart simMVs={simMVs} mean={mean} adoptedMV={adoptedMV!} p5={p5} p95={p95} stdDev={stdDev} />
+      {/* Row 2: Monte Carlo stats (single row) + PDF chart side by side */}
+      <div className="grid grid-cols-[280px_1fr] gap-3">
+        {/* Left: Stats column */}
+        <div className="grid grid-rows-6 gap-1.5">
+          {[
+            { label: "Adopted MV", value: fmtGBP(effectiveMV!), color: "var(--color-accent-pink)" },
+            { label: "Sim Mean", value: fmtGBP(mean), color: "var(--color-accent)" },
+            { label: "Std Dev (1σ)", value: fmtGBP(stdDev), color: "var(--color-text-primary)" },
+            { label: "1σ Range (68%)", value: `${fmtGBP(mean - stdDev)} – ${fmtGBP(mean + stdDev)}`, color: "var(--color-text-primary)" },
+            { label: "2σ Range (95%)", value: `${fmtGBP(mean - 2 * stdDev)} – ${fmtGBP(mean + 2 * stdDev)}`, color: "var(--color-text-primary)" },
+            { label: "90% CI (P5–P95)", value: `${fmtGBP(p5)} – ${fmtGBP(p95)}`, color: "var(--color-accent)" },
+          ].map((s, i) => (
+            <div key={i} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-1.5 flex items-center justify-between">
+              <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide">{s.label}</span>
+              <span className="text-xs font-bold tabular-nums" style={{ color: s.color }}>{s.value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Right: PDF chart */}
+        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-3">
+          <p className="text-[9px] tracking-[0.12em] text-[var(--color-text-secondary)] uppercase mb-1">Probability Density Function</p>
+          <PdfChart simMVs={simMVs} mean={mean} adoptedMV={effectiveMV!} p5={p5} p95={p95} stdDev={stdDev} onAdoptedMVChange={onAdoptedMVChange} />
+        </div>
       </div>
 
-      {/* 4. Layer 1 vs Layer 3 Table */}
-      <div className="rounded-xl border border-[#334155] bg-[#111827] overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#334155]">
-          <p className="text-[10px] tracking-[0.12em] text-[#94A3B8] uppercase">
-            COMPARABLE UNIVERSE — {layer1Comps.length} TRANSACTIONS ({sim!.compsUsed} passed ±25% size gate)
+      {/* 4. Layer 1 Table — selected best comps */}
+      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--color-border)]">
+          <p className="text-[10px] tracking-[0.12em] text-[var(--color-text-secondary)] uppercase">
+            LAYER 1 — {adoptedComparables.length} adopted + {selectedLayer1.length - adoptedComparables.length} auto-selected = {selectedLayer1.length} of {layer1Comps.length + adoptedComparables.length} &middot; {sim!.compsUsed} passed &plusmn;25% size gate
           </p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left" style={{ background: "linear-gradient(90deg, #00F0FF22, #FF2D7822)" }}>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium">#</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium">Address</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-right">Size ft²</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-right">Sale Price</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-right">Raw PSF</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-right">Adj PSF</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-center">Date</th>
-                <th className="px-3 py-2 text-[#94A3B8] font-medium text-center">Status</th>
+              <tr className="text-left" style={{ background: "linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 13%, transparent), color-mix(in srgb, var(--color-accent-pink) 13%, transparent))" }}>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium">#</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium">Address</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Size ft²</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Sale Price</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Raw PSF</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Adj PSF</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-center">Date</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-center">Status</th>
               </tr>
             </thead>
             <tbody>
-              {[...layer1Comps]
+              {[...selectedLayer1]
                 .sort((a, b) => {
                   const aAdopted = adoptedIds.has(a.transaction_id ?? a.address) ? 0 : 1;
                   const bAdopted = adoptedIds.has(b.transaction_id ?? b.address) ? 0 : 1;
@@ -1016,7 +1341,7 @@ export default function SEMVTab({
                     const compHpi = getHpiForMonth(hpiTrend, txMonth, c);
                     const subjectProxy = { ...c, property_type: subjectPropertyType, house_sub_type: subjectHouseSubType } as ComparableCandidate;
                     const subHpi = getHpiForMonth(hpiTrend, valMonth, subjectProxy);
-                    // Midpoint adjustments: passthrough 0.5, betaEpc 0.0015, sizeAlpha 0.25, floorPremium 1%
+                    const detSizeAlpha = sizeElasticityOverride != null ? sizeElasticityOverride : 0.175;
                     let timeAdj = 0;
                     if (compHpi != null && subHpi != null && compHpi > 0) {
                       timeAdj = ((subHpi - compHpi) / compHpi) * 0.25;
@@ -1025,7 +1350,7 @@ export default function SEMVTab({
                     if (subjectEpcScore != null && c.epc_score != null && c.epc_score > 0) {
                       epcAdj = (subjectEpcScore - c.epc_score) * 0.0025;
                     }
-                    let sizeAdj = 0.25 * (subjectSizeSqft - sqft) / sqft;
+                    const sizeAdj = detSizeAlpha * (subjectSizeSqft - sqft) / sqft;
                     let floorAdj = 0;
                     const compFloor = inferFloorFromSaon(c.saon as string | null);
                     const subjFloor = inferFloorFromSaon(subjectSaon);
@@ -1033,48 +1358,49 @@ export default function SEMVTab({
                       floorAdj = (subjFloor - compFloor) * 0.01;
                     }
                     let adjPrice = c.price * (1 + timeAdj + epcAdj + sizeAdj + floorAdj);
-                    // Monotonicity clamp
-                    if (subjectSizeSqft < sqft) adjPrice = Math.min(adjPrice, c.price);
-                    else if (subjectSizeSqft > sqft) adjPrice = Math.max(adjPrice, c.price);
+                    if (detSizeAlpha >= 0) {
+                      if (subjectSizeSqft < sqft) adjPrice = Math.min(adjPrice, c.price);
+                      else if (subjectSizeSqft > sqft) adjPrice = Math.max(adjPrice, c.price);
+                    }
                     adjPsf = adjPrice / subjectSizeSqft;
                   }
                   return (
                     <tr
                       key={c.transaction_id ?? `${c.address}-${i}`}
-                      className={i % 2 === 0 ? "bg-[#111827]" : "bg-[#1E293B]"}
+                      className={i % 2 === 0 ? "bg-[var(--color-bg-panel)]" : "bg-[var(--color-bg-surface)]"}
                       style={sizeExcluded ? { opacity: 0.4 } : undefined}
                     >
-                      <td className="px-3 py-2 text-[#94A3B8]">{i + 1}</td>
-                      <td className="px-3 py-2 text-[#E2E8F0] max-w-[240px] truncate">{c.address}</td>
-                      <td className="px-3 py-2 text-right text-[#E2E8F0]">
+                      <td className="px-3 py-2 text-[var(--color-text-secondary)]">{i + 1}</td>
+                      <td className="px-3 py-2 text-[var(--color-text-primary)] max-w-[240px] truncate">{c.address}</td>
+                      <td className="px-3 py-2 text-right text-[var(--color-text-primary)]">
                         {sqft != null ? sqft.toLocaleString() : "—"}
                       </td>
-                      <td className="px-3 py-2 text-right text-[#E2E8F0]">{fmtGBP(c.price)}</td>
-                      <td className="px-3 py-2 text-right text-[#E2E8F0]">
+                      <td className="px-3 py-2 text-right text-[var(--color-text-primary)]">{fmtGBP(c.price)}</td>
+                      <td className="px-3 py-2 text-right text-[var(--color-text-primary)]">
                         {psf != null ? fmtPsf(psf) : "—"}
                       </td>
                       <td className="px-3 py-2 text-right">
                         {adjPsf != null ? (
-                          <span className={adjPsf > (psf ?? 0) ? "text-[#39FF14]" : adjPsf < (psf ?? 0) ? "text-[#FF9500]" : "text-[#E2E8F0]"}>
+                          <span className={adjPsf > (psf ?? 0) ? "text-[var(--color-status-success)]" : adjPsf < (psf ?? 0) ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-primary)]"}>
                             {fmtPsf(adjPsf)}
                           </span>
                         ) : "—"}
                       </td>
-                      <td className="px-3 py-2 text-center text-[#94A3B8]">
+                      <td className="px-3 py-2 text-center text-[var(--color-text-secondary)]">
                         {c.transaction_date.slice(0, 7)}
                       </td>
                       <td className="px-3 py-2 text-center">
                         {sizeExcluded ? (
-                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[#334155]/50 text-[#64748B] border border-[#475569]/30 line-through">
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[var(--color-border)]/50 text-[var(--color-text-muted)] border border-[var(--color-text-muted)]/30 line-through">
                             SIZE EXCLUDED
                           </span>
                         ) : isAdopted ? (
-                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[#00F0FF]/15 text-[#00F0FF] border border-[#00F0FF]/30">
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border border-[var(--color-accent)]/30">
                             ADOPTED
                           </span>
                         ) : (
                           <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[#ff8a00]/15 text-[#ff8a00] border border-[#ff8a00]/30">
-                            HMLR ONLY
+                            LAYER 1
                           </span>
                         )}
                       </td>
@@ -1086,12 +1412,13 @@ export default function SEMVTab({
         </div>
       </div>
 
-      {/* 5. Methodology Footer */}
-      <p className="text-[10px] text-[#475569] text-center leading-relaxed max-w-2xl mx-auto">
-        SEMV V1.0 &middot; 100,000 Monte Carlo simulations &middot;
+      {/* 6. Methodology Footer */}
+      <p className="text-[10px] text-[var(--color-text-muted)] text-center leading-relaxed max-w-2xl mx-auto">
+        SEMV V1.0 &middot; 10,000 Monte Carlo simulations &middot;
+        Auto-selected top {selectedLayer1.length} of {layer1Comps.length} comps by similarity &middot;
         Hard size gate &plusmn;25% &middot; Similarity-biased selection &amp; weighting &middot;
-        Size &alpha; [0–0.5], floor premium [0.1–2%/floor], time passthrough [0–1], EPC &beta; [0–0.5%] &middot;
-        Layer 1 = HMLR observable universe &middot; Layer 2 = unregistered (unobservable) &middot;
+        HPI [{hpiCorrelation}%], Size &alpha; [{compSizeElasticity === 0 ? "-15% to 50%" : `fixed ${compSizeElasticity}%`}], EPC [{epcBeta}%], Floor [{floorPremium}%] &middot;
+        Layer 1 = adopted + auto-selected (max {MAX_LAYER1}) &middot; Layer 2 = unregistered (unobservable) &middot;
         Layer 3 = surveyor adopted &middot;
         Confidence assessment only — this is not a valuation
       </p>

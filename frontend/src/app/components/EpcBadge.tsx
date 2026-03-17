@@ -73,14 +73,14 @@ export function EpcBadge({ score, certificateUrl, onDownloadPdf }: EpcBadgeProps
           style={{
             fontSize: "13px",
             fontWeight: 600,
-            color: hovered && certificateUrl ? color : "#E2E8F0",
+            color: hovered && certificateUrl ? color : "var(--color-text-primary)",
             transition: "color 0.2s ease",
             marginBottom: "3px",
           }}
         >
           {certificateUrl ? "View EPC ↗" : `Band ${band}`}
         </div>
-        <div style={{ fontSize: "11px", color: "#94A3B8" }}>
+        <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
           {certificateUrl ? "Official certificate" : range}
         </div>
       </div>
@@ -88,12 +88,12 @@ export function EpcBadge({ score, certificateUrl, onDownloadPdf }: EpcBadgeProps
   );
 
   return (
-    <div className="px-4 py-3 bg-[#111827]">
-      <dt className="text-xs text-[#94A3B8]/70 mb-2">Energy score</dt>
+    <div className="px-4 py-3 bg-[var(--color-bg-panel)]">
+      <dt className="text-xs text-[var(--color-text-secondary)]/70 mb-2">Energy score</dt>
 
       <dd className="flex items-center gap-3">
         {/* Numeric score */}
-        <span className="text-2xl font-bold text-[#E2E8F0] tabular-nums">{score}</span>
+        <span className="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">{score}</span>
 
         {/* Badge — wrapped in <a> if we have a URL */}
         {certificateUrl ? (
@@ -113,10 +113,10 @@ export function EpcBadge({ score, certificateUrl, onDownloadPdf }: EpcBadgeProps
 
       {/* Download PDF */}
       {onDownloadPdf && (
-        <div className="mt-3 pt-3 border-t border-[#334155]/60">
+        <div className="mt-3 pt-3 border-t border-[var(--color-border)]/60">
           <button
             onClick={onDownloadPdf}
-            className="flex items-center gap-1.5 text-xs text-[#94A3B8] hover:text-[#00F0FF] transition-colors"
+            className="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] transition-colors"
           >
             <span>📄</span>
             <span>Download PDF</span>
@@ -177,7 +177,7 @@ export function EpcBadgeCompact({ score, certificateUrl }: EpcBadgeCompactProps)
         style={{
           fontSize: "11px",
           fontWeight: 600,
-          color: hovered && certificateUrl ? color : "#94A3B8",
+          color: hovered && certificateUrl ? color : "var(--color-text-secondary)",
           transition: "color 0.2s ease",
           whiteSpace: "nowrap",
         }}
