@@ -13,10 +13,10 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from routers.auth import get_current_user, get_user_supabase
-from routers.rate_limit import limiter
-from routers.resilience import resilient_request
-from routers import ppd_cache
+from .auth import get_current_user, get_user_supabase
+from .rate_limit import limiter
+from .resilience import resilient_request
+from . import ppd_cache
 from services.ai_service import generate_property_narrative
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel, Field
@@ -478,16 +478,30 @@ def _paon_match(epc_paon: str, lr_paon: str) -> bool:
         return re.sub(r"\s+", " ", s).strip()
     if _norm(epc_paon) == _norm(lr_paon):
         return True
+    # Leading-number match: epc "1" matches lr "1 AUCUBA VILLAS"
+    # (floor-based SAONs where LR embeds building name in PAON)
+    if re.match(r"^\d+\w*$", epc_paon):
+        lr_lead = re.match(r"^(\d+\w*)\b", lr_paon)
+        if lr_lead and lr_lead.group(1) == epc_paon:
+            return True
     return False
 
 
 def _saon_num(s: str) -> str | None:
-    """Extract the unit identifier from a SAON ('FLAT 38B' → '38B', 'APARTMENT A13' → 'A13')."""
-    # Try alphanumeric first (A13, B2), then pure numeric (38, 38B)
-    m = re.search(r"\b([A-Z]\d+\w*)\b", s.upper())
+    """Extract the unit identifier from a SAON ('FLAT 38B' → '38B', 'APARTMENT A13' → 'A13').
+
+    Also handles hyphenated identifiers: 'FLAT 3-G2' → '3-G2'.
+    """
+    su = s.upper()
+    # Try hyphenated identifier first (3-G2, 3-G1)
+    m = re.search(r"\b(\d+\w*-\w+)\b", su)
     if m:
         return m.group(1)
-    m = re.search(r"\b(\d+[A-Z]*)\b", s.upper())
+    # Try alphanumeric first (A13, B2), then pure numeric (38, 38B)
+    m = re.search(r"\b([A-Z]\d+\w*)\b", su)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(\d+[A-Z]*)\b", su)
     return m.group(1) if m else None
 
 
@@ -501,8 +515,16 @@ def parse_user_address_parts(address: str, postcode: str) -> dict[str, str | Non
       "Flat 3, 12 High Street, London, E1"  → saon="FLAT 3", paon="12", street="HIGH STREET"
     """
     # Strip postcode and normalise
-    pc_pat = re.sub(r"\s+", r"\\s*", re.escape(postcode.strip().upper()))
+    # Build a flexible pattern: "E16 1AN" matches "E161AN", "E16  1AN", etc.
+    pc_upper = postcode.strip().upper()
+    pc_nospace = pc_upper.replace(" ", "")
+    pc_pat = r"\s*".join(re.escape(ch) for ch in pc_nospace)
     clean = re.sub(pc_pat, "", address.strip().upper(), flags=re.IGNORECASE)
+    # Strip common town/city suffixes that aren't part of the street name.
+    # Preserve "LONDON" when it's part of a street name (e.g. "LONDON ROAD").
+    _ROAD_WORDS = r"(?:ROAD|STREET|LANE|WAY|DRIVE|AVENUE|AVE|CLOSE|CRESCENT|PLACE|SQUARE|WALK|MEWS|BRIDGE|WALL|FIELDS|TERRACE|GROVE|HILL|PARK|ROW|COURT|GARDENS|GATE|PATH|PASSAGE|RISE|VIEW|CIRCUS)"
+    clean = re.sub(r"\bGREATER LONDON\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(rf"\bLONDON\b(?!\s+{_ROAD_WORDS}\b)", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\s+", " ", clean).strip(" ,")
 
     # Split on commas; each segment is e.g. ["5 HORSE SHOE GREEN", "SUTTON"]
@@ -511,10 +533,10 @@ def parse_user_address_parts(address: str, postcode: str) -> dict[str, str | Non
         return {"saon": None, "paon": None, "street": None}
 
     saon: str | None = None
-    # Check whether the first segment is a SAON ("FLAT 3", "UNIT 2B", …)
+    # Check whether the first segment is a SAON ("FLAT 3", "UNIT 2B", "FLAT 3-G2", …)
     if is_saon(segments[0]):
         m_saon = re.match(
-            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+\d+\w*)",
+            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+\d+\w*(?:-\w+)?)",
             segments[0],
         )
         saon = m_saon.group(1) if m_saon else segments[0]
@@ -523,16 +545,55 @@ def parse_user_address_parts(address: str, postcode: str) -> dict[str, str | Non
         prop_part = segments[0]
 
     # Extract leading house/building number and remainder as street
+    # Handle range PAONs: "36 - 38 PARK VIEW ROAD" or "36 - 38"
+    m_range = re.match(r"^(\d+\w*\s*-\s*\d+\w*)\s*(.*)", prop_part.strip())
     m = re.match(r"^(\d+\w*)\s+(.*)", prop_part.strip())
-    if m:
-        paon: str | None = m.group(1)
-        street: str | None = m.group(2).strip() or None
+    if m_range:
+        paon: str | None = m_range.group(1)
+        street: str | None = m_range.group(2).strip() or None
+    elif m:
+        paon = m.group(1)
+        street = m.group(2).strip() or None
     elif prop_part:
         paon = prop_part
         street = None
     else:
         paon = None
         street = None
+
+    # ── Numeric SAON promotion ──────────────────────────────────────────
+    # "1, 80, RUSKIN AVENUE" → segments = ["1", "80", "RUSKIN AVENUE"]
+    # Parser above produces saon=None, paon="1", street=None.
+    # But "1" is the flat number (SAON), "80" is the building number (PAON).
+    # Detect: bare-number paon, no street parsed, next segment starts with a number.
+    if (saon is None and paon and re.match(r"^\d+\w*$", paon.strip())
+            and street is None and len(segments) > 1):
+        next_seg = segments[1].strip()
+        m_next_range = re.match(r"^(\d+\w*\s*-\s*\d+\w*)\s*(.*)", next_seg)
+        m_next = re.match(r"^(\d+\w*)\s*(.*)", next_seg)
+        if m_next_range:
+            saon = paon  # promote to SAON
+            paon = m_next_range.group(1)
+            street = (m_next_range.group(2).strip()
+                      or (segments[2].strip() if len(segments) > 2 else None)
+                      or None)
+        elif m_next:
+            saon = paon
+            paon = m_next.group(1)
+            street = (m_next.group(2).strip()
+                      or (segments[2].strip() if len(segments) > 2 else None)
+                      or None)
+
+    # If we still have no street but there are remaining segments, use the next one
+    # ONLY when we have a SAON keyword (FLAT, UNIT, etc) — this tells us the segment
+    # structure is clear. For bare-number first segments (e.g. "303, BOTANIST HOUSE"),
+    # the next segment could be a building name, not a street.
+    if street is None and saon and is_saon(segments[0]) and len(segments) > 2:
+        remaining_idx = 2  # segment after saon + prop_part
+        if remaining_idx < len(segments):
+            candidate = segments[remaining_idx].strip()
+            if candidate and not re.match(r"^\d+$", candidate):
+                street = candidate
 
     # Strip leading commas/whitespace from street (e.g. ", CUTTER LANE" → "CUTTER LANE")
     if street:
@@ -553,10 +614,11 @@ def parse_address_parts(epc_row: dict) -> dict[str, str | None]:
     a3 = epc_row.get("address3", "").strip().upper()
 
     if is_saon(a1):
-        # Extract "FLAT NNN" / "APARTMENT A13" / "UNIT 4B" as SAON
-        # Handles numeric (38, 38B), alphanumeric (A13, B2), and letter-prefixed IDs
+        # Extract "FLAT NNN" / "APARTMENT A13" / "UNIT 4B" / "FLAT 3-G2" as SAON
+        # Handles numeric (38, 38B), alphanumeric (A13, B2), letter-prefixed IDs,
+        # and hyphenated identifiers (3-G2, 3-G1)
         m_saon = re.match(
-            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+[A-Z]?\d+\w*)",
+            r"^((?:FLAT|APARTMENT|APT|UNIT|ROOM|SUITE|FLOOR)\s+[A-Z]?\d+\w*(?:-\w+)?)",
             a1,
             re.IGNORECASE,
         )
@@ -720,24 +782,97 @@ def _filter_sales(bindings: list[dict], parts: dict[str, str | None]) -> list[di
     # sees no SAON keyword so it extracts "100" as PAON and loses the building name.
     flat_as_paon = bool(saon is None and paon and re.match(r"^\d+\w*$", paon.strip()))
 
+    # "saon-as-paon": parser produced saon="UNIT G6" but LR stores paon="UNIT G6"
+    # with empty saon.  Happens when LR treats the unit as the primary address
+    # (e.g. commercial units, garages).
+    saon_as_paon = bool(saon and is_saon(saon))
+
+    # "named-saon": parser produced paon="WESTGATE APARTMENTS" but LR has
+    # saon="WESTGATE APARTMENTS" with a different paon.  Happens for named sub-units
+    # that don't use FLAT/UNIT keywords (BLOCK A, KIOSK, HEADMASTERS HOUSE, etc).
+    named_as_saon = bool(
+        saon is None and paon and not re.match(r"^\d", paon.strip())
+    )
+
     sales = []
     for b in bindings:
         row_paon   = (b.get("paon") or "").strip().upper()
         row_saon   = (b.get("saon") or "").strip().upper()
         row_street = (b.get("street") or "").strip().upper()
 
+        # Compound PAON match (must run BEFORE street filter):
+        # Two formats:
+        #   A) "32 MADDISON COURT, 7" — number + building + comma + street_number
+        #   B) "GREEN DRAGON HOUSE, 64 - 70" — building + comma + number(s)
+        # Our parser may extract only the building name or leading number as PAON.
+        if "," in row_paon:
+            # Format A: leading number + building name, trailing number
+            m_compound_a = re.match(r"^(\d+\w*)\s+(.*?),", row_paon)
+            if m_compound_a and paon_alts and any(p == m_compound_a.group(1) for p in paon_alts):
+                compound_building = m_compound_a.group(2).strip().upper()
+                if (not epc_street_norm
+                        or _normalise_street(compound_building) == epc_street_norm):
+                    if not saon or not row_saon or row_saon == saon.upper() or _saon_num(row_saon) == _saon_num(saon):
+                        sales.append(_format_sale(b))
+                        continue
+
+            # Format B: building name, then number(s)
+            # LR: "GREEN DRAGON HOUSE, 64 - 70", our paon="GREEN DRAGON HOUSE"
+            m_compound_b = re.match(r"^([A-Z].*?),\s*(\d+\w*(?:\s*-\s*\d+\w*)?)$", row_paon)
+            if m_compound_b and paon_alts:
+                compound_building = m_compound_b.group(1).strip().upper()
+                if any(_paon_match(p, compound_building) for p in paon_alts):
+                    if not saon or not row_saon or row_saon == saon.upper() or _saon_num(row_saon) == _saon_num(saon):
+                        sales.append(_format_sale(b))
+                        continue
+
         # Street filter — only apply when both sides are populated
+        # Also accept suffix match: user may enter "5 Briary Court Turner Street"
+        # → parsed street = "BRIARY COURT TURNER STREET" while LR has street = "TURNER STREET".
+        # The LR street being a suffix of the parsed street means the building name was
+        # prepended (common for named-building addresses without comma separators).
         if epc_street_norm and row_street:
-            if _normalise_street(row_street) != epc_street_norm:
+            lr_street_norm = _normalise_street(row_street)
+            if (lr_street_norm != epc_street_norm
+                    and not epc_street_norm.endswith(lr_street_norm)):
                 continue
 
         # "flat-as-PAON" match: LR has saon=flat_number, paon=building_name.
-        # Detected when EPC flat number (our paon) matches LR saon, and LR paon
-        # is a non-numeric building name (not another flat/house number).
+        # Detected when EPC flat number (our paon) matches LR saon.
         # row_saon may be "105" or "APARTMENT 105" — use _saon_num for the latter.
-        if (flat_as_paon
-                and (row_saon == paon.upper() or _saon_num(row_saon) == paon.upper())
-                and row_paon and not re.match(r"^\d", row_paon)):
+        # When LR paon is also numeric (e.g. saon="1", paon="80"), require
+        # street match to avoid false positives with house numbers.
+        if (flat_as_paon and row_saon
+                and (row_saon == paon.upper() or _saon_num(row_saon) == paon.upper())):
+            lr_paon_numeric = bool(re.match(r"^\d", row_paon))
+            if not lr_paon_numeric:
+                # LR paon is a building name — safe match
+                sales.append(_format_sale(b))
+                continue
+            elif epc_street_norm and row_street:
+                # Both sides numeric — only match if streets align
+                lr_street_norm = _normalise_street(row_street)
+                if (lr_street_norm == epc_street_norm
+                        or epc_street_norm.endswith(lr_street_norm)):
+                    sales.append(_format_sale(b))
+                    continue
+
+        # "saon-as-paon" match: parser gave saon="UNIT G6" but LR stores
+        # paon="UNIT G6" with empty saon (commercial units, garages, etc).
+        if (saon_as_paon and not row_saon
+                and (row_paon == saon.upper()
+                     or _saon_num(row_paon) == _saon_num(saon))):
+            sales.append(_format_sale(b))
+            continue
+
+        # "named-as-saon" match: parser gave paon="HEADMASTERS HOUSE" but LR has
+        # saon="HEADMASTERS HOUSE" with a different paon (numeric "163" or named
+        # "FOSTERS OLD SCHOOL").  Match when our paon matches LR saon exactly,
+        # or when _saon_num extracts the same identifier (e.g. "20" from
+        # "20 JACOBS COURT" matching our paon="20").
+        if (named_as_saon and row_saon
+                and (row_saon == paon.upper()
+                     or _saon_num(row_saon) == paon.upper())):
             sales.append(_format_sale(b))
             continue
 
@@ -2028,7 +2163,7 @@ async def _fetch_lease_details(uprn: str | None) -> dict:
     if not uprn:
         return empty
 
-    db_path = Path(__file__).resolve().parent.parent / "leases.db"
+    db_path = Path(__file__).resolve().parent.parent / "data" / "leases.db"
     if not db_path.exists():
         return empty
 
@@ -2415,6 +2550,40 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
     except Exception:
         logging.exception("Property search failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# Sales refresh — lightweight endpoint to re-fetch sale history for saved cases
+# ---------------------------------------------------------------------------
+
+class SalesRefreshRequest(BaseModel):
+    address: str = Field(..., max_length=256)
+    postcode: str = Field(..., max_length=10)
+
+@router.post("/sales-refresh")
+@limiter.limit("30/minute")
+async def sales_refresh(request: Request, body: SalesRefreshRequest, _user=Depends(get_current_user)):
+    """Re-fetch Land Registry sale history for a property.
+
+    Used when loading a saved case whose original search returned no sales
+    (e.g. due to a matching bug that has since been fixed).
+    """
+    postcode = normalise_postcode(body.postcode)
+    parts = parse_user_address_parts(body.address, postcode)
+
+    # Try SPARQL first
+    sparql_saon = parts.get("saon")
+    sparql_paon = parts.get("paon")
+    sales: list[dict] = []
+    if sparql_saon or sparql_paon:
+        sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
+
+    # Fall back to PPD cache filter
+    if not sales:
+        sparql_bindings = await _fetch_sparql_bindings(postcode)
+        sales = _filter_sales(sparql_bindings, parts)
+
+    return {"sales": sales}
 
 
 # ---------------------------------------------------------------------------
