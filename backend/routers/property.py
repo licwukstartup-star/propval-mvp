@@ -1398,21 +1398,23 @@ def _uprn_coords(request, uprn: str | None) -> dict:
 
 
 def _lookup_age_best(request, best: dict) -> int | None:
-    """Look up PropVal's best construction age estimate from local DB."""
-    local_db = getattr(request.app.state, "local_db", None)
-    if not local_db:
-        logging.debug("age_best: no local_db")
+    """Look up PropVal's best construction age estimate from Supabase spine."""
+    uprn = best.get("uprn")
+    if not uprn:
         return None
     try:
-        uprn = best.get("uprn")
-        postcode = best.get("postcode")
-        address1 = best.get("address1")
-        logging.info("age_best lookup: uprn=%s pc=%s addr1=%s", uprn, postcode, address1)
-        age_info = local_db.lookup_construction_age(
-            uprn=uprn, postcode=postcode, address1=address1,
-        )
-        logging.info("age_best result: %s", age_info)
-        return age_info.get("age_best")
+        sb = _get_supabase()
+        if sb is None:
+            return None
+        resp = sb.table("transactions") \
+            .select("age_best") \
+            .eq("uprn", str(uprn)) \
+            .not_.is_("age_best", "null") \
+            .limit(1) \
+            .execute()
+        if resp.data and resp.data[0].get("age_best"):
+            return int(resp.data[0]["age_best"])
+        return None
     except Exception as exc:
         logging.warning("age_best error: %s", exc)
         return None
@@ -3287,17 +3289,6 @@ async def autocomplete_addresses(postcode: str, request: Request, _user: dict = 
                     rows = await _fetch_epc_rows(pc, email, api_key)
                 except Exception as exc:
                     logging.warning("EPC autocomplete API failed for %s: %s", pc, exc)
-
-            # 4. Fall back to local DuckDB (1.1M records, 33 London boroughs)
-            if not rows:
-                try:
-                    local_db = getattr(request.app.state, "local_db", None)
-                    if local_db and local_db.loaded:
-                        rows = await asyncio.to_thread(local_db.autocomplete_by_postcode, pc)
-                        if rows:
-                            logging.info("EPC autocomplete: served %d addresses from local DB for %s", len(rows), pc)
-                except Exception as exc:
-                    logging.warning("EPC autocomplete local DB failed for %s: %s", pc, exc)
 
             if not rows:
                 return {"addresses": [], "error": "EPC API temporarily unavailable — try again or type the full address manually below"}

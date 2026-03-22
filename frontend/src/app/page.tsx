@@ -30,6 +30,7 @@ import { hpiKeyForComp, computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjus
 
 const PropertyMap = dynamic(() => import("./components/PropertyMap"), { ssr: false });
 import type { CrimeCluster } from "./components/PropertyMap";
+const MiniMap = dynamic(() => import("./components/MiniMap"), { ssr: false });
 
 const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "hpi", "comparables", "wider", "additional", "adopted", "semv", "report_typing", "agentic_report", "qa"];
 const COMP_CLUSTER_TABS: TabKey[] = ["comparables", "wider", "additional", "adopted"];
@@ -344,6 +345,31 @@ export default function Home() {
   useEffect(() => {
     if (session?.access_token) fetchCases(true);
   }, [session?.access_token, fetchCases]);
+
+  // ── Batch geocode postcodes from cases for mini-map ──────────────────
+  const [caseCoords, setCaseCoords] = useState<Record<string, { lat: number; lng: number }>>({});
+  useEffect(() => {
+    if (casesList.length === 0) return;
+    const postcodes = [...new Set(casesList.map(c => c.postcode).filter(Boolean) as string[])];
+    if (postcodes.length === 0) return;
+    // Skip if already geocoded all postcodes
+    if (postcodes.every(pc => caseCoords[pc])) return;
+    fetch("https://api.postcodes.io/postcodes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ postcodes: postcodes.slice(0, 100) }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        const coords: Record<string, { lat: number; lng: number }> = {};
+        for (const item of data.result ?? []) {
+          if (item.result) coords[item.query] = { lat: item.result.latitude, lng: item.result.longitude };
+        }
+        setCaseCoords(prev => ({ ...prev, ...coords }));
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casesList]);
 
   // Reset to clean search-only state (extracted so it can be called after save dialog)
   const doResetHome = useCallback(() => {
@@ -1676,6 +1702,40 @@ export default function Home() {
             </button>
           )}
           {!manualMode && <div className="mb-6" />}
+
+          {/* ── Shortcut card grid (uniform size) ──────────────── */}
+          {!loading && !error && (
+            <div className="grid grid-cols-5 gap-3 mt-4 mb-6 w-full">
+              {/* Market Intelligence */}
+              <a
+                href="/news"
+                className="flex flex-col items-center justify-center gap-2 h-24 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-surface)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/5 transition-all duration-200 cursor-pointer group"
+              >
+                <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-accent)]/10 group-hover:bg-[var(--color-accent)]/20 transition-colors">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60" style={{ backgroundColor: 'var(--color-accent)' }} />
+                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: 'var(--color-accent)' }} />
+                  </span>
+                </span>
+                <span className="text-xs font-medium text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent)] transition-colors text-center leading-tight">Market<br/>Intelligence</span>
+              </a>
+
+              {/* My Cases */}
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('open-my-cases'))}
+                className="flex flex-col items-center justify-center gap-2 h-24 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-surface)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/5 transition-all duration-200 cursor-pointer group"
+              >
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-accent)]/10 group-hover:bg-[var(--color-accent)]/20 transition-colors">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="text-[var(--color-accent)]">
+                    <path d="M2 3h12v1H2V3zm0 3h12v1H2V6zm0 3h8v1H2V9zm0 3h10v1H2v-1z" fill="currentColor"/>
+                  </svg>
+                </span>
+                <span className="text-xs font-medium text-[var(--color-text-secondary)] group-hover:text-[var(--color-accent)] transition-colors text-center leading-tight">My Cases</span>
+              </button>
+
+
+            </div>
+          )}
 
           {loading && (
             <div className="flex justify-center py-12">

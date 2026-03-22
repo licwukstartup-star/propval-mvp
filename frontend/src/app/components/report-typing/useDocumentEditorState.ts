@@ -17,6 +17,11 @@ import { Color } from "@tiptap/extension-color"
 import Highlight from "@tiptap/extension-highlight"
 import Subscript from "@tiptap/extension-subscript"
 import Superscript from "@tiptap/extension-superscript"
+import { PlaceholderNode } from "./extensions/PlaceholderNode"
+import { SectionBlock } from "./extensions/SectionBlock"
+import { buildTemplateFromSchema } from "./template/buildTemplateFromSchema"
+import { resolvePlaceholders } from "./template/resolvePlaceholders"
+import type { TemplateSchema } from "./types"
 import { saveAs } from "file-saver"
 import {
   Document,
@@ -79,6 +84,13 @@ function extractRuns(node: Node, inherited: Record<string, unknown> = {}): TextR
     if (tag === "SUB") style.subScript = true
     if (tag === "SUP") style.superScript = true
     if (tag === "BR") { runs.push(new TextRun({ break: 1 })); return }
+
+    // Placeholder token — render as text (resolved value or label)
+    if (tag === "SPAN" && el.getAttribute("data-placeholder-key")) {
+      const text = el.textContent || el.getAttribute("data-label") || ""
+      if (text) runs.push(new TextRun({ text, ...inherited }))
+      return
+    }
 
     // Recurse for nested inline formatting
     runs.push(...extractRuns(el, style))
@@ -248,19 +260,29 @@ function convertNodes(nodes: NodeList): DocxChild[] {
  *  - AI text injection at section markers
  *  - Export to .docx via existing docx library
  */
-export function useDocumentEditorState(state: ReportTypingState) {
+export function useDocumentEditorState(state: ReportTypingState, templateSchema?: TemplateSchema | null) {
   const [dirty, setDirty] = useState(false)
   const saveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Build initial content from current state
-  const initialContent = useRef(buildReportContent({
-    firmTemplate: state.firmTemplate as any,
-    meta: state.meta,
-    result: state.result,
-    aiSections: state.aiSections,
-    valuer: state.valuer,
-    adoptedComparables: state.adoptedComparables,
-  }))
+  // Ref to access current state without adding deps to effects
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  /** Snapshot current state into template data shape */
+  const getTemplateData = () => ({
+    firmTemplate: stateRef.current.firmTemplate as any,
+    meta: stateRef.current.meta,
+    result: stateRef.current.result,
+    aiSections: stateRef.current.aiSections,
+    valuer: stateRef.current.valuer,
+    adoptedComparables: stateRef.current.adoptedComparables,
+  })
+
+  // Build initial content — uses legacy path (template likely not loaded yet)
+  const initialContent = useRef(buildReportContent(getTemplateData()))
+
+  // Track the last-applied schema by reference to prevent redundant rebuilds
+  const lastAppliedSchemaRef = useRef<TemplateSchema | null>(null)
 
   // Create the TipTap editor instance
   const editor = useEditor({
@@ -296,6 +318,11 @@ export function useDocumentEditorState(state: ReportTypingState) {
       }),
       Subscript,
       Superscript,
+      PlaceholderNode.configure({
+        previewMode: false,
+        resolvedValues: {},
+      }),
+      SectionBlock,
     ],
     content: initialContent.current,
     editorProps: {
@@ -310,27 +337,49 @@ export function useDocumentEditorState(state: ReportTypingState) {
     },
   })
 
+  // ── Rebuild editor when templateSchema arrives or changes ────────────────
+  // Only triggers on schema reference change — NOT on every keystroke.
+  useEffect(() => {
+    if (!editor || !templateSchema) return
+    if (templateSchema === lastAppliedSchemaRef.current) return
+    lastAppliedSchemaRef.current = templateSchema
+    const content = buildTemplateFromSchema(templateSchema, getTemplateData())
+    // Defer to next microtask to avoid flushSync warning during React render
+    setTimeout(() => {
+      editor.commands.setContent(content)
+      setDirty(false)
+    }, 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, templateSchema])
+
+  // ── Keep resolvedValues in sync via editor storage ─────────────────────
+  // This runs on state changes (cheap operation — just updates a map).
+  useEffect(() => {
+    if (!editor) return
+    const resolved = templateSchema ? resolvePlaceholders(getTemplateData()) : {}
+    const storage = editor.storage as any
+    if (!storage.placeholderToken) storage.placeholderToken = {}
+    storage.placeholderToken.resolvedValues = resolved
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, templateSchema, state.meta, state.result, state.aiSections, state.valuer, state.adoptedComparables])
+
   // ── Rebuild editor content when case/property changes ───────────────────
-  // Track the result address to detect case switches. When the address changes,
-  // the editor is displaying stale content from the previous case.
   const resultAddressRef = useRef(state.result?.address)
   useEffect(() => {
     if (!editor) return
     const currentAddr = state.result?.address
     if (currentAddr && currentAddr !== resultAddressRef.current) {
       resultAddressRef.current = currentAddr
-      const newContent = buildReportContent({
-        firmTemplate: state.firmTemplate as any,
-        meta: state.meta,
-        result: state.result,
-        aiSections: state.aiSections,
-        valuer: state.valuer,
-        adoptedComparables: state.adoptedComparables,
-      })
+      const d = getTemplateData()
+      const newContent = templateSchema
+        ? buildTemplateFromSchema(templateSchema, d)
+        : buildReportContent(d)
       editor.commands.setContent(newContent)
+      lastAppliedSchemaRef.current = templateSchema ?? null
       setDirty(false)
     }
-  }, [editor, state.result?.address, state.meta, state.result, state.aiSections, state.valuer, state.adoptedComparables, state.firmTemplate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, templateSchema, state.result?.address])
 
   // ── Auto-save every 15 seconds ──────────────────────────────────────────
 
@@ -486,17 +535,14 @@ export function useDocumentEditorState(state: ReportTypingState) {
 
   const rebuildFromState = useCallback(() => {
     if (!editor) return
-    const content = buildReportContent({
-      firmTemplate: state.firmTemplate as any,
-      meta: state.meta,
-      result: state.result,
-      aiSections: state.aiSections,
-      valuer: state.valuer,
-      adoptedComparables: state.adoptedComparables,
-    })
+    const d = getTemplateData()
+    const content = templateSchema
+      ? buildTemplateFromSchema(templateSchema, d)
+      : buildReportContent(d)
     editor.commands.setContent(content)
     setDirty(false)
-  }, [editor, state.firmTemplate, state.meta, state.result, state.aiSections, state.valuer, state.adoptedComparables])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, templateSchema])
 
   return {
     editor,

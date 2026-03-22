@@ -27,10 +27,11 @@ from routers import report_copies as report_copies_router
 from routers import reviews as reviews_router
 from routers import snapshots as snapshots_router
 from routers import templates as templates_router
+from routers import feedback as feedback_router
 from routers.rate_limit import limiter
 from services.inspire import InspireService
 from services.uprn_coords import UPRNCoordService
-from services.local_property_db import LocalPropertyDB
+# LocalPropertyDB removed — spine data now served from Supabase
 
 # Load .env from project root (one level above /backend)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -50,15 +51,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logging.warning("UPRN coord service failed to load: %s", exc)
         app.state.uprn_coords = None
-    try:
-        app.state.local_db = await asyncio.to_thread(LocalPropertyDB.load)
-        # Warm up DuckDB — forces data pages into OS page cache
-        if app.state.local_db:
-            await asyncio.to_thread(app.state.local_db.query_postcode, "SW1A 1AA", 1)
-            logging.info("Local property DB: warm-up query complete")
-    except Exception as exc:
-        logging.warning("Local property DB failed to load: %s", exc)
-        app.state.local_db = None
+    # DuckDB local_db removed — all property data served from Supabase spine tables
     await news_router.start_background_refresh()
     await news_router.start_market_refresh()
     await news_router.start_macro_refresh()
@@ -122,6 +115,7 @@ app.include_router(report_copies_router.router)
 app.include_router(qa_router.router)
 app.include_router(reviews_router.router)
 app.include_router(notifications_router.router)
+app.include_router(feedback_router.router)
 
 
 _health_sb = None
