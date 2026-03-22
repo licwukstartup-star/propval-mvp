@@ -27,26 +27,59 @@ DELAY = 1.0  # seconds between API calls
 
 
 def _get_auth_token():
-    """Get a valid JWT by signing in with Supabase Auth."""
+    """Get a valid auth token for smoke testing.
+
+    Priority: TEST_PASSWORD (full auth flow) → service role key (bypass auth).
+    """
     from supabase import create_client
     url = os.environ["SUPABASE_URL"]
-    key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
-    if not key:
-        # Fall back to service role for testing
-        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-    sb = create_client(url, key)
-    # Try to get existing session or sign in
-    email = os.environ.get("TEST_EMAIL", "licwukstartup@gmail.com")
+
+    # Try password auth first (tests full auth flow)
     password = os.environ.get("TEST_PASSWORD", "")
-    if not password:
-        print("  SKIP: No TEST_PASSWORD in .env — cannot authenticate")
-        return None
-    try:
-        resp = sb.auth.sign_in_with_password({"email": email, "password": password})
-        return resp.session.access_token
-    except Exception as e:
-        print(f"  SKIP: Auth failed — {e}")
-        return None
+    if password:
+        anon_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
+        if anon_key:
+            sb = create_client(url, anon_key)
+            email = os.environ.get("TEST_EMAIL", "licwukstartup@gmail.com")
+            try:
+                resp = sb.auth.sign_in_with_password({"email": email, "password": password})
+                print("  Auth: signed in via password")
+                return resp.session.access_token
+            except Exception as e:
+                print(f"  Auth: password login failed ({e}), falling back to service role")
+
+    # Fall back to service role key — create a temporary user session
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    anon_key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
+    if service_key and anon_key:
+        # Use admin API to list users and get first user's ID, then generate a session
+        sb_admin = create_client(url, service_key)
+        try:
+            users = sb_admin.auth.admin.list_users()
+            if users:
+                user = users[0]
+                # Generate an access token for this user
+                # Use the anon key client with admin-generated link
+                import jwt as pyjwt
+                jwt_secret = os.environ.get("SUPABASE_JWT_SECRET", "")
+                if jwt_secret:
+                    payload = {
+                        "sub": str(user.id),
+                        "role": "authenticated",
+                        "aud": "authenticated",
+                        "exp": int(time.time()) + 3600,
+                        "iat": int(time.time()),
+                        "user_metadata": {"role": "customer"},
+                        "app_metadata": {"role": "customer"},
+                    }
+                    token = pyjwt.encode(payload, jwt_secret, algorithm="HS256")
+                    print(f"  Auth: generated JWT for {user.email}")
+                    return token
+        except Exception as e:
+            print(f"  Auth: admin token generation failed ({e})")
+
+    print("  FATAL: No TEST_PASSWORD or SUPABASE_SERVICE_ROLE_KEY in .env")
+    return None
 
 
 def main():
@@ -109,7 +142,7 @@ def main():
         sys.exit(1)
 
     first_address = auto["addresses"][0]["address"]
-    print(f"         → {first_address}")
+    print(f"         >{first_address}")
 
     # Step 2: Property Search
     search = _step(
@@ -125,29 +158,31 @@ def main():
 
     uprn = search.get("uprn", "unknown")
     sales_count = len(search.get("sales", []))
-    print(f"         → UPRN: {uprn}, {sales_count} sales")
+    print(f"         >UPRN: {uprn}, {sales_count} sales")
 
     # Step 3: Comparable Search
+    prop_type = (search.get("property_type") or "House").lower()
+    if prop_type not in ("flat", "house"):
+        prop_type = "house"
     comp_subject = {
+        "address": first_address,
         "postcode": search.get("postcode", TEST_POSTCODE),
-        "property_type": search.get("property_type", "House"),
-        "built_form": search.get("built_form"),
+        "property_type": prop_type,
         "tenure": "leasehold" if search.get("lease_commencement") else "freehold",
-        "bedrooms": search.get("habitable_rooms", 3),
-        "floor_area_sqm": search.get("floor_area_sqm"),
+        "bedrooms": search.get("habitable_rooms"),
         "building_name": None,
         "street_name": None,
         "paon_number": None,
-        "construction_age_band": search.get("construction_age_band"),
+        "building_era": None,
     }
     comps = _step(
         "Comparable Search",
         "POST",
         f"{base}/api/comparables/search",
-        json={"subject": comp_subject, "target_count": 5, "time_window_months": 36},
+        json={"subject": comp_subject, "target_count": 5},
     )
     comp_count = len(comps.get("comparables", [])) if comps else 0
-    print(f"         → {comp_count} comparables found")
+    print(f"         >{comp_count} comparables found")
 
     # Step 4: Create Case
     case = _step(
@@ -157,13 +192,15 @@ def main():
         json={
             "address": first_address,
             "postcode": search.get("postcode", TEST_POSTCODE),
-            "uprn": uprn,
+            "uprn": uprn if uprn != "unknown" else None,
             "case_type": "research",
-            "property_data": search,
         },
     )
     case_id = case.get("id") if case else None
-    print(f"         → Case ID: {case_id}")
+    if case_id:
+        print(f"         >Case ID: {case_id}")
+    else:
+        print(f"         >Case creation failed (may need real user session, not service role)")
 
     # Step 5: Retrieve Case
     if case_id:
@@ -173,7 +210,7 @@ def main():
             f"{base}/api/cases/{case_id}",
         )
         if retrieved:
-            print(f"         → Status: {retrieved.get('status')}")
+            print(f"         >Status: {retrieved.get('status')}")
 
     # Summary
     print()
@@ -205,7 +242,7 @@ def _print_summary(results):
         print("\nFailures:")
         for status, name, elapsed, detail in results:
             if status == "FAIL":
-                print(f"  ✗ {name}: {detail}")
+                print(f"  FAIL: {name}: {detail}")
     print("=" * 60)
 
 
