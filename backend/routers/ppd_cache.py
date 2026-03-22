@@ -286,17 +286,13 @@ async def _ensure_cache_legacy(outward: str) -> None:
 
 
 async def ensure_cache_with_epc(outward: str) -> None:
-    """Ensure PPD cache is ready. EPC bulk download is DISABLED —
-    EPC enrichment now happens on-demand per postcode via the enrich endpoint."""
-    await ensure_cache(outward)
+    """No-op: spine tables contain all pre-loaded data."""
+    return
 
 
 async def _ensure_epc_background(outward: str) -> None:
-    """Background task to ensure EPC cache is populated. Errors are logged, not raised."""
-    try:
-        await ensure_epc_cache(outward)
-    except Exception:
-        logging.exception("Background EPC cache failed for %s", outward)
+    """No-op: spine tables contain all pre-loaded EPC data."""
+    return
 
 
 async def force_refresh(outward: str) -> None:
@@ -1144,9 +1140,9 @@ async def query_epc_cached(postcode: str) -> list[dict]:
 
 _EPC_OUTWARD_COLS = (
     "postcode,address1,address2,address3,"
-    "number_rooms,floor_area,energy_rating,energy_score,"
-    "construction_year,construction_age,property_type,built_form,"
-    "uprn,uprn_source"
+    "habitable_rooms,floor_area_sqm,energy_rating,energy_score,"
+    "construction_year,construction_age_band,property_type,built_form,"
+    "uprn,uprn_source,lodgement_date"
 )
 
 
@@ -1162,9 +1158,9 @@ def _query_epc_by_outward_sync(outward: str) -> list[dict]:
 
 
 def _query_epc_outward_multi_sync(outward_codes: list[str]) -> list[dict]:
-    """Get cached EPC records for multiple outward codes in one IN query."""
+    """Get EPC records for multiple outward codes from spine epc_certificates."""
     sb = _get_sb()
-    resp = sb.table("epc_cache") \
+    resp = sb.table("epc_certificates") \
         .select(_EPC_OUTWARD_COLS) \
         .in_("outward_code", outward_codes) \
         .limit(15000) \

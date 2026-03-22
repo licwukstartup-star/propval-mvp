@@ -418,14 +418,18 @@ def _months_ago(tx_date_str: str, val_date: date) -> int | None:
 # Translate bulk cache snake_case keys → live API hyphenated keys so _enrich()
 # works unchanged regardless of data source.
 _BULK_TO_API: dict[str, str] = {
-    "construction_year": "construction-year",
-    "construction_age":  "construction-age-band",
-    "property_type":     "property-type",
-    "built_form":        "built-form",
-    "number_rooms":      "number-habitable-rooms",
-    "floor_area":        "total-floor-area",
-    "energy_score":      "current-energy-efficiency",
-    "energy_rating":     "current-energy-rating",
+    "construction_year":     "construction-year",
+    "construction_age_band": "construction-age-band",
+    "construction_age":      "construction-age-band",   # legacy epc_cache name
+    "property_type":         "property-type",
+    "built_form":            "built-form",
+    "habitable_rooms":       "number-habitable-rooms",
+    "number_rooms":          "number-habitable-rooms",  # legacy epc_cache name
+    "floor_area_sqm":        "total-floor-area",
+    "floor_area":            "total-floor-area",        # legacy epc_cache name
+    "energy_score":          "current-energy-efficiency",
+    "energy_rating":         "current-energy-rating",
+    "lodgement_date":        "lodgement-date",
 }
 
 
@@ -1788,16 +1792,13 @@ async def enrich_transactions(req: EnrichRequest, _user: dict = Depends(get_curr
 
 @router.get("/cache-status")
 async def cache_status(_user: dict = Depends(get_current_user)):
-    """Return cache status for all outward codes (PPD + EPC) with storage warning."""
+    """Return spine data status."""
     def _status() -> dict:
         sb = ppd_cache._get_sb()
-        ppd_status = sb.table("ppd_cache_status").select("*").execute().data or []
-        try:
-            epc_status = sb.table("epc_cache_status").select("*").execute().data or []
-        except Exception:
-            epc_status = []
+        ppd_status = []
+        epc_status = []
 
-        ppd_rows = sum(r.get("row_count", 0) for r in ppd_status)
+        ppd_rows = 0
         epc_rows = sum(r.get("row_count", 0) for r in epc_status)
         # Rough size estimate: ~200 bytes per PPD row, ~250 bytes per EPC row
         est_mb = (ppd_rows * 200 + epc_rows * 250) / (1024 * 1024)
