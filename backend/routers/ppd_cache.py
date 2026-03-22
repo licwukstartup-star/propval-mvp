@@ -263,12 +263,14 @@ def _evict_oldest_inner(keep_outward: str | None = None) -> bool:
 
 
 async def ensure_cache(outward: str) -> None:
-    """Ensure PPD cache is populated and fresh. PPD only — fast.
-    Used by comparable search (which has its own EPC enrichment).
-
-    If eviction fails (Supabase overloaded), skips ingestion to prevent
-    storage growth and cascading failures.
+    """No-op: spine tables contain all pre-loaded data.
+    Kept for API compatibility with comparable search engine.
     """
+    return
+
+
+async def _ensure_cache_legacy(outward: str) -> None:
+    """Legacy: download PPD from HMLR on demand. Retained for non-spine fallback."""
     outward = outward.strip().upper()
     fresh = await asyncio.to_thread(_is_cache_fresh_sync, outward)
     if not fresh:
@@ -312,34 +314,83 @@ async def force_refresh(outward: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Spine column mapping: transactions → price_paid_cache format
+# ---------------------------------------------------------------------------
+
+_SPINE_SELECT = (
+    "transaction_id, price, date_of_transfer, postcode, outward_code, "
+    "saon, paon, street, district, ppd_type, duration, old_new, ppd_category, "
+    "uprn, lmk_key, epc_property_type, floor_area_sqm, energy_rating, "
+    "energy_score, construction_age_band, age_best, lat, lon, coord_source"
+)
+
+
+def _spine_to_ppd_format(row: dict) -> dict:
+    """Map a spine transactions row to price_paid_cache column names."""
+    return {
+        "transaction_id":       row.get("transaction_id"),
+        "deed_date":            str(row.get("date_of_transfer") or "")[:10],
+        "price_paid":           row.get("price"),
+        "postcode":             row.get("postcode"),
+        "outward_code":         row.get("outward_code"),
+        "saon":                 row.get("saon"),
+        "paon":                 row.get("paon"),
+        "street":               row.get("street"),
+        "district":             row.get("district"),
+        "property_type":        row.get("ppd_type"),
+        "estate_type":          row.get("duration"),
+        "new_build":            "Y" if row.get("old_new") == "Y" else "N",
+        "transaction_category": row.get("ppd_category"),
+        "uprn":                 row.get("uprn"),
+        # Pre-enriched EPC fields (skip EPC API calls)
+        "lmk_key":              row.get("lmk_key"),
+        "epc_property_type":    row.get("epc_property_type"),
+        "floor_area_sqm":       row.get("floor_area_sqm"),
+        "energy_rating":        row.get("energy_rating"),
+        "energy_score":         row.get("energy_score"),
+        "construction_age_band": row.get("construction_age_band"),
+        "age_best":             row.get("age_best"),
+        "lat":                  row.get("lat"),
+        "lon":                  row.get("lon"),
+        "coord_source":         row.get("coord_source"),
+    }
+
+
+def _spine_rows(rows: list[dict]) -> list[dict]:
+    """Convert a list of spine rows to PPD cache format."""
+    return [_spine_to_ppd_format(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Sync query helpers (run via asyncio.to_thread)
+# Now query spine `transactions` table instead of `price_paid_cache`
 # ---------------------------------------------------------------------------
 
 def _query_postcode_sync(pc: str, date_from: str) -> list[dict]:
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
-        .select("*") \
+    resp = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("postcode", pc) \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
-    return resp.data or []
+    return _spine_rows(resp.data or [])
 
 
 def _query_building_sync(outward: str, bldg: str, date_from: str) -> list[dict]:
     sb = _get_sb()
     # Query 1: PAON starts with building name (e.g. "QUEENS WHARF" or "QUEENS WHARF, 2")
-    resp1 = sb.table("price_paid_cache") \
-        .select("*") \
+    resp1 = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("outward_code", outward) \
         .ilike("paon", f"{bldg}%") \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
     # Query 2: PAON contains building name after a number prefix (e.g. "2 QUEENS WHARF")
-    resp2 = sb.table("price_paid_cache") \
-        .select("*") \
+    resp2 = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("outward_code", outward) \
         .ilike("paon", f"% {bldg}%") \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
     # Dedup by transaction_id
     seen: set[str] = set()
@@ -349,7 +400,7 @@ def _query_building_sync(outward: str, bldg: str, date_from: str) -> list[dict]:
         if tid and tid not in seen:
             seen.add(tid)
             rows.append(r)
-    return rows
+    return _spine_rows(rows)
 
 
 def _query_building_fuzzy_sync(outward: str, bldg: str, date_from: str,
@@ -367,10 +418,10 @@ def _query_building_fuzzy_sync(outward: str, bldg: str, date_from: str,
     """
     sb = _get_sb()
     # Get distinct PAONs for this outward code (lightweight query)
-    resp = sb.table("price_paid_cache") \
+    resp = sb.table("transactions") \
         .select("paon") \
         .eq("outward_code", outward) \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
     if not resp.data:
         return []
@@ -413,18 +464,18 @@ def _query_building_fuzzy_sync(outward: str, bldg: str, date_from: str,
     # Fetch transactions for all matching PAONs in a single batch query
     rows: list[dict] = []
     seen: set[str] = set()
-    resp2 = sb.table("price_paid_cache") \
-        .select("*") \
+    resp2 = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("outward_code", outward) \
         .in_("paon", matching_paons) \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
     for r in (resp2.data or []):
         tid = r.get("transaction_id", "")
         if tid and tid not in seen:
             seen.add(tid)
             rows.append(r)
-    return rows
+    return _spine_rows(rows)
 
 
 def _normalise_paon_hyphen(paon: str) -> list[str]:
@@ -447,52 +498,52 @@ def _query_paon_street_sync(outward: str, paon: str, street: str, date_from: str
     seen: set[str] = set()
     rows: list[dict] = []
     for pv in paon_variants:
-        resp = sb.table("price_paid_cache") \
-            .select("*") \
+        resp = sb.table("transactions") \
+            .select(_SPINE_SELECT) \
             .eq("outward_code", outward) \
             .eq("paon", pv) \
             .eq("street", street) \
-            .gte("deed_date", date_from) \
+            .gte("date_of_transfer", date_from) \
             .execute()
         for r in (resp.data or []):
             tid = r.get("transaction_id", "")
             if tid and tid not in seen:
                 seen.add(tid)
                 rows.append(r)
-    return rows
+    return _spine_rows(rows)
 
 
 def _query_street_sync(outward: str, street: str, date_from: str) -> list[dict]:
     """All transactions on a specific street within an outward code."""
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
-        .select("*") \
+    resp = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("outward_code", outward) \
         .eq("street", street) \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .limit(10000) \
         .execute()
-    return resp.data or []
+    return _spine_rows(resp.data or [])
 
 
 def _query_outward_sync(outward: str, date_from: str) -> list[dict]:
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
-        .select("*") \
+    resp = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("outward_code", outward) \
-        .gte("deed_date", date_from) \
+        .gte("date_of_transfer", date_from) \
         .execute()
-    return resp.data or []
+    return _spine_rows(resp.data or [])
 
 
 def _query_postcode_all_sync(pc: str) -> list[dict]:
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
-        .select("*") \
+    resp = sb.table("transactions") \
+        .select(_SPINE_SELECT) \
         .eq("postcode", pc) \
-        .order("deed_date", desc=True) \
+        .order("date_of_transfer", desc=True) \
         .execute()
-    return resp.data or []
+    return _spine_rows(resp.data or [])
 
 
 # ---------------------------------------------------------------------------
@@ -633,13 +684,13 @@ async def query_by_uprn(uprn: str, saon: str | None = None) -> list[dict]:
 
     def _query():
         sb = _get_sb()
-        resp = sb.table("price_paid_cache") \
-            .select("*") \
+        resp = sb.table("transactions") \
+            .select(_SPINE_SELECT) \
             .eq("uprn", str(uprn)) \
-            .order("deed_date", desc=True) \
+            .order("date_of_transfer", desc=True) \
             .limit(100) \
             .execute()
-        return resp.data or []
+        return _spine_rows(resp.data or [])
 
     rows = await asyncio.to_thread(_query)
     logging.warning("PPD query UPRN %s → %d rows", uprn, len(rows))
@@ -1062,9 +1113,9 @@ def _resolve_ppd_uprns_sync(outward: str) -> int:
 
 
 def _get_ppd_postcodes_sync(outward: str) -> list[str]:
-    """Get all unique postcodes from PPD cache for an outward code."""
+    """Get all unique postcodes from spine transactions for an outward code."""
     sb = _get_sb()
-    resp = sb.table("price_paid_cache") \
+    resp = sb.table("transactions") \
         .select("postcode") \
         .eq("outward_code", outward) \
         .limit(10000) \
@@ -1077,9 +1128,9 @@ def _get_ppd_postcodes_sync(outward: str) -> list[str]:
 
 
 def _query_epc_by_postcode_sync(postcode: str) -> list[dict]:
-    """Get all cached EPC records for a postcode."""
+    """Get all EPC records for a postcode from spine epc_certificates table."""
     sb = _get_sb()
-    resp = sb.table("epc_cache") \
+    resp = sb.table("epc_certificates") \
         .select("*") \
         .eq("postcode", postcode) \
         .execute()
