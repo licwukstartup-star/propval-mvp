@@ -603,7 +603,7 @@ def _parse_ppd_row(row: dict) -> dict | None:
     tenure = "freehold" if et == "F" else "leasehold" if et == "L" else None
     nb = (row.get("new_build") or "").strip().upper()
     cat = (row.get("transaction_category") or "").strip().upper()[:1] or None
-    return {
+    parsed = {
         "transaction_id": row.get("transaction_id") or None,
         "sale_date":      deed,
         "price":          price,
@@ -618,6 +618,41 @@ def _parse_ppd_row(row: dict) -> dict | None:
         "paon":           (row.get("paon") or "").strip().upper(),
         "street":         (row.get("street") or "").strip().upper(),
     }
+
+    # Carry forward pre-enriched EPC fields from spine data (if present)
+    epc_type = row.get("epc_property_type")
+    if epc_type:
+        derived_type = _derive_property_type(epc_type)
+        if derived_type:
+            parsed["property_type"] = derived_type
+        derived_sub = _derive_house_sub_type(row.get("epc_built_form"))
+        if derived_sub:
+            parsed["house_sub_type"] = derived_sub
+        parsed["epc_matched"] = True
+        parsed["epc_uprn"] = row.get("uprn")
+        parsed["epc_rating"] = row.get("energy_rating")
+        parsed["epc_score"] = row.get("energy_score")
+        fa = row.get("floor_area_sqm")
+        if fa:
+            try:
+                parsed["floor_area_sqm"] = float(fa)
+            except (ValueError, TypeError):
+                pass
+        rooms = row.get("habitable_rooms")
+        if rooms is None:
+            rooms = row.get("number_rooms")
+        if rooms:
+            try:
+                parsed["bedrooms"] = int(rooms)
+            except (ValueError, TypeError):
+                pass
+        age_band = row.get("construction_age_band")
+        if age_band:
+            parsed["construction_age_band"] = _normalise_age_band(age_band)
+            parsed["build_year"] = row.get("age_best") or _approx_build_year(age_band)
+            parsed["building_era"] = derive_building_era(parsed.get("build_year"))
+
+    return parsed
 
 
 def _dedup_key(r: dict) -> str:

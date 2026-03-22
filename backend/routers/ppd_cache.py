@@ -316,8 +316,9 @@ async def force_refresh(outward: str) -> None:
 _SPINE_SELECT = (
     "transaction_id, price, date_of_transfer, postcode, outward_code, "
     "saon, paon, street, district, ppd_type, duration, old_new, ppd_category, "
-    "uprn, lmk_key, epc_property_type, floor_area_sqm, energy_rating, "
-    "energy_score, construction_age_band, age_best, lat, lon, coord_source"
+    "uprn, lmk_key, epc_property_type, epc_built_form, floor_area_sqm, "
+    "habitable_rooms, energy_rating, energy_score, construction_age_band, "
+    "age_best, lat, lon, coord_source"
 )
 
 
@@ -341,6 +342,8 @@ def _spine_to_ppd_format(row: dict) -> dict:
         # Pre-enriched EPC fields (skip EPC API calls)
         "lmk_key":              row.get("lmk_key"),
         "epc_property_type":    row.get("epc_property_type"),
+        "epc_built_form":       row.get("epc_built_form"),
+        "habitable_rooms":      row.get("habitable_rooms"),
         "floor_area_sqm":       row.get("floor_area_sqm"),
         "energy_rating":        row.get("energy_rating"),
         "energy_score":         row.get("energy_score"),
