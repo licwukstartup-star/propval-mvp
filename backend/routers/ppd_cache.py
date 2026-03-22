@@ -1147,9 +1147,9 @@ _EPC_OUTWARD_COLS = (
 
 
 def _query_epc_by_outward_sync(outward: str) -> list[dict]:
-    """Get cached EPC records for an outward code (columns needed for EpcIndex)."""
+    """Get EPC records for an outward code from spine epc_certificates."""
     sb = _get_sb()
-    resp = sb.table("epc_cache") \
+    resp = sb.table("epc_certificates") \
         .select(_EPC_OUTWARD_COLS) \
         .eq("outward_code", outward) \
         .limit(10000) \
