@@ -625,8 +625,9 @@ async def query_outward(outward: str, months: int,
     return rows
 
 
-async def query_by_uprn(uprn: str) -> list[dict]:
-    """All transactions for a UPRN — instant lookup, no address matching needed."""
+async def query_by_uprn(uprn: str, saon: str | None = None) -> list[dict]:
+    """All transactions for a UPRN — instant lookup, no address matching needed.
+    Optional saon filter handles building-level UPRNs shared across flats."""
     if not uprn:
         return []
 
@@ -642,6 +643,26 @@ async def query_by_uprn(uprn: str) -> list[dict]:
 
     rows = await asyncio.to_thread(_query)
     logging.warning("PPD query UPRN %s → %d rows", uprn, len(rows))
+
+    # Filter by SAON if provided (building-level UPRNs can return all flats)
+    if saon and rows:
+        import re as _re
+        saon_upper = saon.strip().upper()
+        variants = {saon_upper}
+        if saon_upper.startswith("FLAT "):
+            variants.add("APARTMENT " + saon_upper[5:])
+        elif saon_upper.startswith("APARTMENT "):
+            variants.add("FLAT " + saon_upper[10:])
+        elif saon_upper.startswith("APT "):
+            variants.add("FLAT " + saon_upper[4:])
+        m = _re.search(r"(\d+\w*)", saon_upper)
+        if m:
+            variants.add(m.group(1))
+        filtered = [r for r in rows if (r.get("saon") or "").strip().upper() in variants]
+        if filtered:
+            rows = filtered
+            logging.warning("PPD UPRN %s filtered by SAON %s → %d rows", uprn, saon, len(rows))
+
     return rows
 
 

@@ -18,6 +18,7 @@ import HpiTab from "./components/HpiTab";
 import QATab from "./components/QATab";
 import AgenticReportTab from "./components/AgenticReportTab";
 import SaveCaseDialog from "./components/SaveCaseDialog";
+import CaseTypePopup from "./components/CaseTypePopup";
 import MyCasesPanel from "./components/MyCasesPanel";
 
 // Extracted modules
@@ -307,6 +308,7 @@ export default function Home() {
   const [savingCase, setSavingCase] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showCaseTypePopup, setShowCaseTypePopup] = useState(false);
   const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
   const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -640,6 +642,46 @@ export default function Home() {
     }
     finally { if (!silent) setSavingCase(false); }
   }
+
+  // Handle compulsory case type selection after search
+  const handleCaseTypeSelected = async (caseType: "research" | "full_valuation") => {
+    setSaveCaseType(caseType);
+    if (!result || !session?.access_token) return;
+    setSavingCase(true);
+    try {
+      const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
+      const payload = {
+        address: result.address,
+        postcode: result.postcode,
+        uprn: result.uprn,
+        case_type: caseType,
+        property_data: result,
+        comparables: adoptedComparables,
+        search_results: searchResults,
+        valuation_date: valuationDate || null,
+        hpi_correlation: hpiCorrelation,
+        size_elasticity: sizeElasticity,
+        epc_beta: epcBeta,
+        floor_premium: floorPremium,
+        ai_narrative: aiNarrative,
+        report_content: reportContent,
+        ui_state: uiStateRef.current,
+      };
+      const res = await fetch(`${API_BASE}/api/cases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to create case");
+      const saved = await res.json();
+      setCurrentCaseId(saved.id);
+      setShowCaseTypePopup(false);
+    } catch {
+      alert("Failed to create case. Please try again.");
+    } finally {
+      setSavingCase(false);
+    }
+  };
 
   // Auto-save: debounce 3s after changes to comparables/valuation params (only for existing cases)
   const saveCaseRef = useRef(saveCase);
@@ -1410,6 +1452,8 @@ export default function Home() {
       setCurrentCaseId(null);
       setSaveCaseType("research");
       setCurrentCaseStatus("in_progress");
+      // Show compulsory case type selection popup
+      setShowCaseTypePopup(true);
       // Auto-set valuation date to today and prefetch comparables in background
       const todayStr = new Date().toISOString().slice(0, 10);
       setValuationDate(todayStr);
@@ -3392,6 +3436,13 @@ export default function Home() {
       }
 
       {/* ── Save Case dialog ────────────────────────────────────────────────── */}
+      {showCaseTypePopup && result && (
+        <CaseTypePopup
+          address={result.address}
+          onSelect={handleCaseTypeSelected}
+        />
+      )}
+
       {showSaveDialog && (
         <SaveCaseDialog
           result={result}

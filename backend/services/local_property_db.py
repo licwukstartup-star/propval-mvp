@@ -172,6 +172,20 @@ class LocalPropertyDB:
                     ORDER BY date_of_transfer DESC
                 """, [uprn_clean]).fetchall()
                 if rows:
+                    # Filter by SAON if provided (building-level UPRNs can return all flats)
+                    if saon:
+                        saon_upper = saon.strip().upper()
+                        variants = {saon_upper}
+                        if saon_upper.startswith("FLAT "):
+                            variants.add("APARTMENT " + saon_upper[5:])
+                        elif saon_upper.startswith("APARTMENT "):
+                            variants.add("FLAT " + saon_upper[10:])
+                        elif saon_upper.startswith("APT "):
+                            variants.add("FLAT " + saon_upper[4:])
+                        m = re.search(r"(\d+\w*)", saon_upper)
+                        if m:
+                            variants.add(m.group(1))
+                        rows = [r for r in rows if (r[5] or "").strip().upper() in variants]
                     for r in rows:
                         results.append({
                             "date": str(r[0])[:10], "price": r[1],
@@ -227,8 +241,8 @@ class LocalPropertyDB:
                             deduped.append(r)
                     return deduped
 
-            # Fallback: PAON + postcode (for houses)
-            if paon and postcode:
+            # Fallback: PAON + postcode (for houses only — skip if SAON was requested)
+            if paon and postcode and not saon:
                 pc = postcode.strip().upper()
                 paon_upper = paon.strip().upper()
                 for table in ("matched", "unmatched"):
@@ -338,6 +352,34 @@ class LocalPropertyDB:
                 return []
             cols = [desc[0] for desc in self._con.description]
         return [self._row_to_dict(row, cols) for row in result]
+
+    def autocomplete_by_postcode(self, postcode: str) -> list[dict]:
+        """Return distinct address+UPRN pairs for autocomplete dropdown."""
+        pc = postcode.strip().upper()
+        with self._lock:
+            result = self._con.execute("""
+                SELECT DISTINCT
+                    COALESCE(saon, '') AS saon,
+                    COALESCE(paon, '') AS paon,
+                    COALESCE(street, '') AS street,
+                    postcode,
+                    COALESCE(UPRN, '') AS uprn
+                FROM matched
+                WHERE postcode = ?
+                ORDER BY paon, saon
+            """, [pc]).fetchall()
+        if not result:
+            return []
+        seen: set[str] = set()
+        addresses: list[dict] = []
+        for saon, paon, street, pc_val, uprn in result:
+            parts = [p for p in [saon, paon, street, pc_val] if p.strip()]
+            addr = ", ".join(parts)
+            key = addr.upper()
+            if key not in seen:
+                seen.add(key)
+                addresses.append({"address": addr, "uprn": uprn})
+        return addresses
 
     def query_postcode(self, postcode: str, months: int,
                        val_date: date | None = None) -> list[dict]:

@@ -628,6 +628,128 @@ def _format_sale(b: dict) -> dict:
     }
 
 
+def _format_spine_sale(row: dict) -> dict:
+    """Format a row from the spine transactions table into the sale history format."""
+    return {
+        "date": str(row.get("date_of_transfer") or "")[:10],
+        "price": int(row.get("price") or 0),
+        "tenure": _TENURE_LABEL.get(row.get("duration", ""), row.get("duration", "")),
+        "property_type": _PT_LABEL.get(row.get("ppd_type", ""), row.get("ppd_type", "")),
+        "new_build": (row.get("old_new") or "") in ("Y",),
+        "saon": row.get("saon"),
+        "paon": row.get("paon"),
+        "street": row.get("street"),
+    }
+
+
+def _query_spine_sale_history_sync(uprn: str | None, postcode: str | None,
+                                    saon: str | None, paon: str | None) -> list[dict]:
+    """Query spine transactions + unmatched_transactions for sale history.
+    Replaces local DuckDB + PPD cache + SPARQL fallbacks."""
+    sb = _get_supabase()
+    if sb is None:
+        return []
+
+    results: list[dict] = []
+
+    # Build SAON variants for filtering building-level UPRNs
+    saon_variants: set[str] = set()
+    if saon:
+        saon_upper = saon.strip().upper()
+        saon_variants.add(saon_upper)
+        if saon_upper.startswith("FLAT "):
+            saon_variants.add("APARTMENT " + saon_upper[5:])
+        elif saon_upper.startswith("APARTMENT "):
+            saon_variants.add("FLAT " + saon_upper[10:])
+        elif saon_upper.startswith("APT "):
+            saon_variants.add("FLAT " + saon_upper[4:])
+        import re as _re
+        m = _re.search(r"(\d+\w*)", saon_upper)
+        if m:
+            saon_variants.add(m.group(1))
+
+    def _filter_by_saon(rows: list[dict]) -> list[dict]:
+        if not saon_variants:
+            return rows
+        return [r for r in rows if (r.get("saon") or "").strip().upper() in saon_variants]
+
+    # 1. UPRN lookup (primary)
+    if uprn:
+        try:
+            resp = sb.table("transactions") \
+                .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
+                .eq("uprn", str(uprn)) \
+                .order("date_of_transfer", desc=True) \
+                .limit(50) \
+                .execute()
+            rows = resp.data or []
+            if rows:
+                rows = _filter_by_saon(rows)
+                results = [_format_spine_sale(r) for r in rows]
+                if results:
+                    return results
+        except Exception as exc:
+            logging.warning("Spine sale history UPRN error: %s", exc)
+
+    # 2. SAON + postcode (flats)
+    if saon and postcode:
+        pc = postcode.strip().upper()
+        for table in ("transactions", "unmatched_transactions"):
+            try:
+                # Query with first SAON variant (exact match)
+                resp = sb.table(table) \
+                    .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
+                    .eq("postcode", pc) \
+                    .order("date_of_transfer", desc=True) \
+                    .limit(100) \
+                    .execute()
+                rows = resp.data or []
+                if rows:
+                    filtered = _filter_by_saon(rows)
+                    results.extend([_format_spine_sale(r) for r in filtered])
+            except Exception as exc:
+                logging.warning("Spine sale history SAON error (%s): %s", table, exc)
+        if results:
+            # Deduplicate by date+price
+            seen: set[tuple] = set()
+            deduped = []
+            for r in results:
+                key = (r["date"], r["price"])
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(r)
+            return deduped
+
+    # 3. PAON + postcode (houses — no SAON)
+    if paon and postcode and not saon:
+        pc = postcode.strip().upper()
+        paon_upper = paon.strip().upper()
+        for table in ("transactions", "unmatched_transactions"):
+            try:
+                resp = sb.table(table) \
+                    .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
+                    .eq("postcode", pc) \
+                    .eq("paon", paon_upper) \
+                    .order("date_of_transfer", desc=True) \
+                    .limit(50) \
+                    .execute()
+                rows = resp.data or []
+                results.extend([_format_spine_sale(r) for r in rows])
+            except Exception as exc:
+                logging.warning("Spine sale history PAON error (%s): %s", table, exc)
+        if results:
+            seen2: set[tuple] = set()
+            deduped2 = []
+            for r in results:
+                key = (r["date"], r["price"])
+                if key not in seen2:
+                    seen2.add(key)
+                    deduped2.append(r)
+            return deduped2
+
+    return results
+
+
 def _filter_sales(bindings: list[dict], parts: dict[str, str | None]) -> list[dict]:
     """Filter PPD cache rows to those matching street/SAON/PAON, newest first."""
     saon       = parts.get("saon")    # e.g. "FLAT 38" or None
@@ -2058,43 +2180,33 @@ async def _fetch_epc_cert_url(postcode: str, matched_address: str) -> str | None
 
 
 async def _fetch_lease_details(uprn: str | None) -> dict:
-    """Look up lease commencement, term and expiry from the local SQLite DB.
+    """Look up lease commencement, term and expiry from Supabase registered_leases.
 
-    DB is built once by running:
-        py -3.11 scripts/build_leases_db.py <LEASES_FULL_*.csv>
-
-    Returns all-None when the DB file is absent or the UPRN is not found.
+    Returns all-None when the UPRN is not found.
     """
     empty = {"lease_commencement": None, "lease_term_years": None, "lease_expiry_date": None}
     if not uprn:
         return empty
 
-    db_path = Path(__file__).resolve().parent.parent / "data" / "leases.db"
-    if not db_path.exists():
-        return empty
-
     def _query():
-        import sqlite3
-        con = sqlite3.connect(db_path, check_same_thread=False)
-        con.row_factory = sqlite3.Row
-        try:
-            row = con.execute(
-                "SELECT date_of_lease, term_years, expiry_date "
-                "FROM registered_leases WHERE uprn = ? LIMIT 1",
-                (str(uprn),),
-            ).fetchone()
-            return dict(row) if row else None
-        finally:
-            con.close()
+        sb = _get_supabase()
+        if sb is None:
+            return None
+        resp = sb.table("registered_leases") \
+            .select("date_of_lease, term_years, expiry_date") \
+            .eq("uprn", str(uprn)) \
+            .limit(1) \
+            .execute()
+        return resp.data[0] if resp.data else None
 
     try:
         row = await asyncio.to_thread(_query)
         if not row:
             return empty
         return {
-            "lease_commencement": row["date_of_lease"],
-            "lease_term_years":   row["term_years"],
-            "lease_expiry_date":  row["expiry_date"],
+            "lease_commencement": row.get("date_of_lease"),
+            "lease_term_years":   row.get("term_years"),
+            "lease_expiry_date":  row.get("expiry_date"),
         }
     except Exception:
         logging.exception("Lease details lookup failed for uprn=%s", uprn)
@@ -2217,53 +2329,33 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                         inferred_building_name = lr_paon.title()
                         break
 
-        # Primary: local DB lookup (London PPD, pre-matched, instant).
-        # Fallback: SPARQL to HMLR Linked Data (non-London or local DB miss).
+        # Sale history from spine tables (transactions + unmatched_transactions)
         sparql_saon = parts.get("saon")
         sparql_paon = parts.get("paon")
         sales: list[dict] = []
 
-        local_db = getattr(request.app.state, "local_db", None)
-        if local_db and local_db.loaded:
-            uprn = best.get("uprn")
-            try:
-                local_sales = await asyncio.to_thread(
-                    local_db.query_sale_history,
-                    uprn=str(uprn) if uprn else None,
-                    postcode=postcode,
-                    saon=sparql_saon,
-                    paon=sparql_paon,
-                )
-                if local_sales:
-                    sales = local_sales
-                    logging.warning("Sales local DB: uprn=%s pc=%s → %d sales", uprn, postcode, len(sales))
-            except Exception as exc:
-                logging.warning("Sales local DB error: %s", exc)
+        try:
+            spine_sales = await asyncio.to_thread(
+                _query_spine_sale_history_sync,
+                uprn=str(best.get("uprn")) if best.get("uprn") else None,
+                postcode=postcode,
+                saon=sparql_saon,
+                paon=sparql_paon,
+            )
+            if spine_sales:
+                sales = spine_sales
+                logging.warning("Sales spine: uprn=%s pc=%s → %d sales", best.get("uprn"), postcode, len(sales))
+        except Exception as exc:
+            logging.warning("Sales spine error: %s", exc)
 
-        # UPRN-first lookup: instant query if UPRN is resolved in price_paid_cache
-        uprn_lookup_done = False
-        if not sales and best.get("uprn"):
-            uprn_lookup_done = True
+        # Fallback to SPARQL for non-London postcodes not yet in spine
+        if not sales and (sparql_saon or sparql_paon):
             try:
-                uprn_rows = await ppd_cache.query_by_uprn(best["uprn"])
-                if uprn_rows:
-                    sales = [_format_sale(r) for r in uprn_rows]
-                    logging.warning("Sales UPRN-first: uprn=%s → %d sales", best["uprn"], len(sales))
-                else:
-                    # UPRN resolved but no sales — also try PPD cache filter
-                    # (catches sales not yet UPRN-matched)
-                    sales = _filter_sales(sparql_bindings, parts)
-                    if sales:
-                        logging.warning("Sales PPD filter fallback: %d sales", len(sales))
-            except Exception as exc:
-                logging.warning("Sales UPRN-first error: %s", exc)
-
-        # Only fall back to slow SPARQL if UPRN lookup wasn't available
-        if not sales and not uprn_lookup_done:
-            sales = _filter_sales(sparql_bindings, parts)
-            if not sales and (sparql_saon or sparql_paon):
                 sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
-                logging.debug("Sales SPARQL fallback: %d sales", len(sales))
+                if sales:
+                    logging.warning("Sales SPARQL fallback: %d sales", len(sales))
+            except Exception as exc:
+                logging.warning("Sales SPARQL fallback error: %s", exc)
 
         # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
         _cached = _load_cached_enrichment(best.get("uprn", ""))
@@ -3162,7 +3254,7 @@ def _autocomplete_from_supabase_sync(pc: str) -> list[dict]:
 
 
 @router.get("/autocomplete")
-async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_current_user)):
+async def autocomplete_addresses(postcode: str, request: Request, _user: dict = Depends(get_current_user)):
     """Return address list for a postcode. Queries local Supabase cache first, falls back to EPC API."""
     pc = extract_postcode(postcode)
     if not pc:
@@ -3195,7 +3287,20 @@ async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_curren
                     rows = await _fetch_epc_rows(pc, email, api_key)
                 except Exception as exc:
                     logging.warning("EPC autocomplete API failed for %s: %s", pc, exc)
-                    return {"addresses": [], "error": "EPC API temporarily unavailable — try again or type the full address manually below"}
+
+            # 4. Fall back to local DuckDB (1.1M records, 33 London boroughs)
+            if not rows:
+                try:
+                    local_db = getattr(request.app.state, "local_db", None)
+                    if local_db and local_db.loaded:
+                        rows = await asyncio.to_thread(local_db.autocomplete_by_postcode, pc)
+                        if rows:
+                            logging.info("EPC autocomplete: served %d addresses from local DB for %s", len(rows), pc)
+                except Exception as exc:
+                    logging.warning("EPC autocomplete local DB failed for %s: %s", pc, exc)
+
+            if not rows:
+                return {"addresses": [], "error": "EPC API temporarily unavailable — try again or type the full address manually below"}
 
         _autocomplete_cache[pc] = rows
 
