@@ -22,16 +22,22 @@ Usage:
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
 from pathlib import Path
+
+# At ~51.5°N (London), 1° longitude ≈ cos(51.5°) × 111,000 ≈ 69,200m.
+# We scale longitudes by this factor so KDTree Euclidean distance ≈ real distance.
+_LON_SCALE = math.cos(math.radians(51.5))  # ≈ 0.6225
 
 log = logging.getLogger(__name__)
 
 # Default path: find the experiment data directory relative to backend/
 _DEFAULT_PATH = (
     Path(__file__).resolve().parent.parent.parent
+    / "Research"
     / "Address matching experiment"
     / "data"
     / "inspire_centroids_london.json"
@@ -60,7 +66,8 @@ class InspireService:
         try:
             import numpy as np
             from scipy.spatial import KDTree
-            coords = np.column_stack([self._lats, self._lngs])
+            # Scale longitudes by cos(lat) so Euclidean distance ≈ real distance
+            coords = np.column_stack([self._lats, self._lngs * _LON_SCALE])
             self._tree = KDTree(coords)
             log.info("INSPIRE: KDTree built (%d centroids)", len(self._ids))
         except ImportError:
@@ -85,10 +92,8 @@ class InspireService:
         if self._tree is None:
             return None
         try:
-            dist_deg, idx = self._tree.query([lat, lng])
-            # 1 degree latitude ≈ 111,000m. Conservative conversion — slightly
-            # under-estimates distance in longitude direction at 51.5°N but
-            # acceptable for a nearest-centroid sanity threshold.
+            dist_deg, idx = self._tree.query([lat, lng * _LON_SCALE])
+            # In scaled space, 1 unit ≈ 1 degree latitude ≈ 111,000m
             dist_m = dist_deg * 111_000
             if dist_m > max_dist_m:
                 return None
@@ -113,6 +118,7 @@ class InspireService:
             return [None] * len(coords)
         import numpy as np
         points = np.array(coords, dtype=np.float32)
+        points[:, 1] *= _LON_SCALE  # scale longitudes to match KDTree
         dists, idxs = self._tree.query(points)
         results = []
         for dist_deg, idx in zip(dists, idxs):
@@ -179,6 +185,148 @@ class InspireService:
                 "geometry": json.loads(geojson_str),
             })
 
+        return {"type": "FeatureCollection", "features": features}
+
+    def get_polygons_in_radius(self, lat: float, lon: float, radius_m: float = 1609.0, max_polygons: int = 8000) -> dict:
+        """
+        Return ALL INSPIRE polygons within radius as a GeoJSON FeatureCollection.
+
+        Uses KDTree.query_ball_point for fast spatial query, then batch-fetches
+        polygon geometries from SQLite.
+
+        Args:
+            lat, lon: WGS84 centre point.
+            radius_m: search radius in metres (default 1609 = 1 mile).
+            max_polygons: cap to prevent browser meltdown in dense areas.
+
+        Returns:
+            GeoJSON FeatureCollection with all polygon features in the area.
+        """
+        empty = {"type": "FeatureCollection", "features": []}
+        if self._tree is None or not self.has_polygons:
+            return empty
+
+        import numpy as np
+
+        # In scaled space, 1 unit ≈ 1° lat ≈ 111,000m
+        radius_deg = radius_m / 111_000
+        indices = self._tree.query_ball_point([lat, lon * _LON_SCALE], r=radius_deg)
+
+        if not indices:
+            return empty
+
+        # Sort by distance from centre so cap keeps the closest polygons
+        if len(indices) > max_polygons:
+            centre = np.array([lat, lon * _LON_SCALE])
+            coords = np.array([[self._lats[i], self._lngs[i] * _LON_SCALE] for i in indices])
+            dists = np.sum((coords - centre) ** 2, axis=1)
+            sorted_order = np.argsort(dists)
+            indices = [indices[j] for j in sorted_order[:max_polygons]]
+            log.warning("INSPIRE radius: capped to %d nearest (of %d total)", max_polygons, len(sorted_order))
+
+        # Gather inspire_ids and centroid metadata
+        inspire_ids = []
+        centroid_map = {}
+        for idx in indices:
+            iid = self._ids[int(idx)]
+            int_id = int(iid)
+            inspire_ids.append(int_id)
+            centroid_map[iid] = self._data.get(iid, {})
+
+        # Batch fetch from SQLite (chunk to respect variable limit)
+        try:
+            conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            rows = []
+            chunk_size = 500
+            for i in range(0, len(inspire_ids), chunk_size):
+                chunk = inspire_ids[i:i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(conn.execute(
+                    f"SELECT inspire_id, geojson FROM polygons WHERE inspire_id IN ({placeholders})",
+                    chunk,
+                ).fetchall())
+            conn.close()
+        except Exception:
+            log.exception("INSPIRE radius: polygon DB query failed")
+            return empty
+
+        # Build GeoJSON features
+        features = []
+        for inspire_id, geojson_str in rows:
+            iid = str(inspire_id)
+            centroid = centroid_map.get(iid, {})
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "inspire_id": iid,
+                    "area_sqm": centroid.get("area_sqm"),
+                    "centroid_lat": centroid.get("lat"),
+                    "centroid_lon": centroid.get("lng"),
+                },
+                "geometry": json.loads(geojson_str),
+            })
+
+        log.info("INSPIRE radius: %.0fm from (%.5f, %.5f) → %d polygons", radius_m, lat, lon, len(features))
+        return {"type": "FeatureCollection", "features": features}
+
+    def get_polygons_near_points(self, points: list[tuple[float, float]], radius_m: float = 50.0, max_polygons: int = 500) -> dict:
+        """Return deduplicated INSPIRE polygons within radius_m of ANY of the given points."""
+        empty = {"type": "FeatureCollection", "features": []}
+        if self._tree is None or not self.has_polygons or not points:
+            return empty
+
+        radius_deg = radius_m / 111_000
+        unique_indices: set[int] = set()
+        for lat, lon in points:
+            indices = self._tree.query_ball_point([lat, lon * _LON_SCALE], r=radius_deg)
+            unique_indices.update(int(i) for i in indices)
+
+        if not unique_indices:
+            return empty
+
+        if len(unique_indices) > max_polygons:
+            unique_indices = set(list(unique_indices)[:max_polygons])
+            log.warning("INSPIRE near-points: capped to %d polygons", max_polygons)
+
+        inspire_ids = []
+        centroid_map = {}
+        for idx in unique_indices:
+            iid = self._ids[idx]
+            inspire_ids.append(int(iid))
+            centroid_map[iid] = self._data.get(iid, {})
+
+        try:
+            conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+            rows = []
+            chunk_size = 500
+            for i in range(0, len(inspire_ids), chunk_size):
+                chunk = inspire_ids[i:i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(conn.execute(
+                    f"SELECT inspire_id, geojson FROM polygons WHERE inspire_id IN ({placeholders})",
+                    chunk,
+                ).fetchall())
+            conn.close()
+        except Exception:
+            log.exception("INSPIRE near-points: polygon DB query failed")
+            return empty
+
+        features = []
+        for inspire_id, geojson_str in rows:
+            iid = str(inspire_id)
+            centroid = centroid_map.get(iid, {})
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "inspire_id": iid,
+                    "area_sqm": centroid.get("area_sqm"),
+                    "centroid_lat": centroid.get("lat"),
+                    "centroid_lon": centroid.get("lng"),
+                },
+                "geometry": json.loads(geojson_str),
+            })
+
+        log.info("INSPIRE near-points: %d points, %.0fm radius → %d polygons", len(points), radius_m, len(features))
         return {"type": "FeatureCollection", "features": features}
 
     @classmethod

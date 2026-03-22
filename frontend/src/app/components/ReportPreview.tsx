@@ -3,8 +3,7 @@
 import type { ReportMetadata, ValuerInputs } from "./ReportTyping"
 import type { FirmTemplate } from "./FirmTemplateSettings"
 import { useState, useEffect } from "react"
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+import { API_BASE } from "@/lib/constants"
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 function fmtDate(d: string | undefined | null) {
@@ -348,7 +347,6 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
         <Para>{firm.environmental || "—"}</Para>
 
         <SSH num="2.10–2.14">Environmental &amp; Ground Conditions</SSH>
-        <Row label="Green Belt" value={r.green_belt ? "Yes — within Green Belt" : "No"} even />
         <Row label="Brownfield" value={r.brownfield?.length > 0 ? `${r.brownfield.length} site(s) nearby` : "No"} />
         <Row label="Coalfield" value={r.coal_mining_in_coalfield ? "Within coalfield" : "Not in coalfield"} even />
         <Row label="Coal Mining High Risk" value={r.coal_mining_high_risk ? "Yes" : "No"} />
@@ -449,7 +447,7 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
                 <span style={{ color: "#1C1C1E" }}>£{typeof c.price === "number" ? c.price.toLocaleString() : c.price}</span>
                 <span style={{ color: "#636366" }}>{c.transaction_date || c.date || "—"}</span>
                 <span style={{ color: "#636366" }}>{c.property_type || "—"}</span>
-                <span style={{ color: "#636366" }}>{c.floor_area_sqm ? `${Math.round(c.floor_area_sqm)}m²` : (c.floor_area ? `${c.floor_area}m²` : "—")}</span>
+                <span style={{ color: "#636366" }}>{c.floor_area_sqm ? `${Math.round(c.floor_area_sqm).toLocaleString()}m²` : (c.floor_area ? `${parseFloat(c.floor_area).toLocaleString()}m²` : "—")}</span>
               </div>
             ))}
           </div>

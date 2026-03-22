@@ -20,7 +20,6 @@ from . import ppd_cache
 from services.ai_service import generate_property_narrative
 from playwright.sync_api import sync_playwright
 from pydantic import BaseModel, Field
-from shapely.geometry import Point, shape
 
 router = APIRouter(prefix="/api/property", tags=["property"])
 
@@ -193,134 +192,6 @@ def _load_cached_enrichment(uprn: str) -> dict[str, dict]:
     except Exception as exc:
         logging.warning("enrichment cache load failed (non-fatal): %s", exc)
         return {}
-
-
-# ---------------------------------------------------------------------------
-# Green Belt — in-memory Shapely polygons (loaded via FastAPI lifespan)
-# Avoids intermittent false positives from planning.data.gov.uk geometry engine
-# ---------------------------------------------------------------------------
-
-GREEN_BELT_GEOJSON_URL = "https://files.planning.data.gov.uk/dataset/green-belt.geojson"
-_green_belt_polygons: list[tuple[str, object]] = []  # (name, shapely_geom)
-
-
-def _load_green_belt_polygons() -> None:
-    """Download the planning.data.gov.uk green-belt GeoJSON and build Shapely shapes.
-
-    Called once from main.py lifespan on startup. Falls back silently to an
-    empty list so the rest of the app keeps working if the download fails.
-    """
-    global _green_belt_polygons
-    try:
-        resp = httpx.get(GREEN_BELT_GEOJSON_URL, timeout=60.0, follow_redirects=True)
-        resp.raise_for_status()
-        features = resp.json().get("features", [])
-        polys = []
-        for feat in features:
-            try:
-                geom = shape(feat["geometry"])
-                if geom.geom_type not in ("Polygon", "MultiPolygon"):
-                    continue
-                name = feat.get("properties", {}).get("name", "")
-                polys.append((name, geom))
-            except Exception as exc:
-                logging.warning("Green Belt: could not parse feature: %s", exc)
-        _green_belt_polygons = polys
-        logging.info("Green Belt: loaded %d polygons from planning.data.gov.uk", len(polys))
-    except Exception as exc:
-        logging.warning(f"Green Belt GeoJSON download failed: {exc}. Green belt check disabled.")
-        _green_belt_polygons = []
-
-
-# ---------------------------------------------------------------------------
-# Schools — GIAS (Get Information About Schools) in-memory cache
-# Downloaded from DfE EduBase CSV at startup, queried by haversine proximity.
-# ---------------------------------------------------------------------------
-
-_GIAS_CSV_URL_TEMPLATE = "http://ea-edubase-api-prod.azurewebsites.net/edubase/edubasealldata{date}.csv"
-_schools_data: list[dict] = []  # [{name, type, phase, ..., lat, lon}, ...]
-
-
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Haversine distance in metres between two WGS84 points."""
-    R = 6_371_000
-    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _load_schools_data() -> None:
-    """Download GIAS EduBase CSV and parse into in-memory list.
-
-    Called from main.py lifespan. Falls back silently on error.
-    The CSV is ~15 MB with ~40k rows (all schools in England).
-    Encoding is latin-1 (Windows-1252).
-    """
-    global _schools_data
-    import csv
-    import io
-    from datetime import date, timedelta
-
-    today_str = date.today().strftime("%Y%m%d")
-    url = _GIAS_CSV_URL_TEMPLATE.format(date=today_str)
-    try:
-        resp = httpx.get(url, timeout=60.0, follow_redirects=True)
-        if resp.status_code != 200:
-            yesterday_str = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
-            url = _GIAS_CSV_URL_TEMPLATE.format(date=yesterday_str)
-            resp = httpx.get(url, timeout=60.0, follow_redirects=True)
-        resp.raise_for_status()
-        text = resp.content.decode("latin-1")
-        reader = csv.DictReader(io.StringIO(text))
-        schools = []
-        for row in reader:
-            status = row.get("EstablishmentStatus (name)", "")
-            if status != "Open":
-                continue
-            lat_str = row.get("Latitude", "")
-            lon_str = row.get("Longitude", "")
-            if not lat_str or not lon_str:
-                continue
-            try:
-                lat = float(lat_str)
-                lon = float(lon_str)
-            except ValueError:
-                continue
-            schools.append({
-                "urn": row.get("URN", ""),
-                "name": row.get("EstablishmentName", ""),
-                "type": row.get("TypeOfEstablishment (name)", ""),
-                "phase": row.get("PhaseOfEducation (name)", ""),
-                "low_age": int(row.get("StatutoryLowAge", "0") or "0"),
-                "high_age": int(row.get("StatutoryHighAge", "0") or "0"),
-                "ofsted_rating": row.get("OfstedRating (name)", "") or None,
-                "ofsted_date": row.get("OfstedLastInsp", "") or None,
-                "postcode": row.get("Postcode", ""),
-                "lat": lat,
-                "lon": lon,
-                "gender": row.get("Gender (name)", ""),
-                "religious_character": row.get("ReligiousCharacter (name)", "") or None,
-            })
-        _schools_data = schools
-        logging.info("GIAS Schools: loaded %d open schools from EduBase CSV", len(schools))
-    except Exception as exc:
-        logging.warning("GIAS Schools CSV download failed: %s. Schools lookup disabled.", exc)
-        _schools_data = []
-
-
-def _find_nearby_schools(lat: float, lon: float, radius_m: int = 1500, limit: int = 15) -> list[dict]:
-    """Return schools within radius_m of the given point, sorted by distance."""
-    if not _schools_data:
-        return []
-    results = []
-    for s in _schools_data:
-        d = _haversine_m(lat, lon, s["lat"], s["lon"])
-        if d <= radius_m:
-            results.append({**s, "distance_m": round(d)})
-    results.sort(key=lambda x: x["distance_m"])
-    return results[:limit]
 
 
 EPC_API_BASE = "https://epc.opendatacommunities.org/api/v1/domestic/search"
@@ -1159,6 +1030,30 @@ async def _fetch_sales_by_address(postcode: str, saon: str | None, paon: str | N
         sales = _parse_sparql_sales(bindings)
         logging.warning("Sales SPARQL: postcode=%s saon=%s paon=%s → %d sales", postcode, saon, paon, len(sales))
 
+        # Pass 1b: HMLR may use FLAT vs APARTMENT interchangeably.
+        if not sales and saon:
+            alt = None
+            su = saon.upper()
+            if su.startswith("APARTMENT "):
+                alt = "FLAT " + su[len("APARTMENT "):]
+            elif su.startswith("APT "):
+                alt = "FLAT " + su[len("APT "):]
+            elif su.startswith("FLAT "):
+                alt = "APARTMENT " + su[len("FLAT "):]
+            if alt:
+                q1b = _sparql_sales_query(postcode, alt, paon)
+                r1b = await client.get(
+                    SPARQL_ENDPOINT,
+                    params={"query": q1b},
+                    headers={"Accept": "application/sparql-results+json"},
+                    timeout=10.0,
+                )
+                if r1b.status_code == 200:
+                    b1b = r1b.json().get("results", {}).get("bindings", [])
+                    sales = _parse_sparql_sales(b1b)
+                    if sales:
+                        logging.warning("Sales SPARQL pass1b saon=%s → %d sales", alt, len(sales))
+
         # Pass 2: HMLR might store just the number (e.g. "99" not "FLAT 99").
         if not sales and saon:
             num = _saon_num(saon)
@@ -1380,6 +1275,27 @@ def _uprn_coords(request, uprn: str | None) -> dict:
     return {"uprn_lat": coords[0], "uprn_lon": coords[1]}
 
 
+def _lookup_age_best(request, best: dict) -> int | None:
+    """Look up PropVal's best construction age estimate from local DB."""
+    local_db = getattr(request.app.state, "local_db", None)
+    if not local_db:
+        logging.debug("age_best: no local_db")
+        return None
+    try:
+        uprn = best.get("uprn")
+        postcode = best.get("postcode")
+        address1 = best.get("address1")
+        logging.info("age_best lookup: uprn=%s pc=%s addr1=%s", uprn, postcode, address1)
+        age_info = local_db.lookup_construction_age(
+            uprn=uprn, postcode=postcode, address1=address1,
+        )
+        logging.info("age_best result: %s", age_info)
+        return age_info.get("age_best")
+    except Exception as exc:
+        logging.warning("age_best error: %s", exc)
+        return None
+
+
 def _best_coords(request, uprn: str | None, location: dict) -> dict:
     """Pick best available coordinates: OS Open UPRN > INSPIRE > Nominatim > postcodes.io.
 
@@ -1388,7 +1304,11 @@ def _best_coords(request, uprn: str | None, location: dict) -> dict:
     """
     # Gather all available coordinate sources
     uprn_hit = _uprn_coords(request, uprn)
-    inspire_hit = _inspire_coords(request, location.get("lat"), location.get("lon"))
+    # Use UPRN coords for INSPIRE lookup if available (building-level accuracy ~1-5m)
+    # Fall back to Nominatim/postcodes.io coords which can be ~50-150m off
+    inspire_lookup_lat = uprn_hit["uprn_lat"] if uprn_hit else location.get("lat")
+    inspire_lookup_lon = uprn_hit["uprn_lon"] if uprn_hit else location.get("lon")
+    inspire_hit = _inspire_coords(request, inspire_lookup_lat, inspire_lookup_lon)
 
     all_coords = {}
     if uprn_hit:
@@ -1554,7 +1474,7 @@ async def _fetch_flood_risk(lat: float | None, lon: float | None) -> dict:
             features = resp.json().get("features", [])
             if not features:
                 return "Very Low"
-            return str(features[0]["properties"].get("risk_band", "Very Low")).strip()
+            return str(features[0]["properties"].get("risk_band", "Very Low")).strip().title()
         except Exception:
             return None
 
@@ -1692,10 +1612,9 @@ async def _fetch_natural_england(lat: float | None, lon: float | None) -> dict:
       SSSI           2 000 m  — large areas; "SSSIs within 2 km"
       AONB/Nat. Landscape 100 m  — effectively point-in-polygon for large polygons
       Ancient Woodland    50 m  — tight; "ancient woodland within 50 m"
-      Green Belt          —    — Shapely point-in-polygon on startup-loaded GeoJSON
     """
     if lat is None or lon is None:
-        return {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False}
+        return {"sssi": [], "aonb": None, "ancient_woodland": []}
 
     easting, northing = _latlon_to_bng(lat, lon)
 
@@ -1718,23 +1637,11 @@ async def _fetch_natural_england(lat: float | None, lon: float | None) -> dict:
         except Exception:
             return []
 
-    def _green_belt() -> bool:
-        """Point-in-polygon check using pre-loaded Shapely geometries.
-
-        Replaces the planning.data.gov.uk runtime API call which has a known
-        intermittent false-positive bug in its server-side geometry engine.
-        """
-        if not _green_belt_polygons:
-            return False  # GeoJSON failed to load at startup
-        pt = Point(lon, lat)
-        return any(geom.contains(pt) for _, geom in _green_belt_polygons)
-
     sssi_feats, aonb_feats, aw_feats = await asyncio.gather(
         _ne_post(NE_SSSI_URL, 2000, "NAME"),
         _ne_post(NE_AONB_URL, 100, "NAME,DESIG_DATE"),
         _ne_post(NE_AW_URL, 50, "NAME,STATUS"),
     )
-    in_green_belt = _green_belt()
 
     # SSSI — unique names, drop empty
     sssi_names = list(dict.fromkeys(
@@ -1761,12 +1668,11 @@ async def _fetch_natural_england(lat: float | None, lon: float | None) -> dict:
             aw_by_name[name] = status
     aw_list = [{"name": name, "type": status} for name, status in aw_by_name.items()]
 
-    logging.debug(f"NE — sssi={len(sssi_names)}, aonb={aonb_name}, aw={len(aw_list)}, green_belt={in_green_belt}")
+    logging.debug(f"NE — sssi={len(sssi_names)}, aonb={aonb_name}, aw={len(aw_list)}")
     return {
         "sssi": sssi_names,
         "aonb": aonb_name,
         "ancient_woodland": aw_list,
-        "green_belt": in_green_belt,
     }
 
 
@@ -2196,6 +2102,18 @@ async def _fetch_lease_details(uprn: str | None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Lease details endpoint (local DB as single source of truth)
+# ---------------------------------------------------------------------------
+
+@router.get("/lease-details/{uprn}")
+@limiter.limit("30/minute")
+async def get_lease_details(request: Request, uprn: str, _user: dict = Depends(get_current_user)):
+    """Return lease commencement, term and expiry from local SQLite DB."""
+    details = await _fetch_lease_details(uprn)
+    return details
+
+
+# ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
@@ -2228,10 +2146,10 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     _fetch_sparql_bindings(postcode),
                     _fetch_location(body.address, postcode),
                 ),
-                timeout=45.0,
+                timeout=15.0,
             )
         except asyncio.TimeoutError:
-            logging.error("⏱ Phase 1 TIMEOUT (>45s) postcode=%s — falling back to partial", postcode)
+            logging.error("⏱ Phase 1 TIMEOUT (>15s) postcode=%s — falling back to partial", postcode)
             # Retry with just location + EPC (skip slow SPARQL / PPD if they stalled)
             try:
                 epc_rows_retry, _, location_retry = await asyncio.wait_for(
@@ -2299,21 +2217,53 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                         inferred_building_name = lr_paon.title()
                         break
 
-        # Primary: direct SPARQL by postcode+saon/paon — queries HMLR Linked Data
-        # exact address predicates, eliminating formatting-mismatch false negatives.
-        # Fallback: address-field filter against PPD cache (no EPC match, or SPARQL empty/error).
+        # Primary: local DB lookup (London PPD, pre-matched, instant).
+        # Fallback: SPARQL to HMLR Linked Data (non-London or local DB miss).
         sparql_saon = parts.get("saon")
         sparql_paon = parts.get("paon")
-        if sparql_saon or sparql_paon:
-            sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
-            if not sales:
-                # SPARQL returned nothing (pre-1995 or SPARQL timeout) —
-                # fall back to PPD cache filter so we never silently drop real records.
-                sales = _filter_sales(sparql_bindings, parts)
-                logging.debug("Sales SPARQL empty → _filter_sales fallback: %d sales", len(sales))
-        else:
+        sales: list[dict] = []
+
+        local_db = getattr(request.app.state, "local_db", None)
+        if local_db and local_db.loaded:
+            uprn = best.get("uprn")
+            try:
+                local_sales = await asyncio.to_thread(
+                    local_db.query_sale_history,
+                    uprn=str(uprn) if uprn else None,
+                    postcode=postcode,
+                    saon=sparql_saon,
+                    paon=sparql_paon,
+                )
+                if local_sales:
+                    sales = local_sales
+                    logging.warning("Sales local DB: uprn=%s pc=%s → %d sales", uprn, postcode, len(sales))
+            except Exception as exc:
+                logging.warning("Sales local DB error: %s", exc)
+
+        # UPRN-first lookup: instant query if UPRN is resolved in price_paid_cache
+        uprn_lookup_done = False
+        if not sales and best.get("uprn"):
+            uprn_lookup_done = True
+            try:
+                uprn_rows = await ppd_cache.query_by_uprn(best["uprn"])
+                if uprn_rows:
+                    sales = [_format_sale(r) for r in uprn_rows]
+                    logging.warning("Sales UPRN-first: uprn=%s → %d sales", best["uprn"], len(sales))
+                else:
+                    # UPRN resolved but no sales — also try PPD cache filter
+                    # (catches sales not yet UPRN-matched)
+                    sales = _filter_sales(sparql_bindings, parts)
+                    if sales:
+                        logging.warning("Sales PPD filter fallback: %d sales", len(sales))
+            except Exception as exc:
+                logging.warning("Sales UPRN-first error: %s", exc)
+
+        # Only fall back to slow SPARQL if UPRN lookup wasn't available
+        if not sales and not uprn_lookup_done:
             sales = _filter_sales(sparql_bindings, parts)
-            logging.debug("No saon/paon → _filter_sales: %d sales", len(sales))
+            if not sales and (sparql_saon or sparql_paon):
+                sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
+                logging.debug("Sales SPARQL fallback: %d sales", len(sales))
 
         # ── Enrichment cache: load cached Phase 2 results if fresh ──────────
         _cached = _load_cached_enrichment(best.get("uprn", ""))
@@ -2339,37 +2289,35 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
 
         _t1 = _t.monotonic()
 
+        PER_API_TIMEOUT = 8  # seconds — each API fails fast independently
+
         async def _timed(name: str, coro):
             t = _t.monotonic()
             try:
-                r = await coro
+                r = await asyncio.wait_for(coro, timeout=PER_API_TIMEOUT)
+            except asyncio.TimeoutError:
+                logging.warning("⏱   %s: %.0fms (TIMEOUT)", name, (_t.monotonic() - t) * 1000)
+                return TimeoutError(f"{name} timed out")
             except Exception as e:
                 logging.warning("⏱   %s: %.0fms (FAILED)", name, (_t.monotonic() - t) * 1000)
                 return e
             logging.warning("⏱   %s: %.0fms", name, (_t.monotonic() - t) * 1000)
             return r
 
-        # Fast APIs only — flood, council_tax, planning_flood deferred to /enrich-slow
-        try:
-            _p2 = await asyncio.wait_for(
-                asyncio.gather(
-                    _timed("listed_bldgs",     _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"])),
-                    _timed("conservation",     _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"])),
-                    _timed("natural_eng",      _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"])),
-                    _timed("epc_cert_url",     _fetch_epc_cert_url(postcode, matched_address)),
-                    _timed("brownfield",       _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"])),
-                    _timed("coal_mining",      _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"])),
-                    _timed("radon",            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"])),
-                    _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
-                    _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
-                    _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
-                    _timed("nearby_planning",  _use_cache(_sc["nearby_planning"]) if "nearby_planning" in _sc else _fetch_nearby_planning(location["lat"], location["lon"], location["region"])),
-                ),
-                timeout=30.0,
-            )
-        except asyncio.TimeoutError:
-            logging.error("⏱ Phase 2 TIMEOUT (>30s) postcode=%s — returning all defaults", postcode)
-            _p2 = [TimeoutError("Phase 2 timed out")] * 11
+        # All APIs run in parallel, each with its own timeout — no single slow API blocks the rest
+        _p2 = await asyncio.gather(
+            _timed("listed_bldgs",     _use_cache(_sc["listed_buildings"]["buildings"]) if "listed_buildings" in _sc else _fetch_listed_buildings(location["lat"], location["lon"])),
+            _timed("conservation",     _use_cache(_sc["conservation_areas"]["areas"]) if "conservation_areas" in _sc else _fetch_conservation_areas(location["lat"], location["lon"])),
+            _timed("natural_eng",      _use_cache(_sc["natural_england"]) if "natural_england" in _sc else _fetch_natural_england(location["lat"], location["lon"])),
+            _timed("epc_cert_url",     _fetch_epc_cert_url(postcode, matched_address)),
+            _timed("brownfield",       _use_cache(_sc["brownfield"].get("is_brownfield")) if "brownfield" in _sc else _fetch_brownfield(location["lat"], location["lon"])),
+            _timed("coal_mining",      _use_cache(_sc["coal_mining"]) if "coal_mining" in _sc else _fetch_coal_mining_risk(location["lat"], location["lon"])),
+            _timed("radon",            _use_cache(_sc["radon"].get("risk")) if "radon" in _sc else _fetch_radon_risk(location["lat"], location["lon"])),
+            _timed("ground_cond",      _use_cache(_sc["ground_conditions"]) if "ground_conditions" in _sc else _fetch_ground_conditions(location["lat"], location["lon"])),
+            _timed("lease_details",    _fetch_lease_details(best.get("uprn"))),
+            _timed("hpi",              _fetch_hpi(location["admin_district"], best.get("property-type"), best.get("built-form"))),
+            _timed("nearby_planning",  _use_cache(_sc["nearby_planning"]) if "nearby_planning" in _sc else _fetch_nearby_planning(location["lat"], location["lon"], location["region"])),
+        )
 
         logging.warning("⏱ Phase 2 (11 fast APIs): %.0fms", (_t.monotonic() - _t1) * 1000)
         _degraded: list[str] = []
@@ -2385,7 +2333,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         flood            = {"rivers_sea_risk": None, "surface_water_risk": None}
         listed_buildings = _safe(_p2[0],  [], "listed_buildings")
         conservation_areas = _safe(_p2[1], [], "conservation_areas")
-        natural_england  = _safe(_p2[2],  {"sssi": [], "aonb": None, "ancient_woodland": [], "green_belt": False}, "natural_england")
+        natural_england  = _safe(_p2[2],  {"sssi": [], "aonb": None, "ancient_woodland": []}, "natural_england")
         epc_url          = _safe(_p2[3],  None, "epc_cert")
         brownfield       = _safe(_p2[4],  [], "brownfield")
         coal             = _safe(_p2[5],  {"high_risk": False, "in_coalfield": False}, "coal_mining")
@@ -2400,9 +2348,6 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         # Deferred — will be null in initial response, filled by /enrich-slow
         planning_zone    = None
         council_tax_band = None
-
-        # Schools — pure in-memory lookup, no I/O
-        nearby_schools = _find_nearby_schools(location["lat"], location["lon"]) if location["lat"] else []
 
         # ── Phase 2.5: cert-page EPC scrape ───────────────────────────────────
         _t2 = _t.monotonic()
@@ -2441,9 +2386,11 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
         logging.warning("⏱ Phase 2.5 (cert scrape): %.0fms", (_t.monotonic() - _t2) * 1000)
         _t3 = _t.monotonic()
         # ----- Tier 1: upsert into properties & property_enrichment -----
+        # Fire in background so the response returns immediately
         _uprn = best.get("uprn")
         if _uprn:
-            _upsert_property_library(
+            asyncio.create_task(asyncio.to_thread(
+                _upsert_property_library,
                 uprn=_uprn,
                 address=matched_address,
                 postcode=normalise_postcode(postcode),
@@ -2483,7 +2430,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     "hpi": hpi,
                     "nearby_planning": nearby_planning,
                 },
-            )
+            ))
 
         return {
             "uprn": best.get("uprn"),
@@ -2500,6 +2447,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "street_name": parts.get("street"),
             "floor_area_m2": best.get("total-floor-area"),
             "construction_age_band": best.get("construction-age-band"),
+            "construction_age_best": _lookup_age_best(request, best),
             "num_rooms": best.get("number-habitable-rooms"),
             "heating_type": best.get("main-fuel"),
             "inspection_date": best.get("inspection-date"),
@@ -2517,7 +2465,6 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "sssi": natural_england["sssi"],
             "aonb": natural_england["aonb"],
             "ancient_woodland": natural_england["ancient_woodland"],
-            "green_belt": natural_england["green_belt"],
             "brownfield": brownfield,
             "coal_mining_high_risk": coal["high_risk"],
             "coal_mining_in_coalfield": coal["in_coalfield"],
@@ -2541,7 +2488,6 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
             "hpi": hpi,
             "nearby_planning": nearby_planning.get("applications", []),
             "nearby_planning_london_only": nearby_planning.get("london_only", False),
-            "nearby_schools": nearby_schools,
             "degraded_sources": _degraded if _degraded else None,
         }
         logging.warning("⏱ Upsert+response: %.0fms | TOTAL: %.0fms", (_t.monotonic() - _t3) * 1000, (_t.monotonic() - _t0) * 1000)
@@ -2559,6 +2505,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
 class SalesRefreshRequest(BaseModel):
     address: str = Field(..., max_length=256)
     postcode: str = Field(..., max_length=10)
+    uprn: str | None = None
 
 @router.post("/sales-refresh")
 @limiter.limit("30/minute")
@@ -2575,7 +2522,17 @@ async def sales_refresh(request: Request, body: SalesRefreshRequest, _user=Depen
     sparql_saon = parts.get("saon")
     sparql_paon = parts.get("paon")
     sales: list[dict] = []
-    if sparql_saon or sparql_paon:
+
+    # UPRN-first lookup
+    if body.uprn:
+        try:
+            uprn_rows = await ppd_cache.query_by_uprn(body.uprn)
+            if uprn_rows:
+                sales = [_format_sale(r) for r in uprn_rows]
+        except Exception:
+            pass
+
+    if not sales and (sparql_saon or sparql_paon):
         sales = await _fetch_sales_by_address(postcode, sparql_saon, sparql_paon)
 
     # Fall back to PPD cache filter
@@ -2626,8 +2583,56 @@ async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Dep
 # INSPIRE title boundary polygons
 # ---------------------------------------------------------------------------
 
+class BatchUPRNCoordsRequest(BaseModel):
+    uprns: list[str]  # ["5870020777", "5870020778", ...]
+
+
+@router.post("/batch-uprn-coords")
+async def batch_uprn_coords(request: Request, body: BatchUPRNCoordsRequest, _user=Depends(get_current_user)):
+    """Return building-level coordinates for a batch of UPRNs.
+
+    Used to resolve comparable property coordinates from their EPC UPRNs
+    when loaded from saved cases (which don't persist lat/lon).
+    """
+    svc = getattr(request.app.state, "uprn_coords", None)
+    if svc is None or not svc.loaded or not body.uprns:
+        return {"coords": {}}
+    result = svc.lookup_batch(body.uprns[:500])  # cap at 500
+    return {"coords": {k: {"lat": v[0], "lon": v[1]} for k, v in result.items()}}
+
+
 class InspirePolygonsRequest(BaseModel):
     coords: list[dict]  # [{"lat": float, "lon": float, "label": str?}, ...]
+
+
+class InspireAreaRequest(BaseModel):
+    dots: list[dict] = []  # [{"lat": float, "lon": float}, ...]
+    radius_m: float = 50.0
+    # Legacy single-point fields (backward compat)
+    lat: float | None = None
+    lon: float | None = None
+
+
+@router.post("/inspire-polygons-area")
+async def inspire_polygons_area(request: Request, body: InspireAreaRequest, _user=Depends(get_current_user)):
+    """Return INSPIRE polygons within radius of each dot (subject + comparables).
+
+    Returns only polygons near the provided dots rather than the entire neighbourhood,
+    reducing payload and render time.
+    """
+    inspire = getattr(request.app.state, "inspire", None)
+    if inspire is None or not inspire.loaded or not inspire.has_polygons:
+        return {"type": "FeatureCollection", "features": []}
+
+    # Build point list from dots array; fall back to single lat/lon for backward compat
+    points = [(d["lat"], d["lon"]) for d in body.dots if "lat" in d and "lon" in d]
+    if not points and body.lat is not None and body.lon is not None:
+        points = [(body.lat, body.lon)]
+    if not points:
+        return {"type": "FeatureCollection", "features": []}
+
+    return inspire.get_polygons_near_points(points, min(body.radius_m, 200))
+
 
 @router.post("/inspire-polygons")
 async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user=Depends(get_current_user)):
@@ -2637,6 +2642,9 @@ async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user
     and comparable properties. Also returns area_sqm for site area calculation.
     """
     inspire: object | None = getattr(request.app.state, "inspire", None)
+    logging.warning("INSPIRE polygons: inspire=%s, loaded=%s, has_polygons=%s, coords=%d, coords_detail=%s",
+                    inspire is not None, getattr(inspire, "loaded", None), getattr(inspire, "has_polygons", None),
+                    len(body.coords), [(c.get("lat"), c.get("lon"), c.get("label","")[:30]) for c in body.coords[:3]])
     if inspire is None or not inspire.loaded or not inspire.has_polygons:
         return {"type": "FeatureCollection", "features": []}
 
@@ -2647,6 +2655,9 @@ async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user
     # Add labels to features after lookup
     labels = [c.get("label", "") for c in body.coords if "lat" in c and "lon" in c]
     fc = inspire.get_polygons(coord_tuples)
+    logging.warning("INSPIRE polygons result: %d features, ids=%s",
+                    len(fc.get("features", [])),
+                    [f["properties"].get("inspire_id") for f in fc.get("features", [])[:5]])
 
     # Match labels to features via centroid proximity
     for feat in fc["features"]:
@@ -3122,41 +3133,88 @@ async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get
         raise HTTPException(status_code=500, detail="PDF generation failed")
 
 
+def _autocomplete_from_supabase_sync(pc: str) -> list[dict]:
+    """Query epc_cache in Supabase for addresses at a postcode. Returns EPC-format dicts.
+
+    Uses an RPC function (server-side, with 5s statement timeout) if deployed,
+    otherwise falls back to a direct table query with LIMIT 2000.
+    """
+    sb = _get_supabase()
+    if sb is None:
+        return []
+    # Prefer RPC (server-side, has its own 5s timeout, no PostgREST COUNT overhead)
+    try:
+        resp = sb.rpc("autocomplete_by_postcode", {"pc": pc}).execute()
+        return resp.data or []
+    except Exception:
+        pass
+    # Fallback to direct table query (if RPC not yet deployed)
+    try:
+        resp = sb.table("epc_cache") \
+            .select("address1, address2, address3, address, postcode, uprn") \
+            .eq("postcode", pc) \
+            .limit(2000) \
+            .execute()
+        return resp.data or []
+    except Exception as exc:
+        logging.warning("EPC autocomplete Supabase failed for %s: %s", pc, exc)
+        return []
+
+
 @router.get("/autocomplete")
 async def autocomplete_addresses(postcode: str, _user: dict = Depends(get_current_user)):
-    """Return address list for a postcode from the EPC API. Powers the search dropdown."""
+    """Return address list for a postcode. Queries local Supabase cache first, falls back to EPC API."""
     pc = extract_postcode(postcode)
     if not pc:
         return {"addresses": []}
     pc = normalise_postcode(pc)
 
-    if pc not in _autocomplete_cache:
-        email = os.getenv("EPC_EMAIL")
-        api_key = os.getenv("EPC_API_KEY")
-        if not email or not api_key:
-            return {"addresses": []}
-        try:
-            rows = await _fetch_epc_rows(pc, email, api_key)
-        except Exception as exc:
-            logging.warning("EPC autocomplete failed for %s: %s", pc, exc)
-            return {"addresses": [], "error": "EPC API temporarily unavailable"}
-        _autocomplete_cache[pc] = rows
-    else:
+    rows = []
+
+    # 1. Check in-memory cache
+    if pc in _autocomplete_cache:
         rows = _autocomplete_cache[pc]
+    else:
+        # 2. Try Supabase epc_cache (local data, no API call) — 5s timeout
+        try:
+            rows = await asyncio.wait_for(
+                asyncio.to_thread(_autocomplete_from_supabase_sync, pc),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            logging.warning("EPC autocomplete Supabase timeout for %s (5s limit)", pc)
+        except Exception as exc:
+            logging.warning("EPC autocomplete Supabase failed for %s: %s", pc, exc)
+
+        # 3. Fall back to EPC API if Supabase had no results
+        if not rows:
+            email = os.getenv("EPC_EMAIL")
+            api_key = os.getenv("EPC_API_KEY")
+            if email and api_key:
+                try:
+                    rows = await _fetch_epc_rows(pc, email, api_key)
+                except Exception as exc:
+                    logging.warning("EPC autocomplete API failed for %s: %s", pc, exc)
+                    return {"addresses": [], "error": "EPC API temporarily unavailable — try again or type the full address manually below"}
+
+        _autocomplete_cache[pc] = rows
 
     seen: set[str] = set()
     addresses: list[dict] = []
     for row in rows:
         addr = build_epc_address(row)
+        if not addr.strip():
+            # Supabase rows may lack posttown — use the address column directly
+            addr = row.get("address", "")
+            if row.get("postcode") and row["postcode"] not in addr:
+                addr = f"{addr} {row['postcode']}"
         # Normalise for dedup: strip commas after house numbers ("41, Gander" → "41 Gander")
         dedup_key = re.sub(r"(\d),\s+", r"\1 ", addr).upper()
-        if dedup_key not in seen:
+        if dedup_key and dedup_key not in seen:
             seen.add(dedup_key)
             addresses.append({"address": addr, "uprn": row.get("uprn") or ""})
 
     def _natural_key(item: dict) -> list:
-        # Split address into text/number chunks so numeric parts sort numerically.
-        # e.g. "FLAT 10 ..." → ["FLAT ", 10, " ..."] beats "FLAT 2 ..." → ["FLAT ", 2, " ..."]
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", item["address"])]
 
     addresses.sort(key=_natural_key)

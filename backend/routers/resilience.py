@@ -1,7 +1,7 @@
 """Retry + circuit breaker for external API calls (Mandate S5.1).
 
 Usage:
-    from routers.resilience import resilient_request
+    from .resilience import resilient_request
     resp = await resilient_request(client, "GET", url, params={...})
 
 Behaviour:

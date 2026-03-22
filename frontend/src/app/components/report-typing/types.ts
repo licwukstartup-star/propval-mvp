@@ -1,4 +1,5 @@
 import type { FirmTemplate } from "../FirmTemplateSettings"
+import type { Signatory } from "./shared/SignatorySelect"
 
 /* ── Report metadata ──────────────────────────────────────────────────── */
 export interface ReportMetadata {
@@ -11,7 +12,9 @@ export interface ReportMetadata {
   applicant_name: string
   bank_reference: string
   preparer_name: string
+  preparer_qualifications: string
   counter_signatory: string
+  counter_signatory_qualifications: string
 }
 
 /* ── AI section keys ──────────────────────────────────────────────────── */
@@ -73,6 +76,7 @@ export interface ReportTypingProps {
   result: any
   adoptedComparables: any[]
   session: any
+  caseId?: string | null
   reportContent?: ReportContentData | null
   onReportContentChange?: (content: Partial<ReportContentData>) => void
   onSave?: () => Promise<void>
@@ -91,9 +95,12 @@ export interface ReportTypingState {
   aiLoading: Record<AiSectionKey, boolean>
   aiEditing: Record<AiSectionKey, boolean>
   firmTemplate: FirmTemplate
+  signatories: Signatory[]
+  showSignatorySettings: boolean
   saving: boolean
   saveFlash: "ok" | "err" | null
   showFirmSettings: boolean
+  firmSettingsTarget: string | null
 
   // Actions
   updateMeta: (field: keyof ReportMetadata, value: string) => void
@@ -103,6 +110,9 @@ export interface ReportTypingState {
   saveAiEdit: (key: AiSectionKey, text: string) => void
   setAiEditing: (key: AiSectionKey, editing: boolean) => void
   setShowFirmSettings: (show: boolean) => void
+  openFirmSettingsAt: (fieldKey: string) => void
+  setShowSignatorySettings: (show: boolean) => void
+  setSignatories: (sigs: Signatory[]) => void
   handleFirmSaved: (t: FirmTemplate) => void
   handleSave: () => Promise<void>
 
@@ -114,6 +124,7 @@ export interface ReportTypingState {
   // Props pass-through
   result: any
   adoptedComparables: any[]
+  caseId?: string | null
   onSave?: () => Promise<void>
 }
 

@@ -1,8 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+import { API_BASE } from "@/lib/constants"
 
 /* ── Template field definitions ─────────────────────────────────────────── */
 interface TemplateField {
@@ -50,17 +49,20 @@ interface FirmTemplateSettingsProps {
   session: any
   onClose: () => void
   onSaved?: (template: FirmTemplate) => void
+  scrollToField?: string | null
 }
 
 const AI_PROMPT_KEYS = new Set(["ai_prompt_location", "ai_prompt_subject_development", "ai_prompt_subject_building", "ai_prompt_subject_property", "ai_prompt_market", "ai_prompt_valuation"])
 
-export default function FirmTemplateSettings({ session, onClose, onSaved }: FirmTemplateSettingsProps) {
+export default function FirmTemplateSettings({ session, onClose, onSaved, scrollToField }: FirmTemplateSettingsProps) {
   const [template, setTemplate] = useState<FirmTemplate>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState<"ok" | "err" | null>(null)
   const [dirty, setDirty] = useState(false)
   const aiTextareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  const fieldRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
   const autoResize = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return
@@ -97,6 +99,20 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
       })
     }
   }, [loading, autoResize])
+
+  // Scroll to target field after loading
+  useEffect(() => {
+    if (!loading && scrollToField && fieldRefs.current[scrollToField]) {
+      requestAnimationFrame(() => {
+        const el = fieldRefs.current[scrollToField!]
+        if (el && scrollContainerRef.current) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" })
+          el.classList.add("ring-2", "ring-[var(--color-accent-purple)]", "rounded-lg")
+          setTimeout(() => el.classList.remove("ring-2", "ring-[var(--color-accent-purple)]", "rounded-lg"), 2000)
+        }
+      })
+    }
+  }, [loading, scrollToField])
 
   const updateField = useCallback((key: string, value: string) => {
     setTemplate(prev => ({ ...prev, [key]: value }))
@@ -154,7 +170,7 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
         </div>
 
         {/* Body — scrollable */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <svg className="animate-spin h-6 w-6 text-[var(--color-accent)]" viewBox="0 0 24 24" fill="none">
@@ -184,7 +200,7 @@ export default function FirmTemplateSettings({ session, onClose, onSaved }: Firm
                   )}
                   <div className="space-y-3">
                     {SECTION_FIELDS.filter(f => f.section === section).map(field => (
-                      <div key={field.key}>
+                      <div key={field.key} ref={el => { fieldRefs.current[field.key] = el }}>
                         <label className="text-[10px] font-medium mb-1 block" style={{ color: "var(--color-text-secondary)" }}>
                           {field.label}
                         </label>

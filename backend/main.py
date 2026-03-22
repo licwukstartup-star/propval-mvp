@@ -14,13 +14,19 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from routers import admin as admin_router
+from routers import agentic_report as agentic_report_router
 from routers import cases as cases_router
 from routers import comparables as comparables_router
+from routers import firm_signatories as firm_signatories_router
 from routers import firm_templates as firm_templates_router
 from routers import news as news_router
+from routers import notifications as notifications_router
 from routers import property as property_router
+from routers import qa as qa_router
+from routers import report_copies as report_copies_router
+from routers import reviews as reviews_router
 from routers import snapshots as snapshots_router
-from routers.property import _load_green_belt_polygons, _load_schools_data
+from routers import templates as templates_router
 from routers.rate_limit import limiter
 from services.inspire import InspireService
 from services.uprn_coords import UPRNCoordService
@@ -34,8 +40,6 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 async def lifespan(app: FastAPI):
     """Download reference datasets once at startup before serving requests."""
     import asyncio
-    _load_green_belt_polygons()
-    await asyncio.to_thread(_load_schools_data)
     try:
         app.state.inspire = await asyncio.to_thread(InspireService.load)
     except Exception as exc:
@@ -75,7 +79,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")],
+    allow_origins=[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["Content-Type", "Authorization"],
@@ -105,12 +109,19 @@ async def maintenance_guard(request: Request, call_next):
 
 
 app.include_router(property_router.router)
+app.include_router(agentic_report_router.router)
 app.include_router(comparables_router.router)
 app.include_router(cases_router.router)
 app.include_router(admin_router.router)
+app.include_router(firm_signatories_router.router)
 app.include_router(firm_templates_router.router)
 app.include_router(news_router.router)
 app.include_router(snapshots_router.router)
+app.include_router(templates_router.router)
+app.include_router(report_copies_router.router)
+app.include_router(qa_router.router)
+app.include_router(reviews_router.router)
+app.include_router(notifications_router.router)
 
 
 _health_sb = None

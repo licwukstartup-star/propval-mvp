@@ -258,7 +258,38 @@ export function buildReportContent(data: TemplateData): string {
       </table>
 
       <h3>3.5 &nbsp; Residential Sales Comparable Evidence</h3>
-      <p>${comps?.length ? `${comps.length} comparable(s) adopted. See appendix for full details.` : "No comparables adopted."}</p>
+      ${comps?.length ? `
+      <p>${comps.length} comparable${comps.length !== 1 ? "s" : ""} adopted. Source: HM Land Registry Price Paid Data.</p>
+      <table style="width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px;">
+        <thead>
+          <tr style="background: #F2F2F7;">
+            <th style="padding: 6px 8px; text-align: left;">Address</th>
+            <th style="padding: 6px 8px; text-align: left;">Price</th>
+            <th style="padding: 6px 8px; text-align: left;">Date</th>
+            <th style="padding: 6px 8px; text-align: left;">Type</th>
+            <th style="padding: 6px 8px; text-align: left;">Tenure</th>
+            <th style="padding: 6px 8px; text-align: right;">Area</th>
+            <th style="padding: 6px 8px; text-align: right;">£/sq ft</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${comps.map((c: any, i: number) => {
+            const areaSqm = c.floor_area_sqm ? parseFloat(c.floor_area_sqm) : null
+            const areaSqft = areaSqm ? Math.round(areaSqm * 10.7639) : null
+            const priceSqft = areaSqft && c.price ? Math.round(c.price / areaSqft) : null
+            const bg = i % 2 === 1 ? ' style="background: #F9F9FB;"' : ""
+            return `<tr${bg}>
+              <td style="padding: 4px 8px;">${c.address || "—"}</td>
+              <td style="padding: 4px 8px; font-weight: 600;">${fmtPrice(c.price)}</td>
+              <td style="padding: 4px 8px;">${fmtDate(c.transaction_date)}</td>
+              <td style="padding: 4px 8px;">${c.property_type || "—"}</td>
+              <td style="padding: 4px 8px;">${c.tenure || "—"}</td>
+              <td style="padding: 4px 8px; text-align: right;">${areaSqft ? areaSqft + " sq ft" : "—"}</td>
+              <td style="padding: 4px 8px; text-align: right; font-weight: 600; color: #007AFF;">${priceSqft ? "£" + priceSqft.toLocaleString("en-GB") : "—"}</td>
+            </tr>`
+          }).join("")}
+        </tbody>
+      </table>` : `<p>No comparables adopted.</p>`}
 
       <h3>3.6 &nbsp; Valuation Considerations</h3>
       ${aiBlock("valuation_considerations", ai.valuation_considerations)}

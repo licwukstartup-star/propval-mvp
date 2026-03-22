@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/AuthProvider'
 import { useRouter } from 'next/navigation'
+import { API_BASE } from '@/lib/constants'
 
 interface AdminUser {
   id: string
@@ -64,8 +65,6 @@ interface AiUsageData {
   daily_chart: AiDailyData[]
   recent_calls: AiRecentCall[]
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
 
 function timeAgo(ts: string): string {
   const diff = Date.now() - new Date(ts).getTime()

@@ -1,4 +1,6 @@
+import { useCallback } from "react"
 import type { ReportTypingState } from "../types"
+import { SUB_TO_FIRM_FIELD } from "../constants"
 import AutoField from "../shared/AutoField"
 import MetaField from "../shared/MetaField"
 import CurrencyField from "../shared/CurrencyField"
@@ -6,11 +8,18 @@ import FirmText from "../shared/FirmText"
 import Sub from "../shared/Sub"
 
 export default function ValuationContent({ state }: { state: ReportTypingState }) {
-  const { meta, result: r, valuer, updateValuer, updateValuerBatch, numberToWords, firmTemplate, setShowFirmSettings } = state
+  const { meta, result: r, valuer, updateValuer, updateValuerBatch, numberToWords, firmTemplate, setShowFirmSettings, openFirmSettingsAt } = state
   const openSettings = () => setShowFirmSettings(true)
+  const handleCatClick = useCallback((cat: string, subNum: string) => {
+    if (cat === "A") {
+      const fieldKey = SUB_TO_FIRM_FIELD[subNum]
+      if (fieldKey) openFirmSettingsAt(fieldKey)
+      else setShowFirmSettings(true)
+    }
+  }, [openFirmSettingsAt, setShowFirmSettings])
   return (
     <>
-      <Sub num="4.1" title="Methodology" cats={["A"]}>
+      <Sub num="4.1" title="Methodology" cats={["A"]} onCatClick={c => handleCatClick(c, "4.1")}>
         <FirmText fieldKey="methodology" fallback="No methodology statement set" firmTemplate={firmTemplate} onOpenSettings={openSettings} />
       </Sub>
       <Sub num="4.2" title="Market Rent" cats={["E"]}>
@@ -69,7 +78,7 @@ export default function ValuationContent({ state }: { state: ReportTypingState }
           updateValuerBatch({ birc_value: v, birc_rate_psm: rate })
         }} />
       </Sub>
-      <Sub num="4.6" title="General Comments" cats={["A"]}>
+      <Sub num="4.6" title="General Comments" cats={["A"]} onCatClick={c => handleCatClick(c, "4.6")}>
         <FirmText fieldKey="general_comments" fallback="No general comments boilerplate set" firmTemplate={firmTemplate} onOpenSettings={openSettings} />
       </Sub>
       <Sub num="4.7" title="Report Signatures" cats={["B", "F"]}>

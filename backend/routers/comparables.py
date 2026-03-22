@@ -33,12 +33,12 @@ from rapidfuzz import fuzz
 import httpx
 from fastapi import APIRouter, Depends
 
-from routers.auth import get_current_user
-from routers import ppd_cache
+from .auth import get_current_user
+from . import ppd_cache
 from fastapi import Request
 from pydantic import BaseModel, Field, model_validator
-from routers.rate_limit import limiter
-from routers.property import _get_http_client
+from .rate_limit import limiter
+from .property import _get_http_client
 
 router = APIRouter(prefix="/api/comparables", tags=["comparables"])
 
@@ -122,6 +122,8 @@ class ComparableCandidate(BaseModel):
     bedrooms:            int | None = None
     building_name:       str | None = None
     building_era:        str | None = None
+    construction_age_band: str | None = None
+    construction_age_best: int | None = None   # PropVal harmonised building age
     build_year:           int | None = None
     build_year_estimated: bool = False      # True when inferred from sale date (new build), not EPC
     floor_area_sqm:      float | None = None
@@ -218,16 +220,40 @@ _AGE_BAND_MAP = {
     "before 1900": 1890, "1900-1929": 1915, "1930-1949": 1940,
     "1950-1966":   1958, "1967-1975": 1971, "1976-1982": 1979,
     "1983-1990":   1987, "1991-1995": 1993, "1996-2002": 1999,
-    "2003-2006":   2005, "2007 onwards": 2010,
+    "2003-2006":   2005, "2007-2011": 2009, "2012-2021": 2016,
+    "2007 onwards": 2010,
 }
+
+# Strings that mean "no data" in EPC records
+_NO_DATA = {"no data!", "no data", "n/a", "unknown", "not recorded", "invalid!"}
+
+
+def _normalise_age_band(raw: str | None) -> str | None:
+    """Clean EPC construction-age-band: strip regional prefix, reject junk values."""
+    if not raw:
+        return None
+    b = raw.strip()
+    if b.lower() in _NO_DATA:
+        return None
+    # Strip "England and Wales: " or "Scotland: " prefix
+    if ": " in b:
+        b = b.split(": ", 1)[1]
+    # Bare 4-digit year (e.g. "2018") — not an age band, it's an actual year
+    if re.fullmatch(r"\d{4}", b.strip()):
+        return None  # handled separately as construction-year
+    return b
 
 
 def _approx_build_year(age_band: str | None) -> int | None:
-    if not age_band:
+    b = _normalise_age_band(age_band)
+    if not b:
+        # Check if the raw value is a bare year (e.g. "2018")
+        if age_band and re.fullmatch(r"\d{4}", age_band.strip()):
+            return int(age_band.strip())
         return None
-    b = age_band.lower().strip()
+    bl = b.lower()
     for key, yr in _AGE_BAND_MAP.items():
-        if key in b or b in key:
+        if key in bl or bl in key:
             return yr
     return None
 
@@ -244,14 +270,18 @@ def derive_era_from_age_band(age_band: str | None) -> str | None:
     of the range, so that '1996-2002' → modern (upper bound 2002 ≥ 2000).
     Using the midpoint (1999) would wrongly classify it as period.
     """
-    if not age_band:
+    b = _normalise_age_band(age_band)
+    if not b:
+        # Check for bare year in raw input
+        if age_band and re.fullmatch(r"\d{4}", age_band.strip()):
+            return "modern" if int(age_band.strip()) >= 2000 else "period"
         return None
-    b = age_band.lower().strip()
-    if "onwards" in b or "new" in b:
+    bl = b.lower()
+    if "onwards" in bl or "new" in bl:
         return "modern"
-    if "before" in b:
+    if "before" in bl:
         return "period"
-    years = re.findall(r"\d{4}", b)
+    years = re.findall(r"\d{4}", bl)
     if not years:
         return None
     return "modern" if max(int(y) for y in years) >= 2000 else "period"
@@ -592,6 +622,12 @@ def _dedup_key(r: dict) -> str:
         return r["transaction_id"]
     return f"{r['saon']}|{r['paon']}|{r['street']}|{r['postcode']}|{r['sale_date']}"
 
+
+def _addr_dedup_key(r: dict) -> str:
+    """Address-level dedup: catches same sale with different transaction_ids (Cat A/B)."""
+    return (f"{r.get('saon', '')}|{r.get('paon', '')}|{r.get('street', '')}"
+            f"|{r.get('postcode', '')}|{r.get('sale_date', '')}|{r.get('price', '')}")
+
 # ---------------------------------------------------------------------------
 # EPC enrichment
 # ---------------------------------------------------------------------------
@@ -607,8 +643,44 @@ def _enrich(saon: str, paon: str, street: str, postcode: str,
             epc_rows: list[dict]) -> dict:
     if not epc_rows:
         return {}
+
+    # Stage 1: If we have a house number (PAON), prefer EPC records with exact number match
+    # in address1. This prevents "47", "69", "77" on the same street all matching the same
+    # EPC record due to fuzzy ratio being nearly identical for whole-address comparisons.
+    # CRITICAL: If PAON is numeric and no exact EPC match exists, return empty rather than
+    # fuzzy-matching to a different house number (the phantom EPC bug).
+    candidates = epc_rows
+    paon_num_m = re.match(r"^(\d+)", (paon or "").strip())
+    if paon_num_m:
+        paon_num = paon_num_m.group(1)
+        exact = [r for r in epc_rows
+                 if re.match(rf"^{paon_num}\b", (r.get("address1", "") or "").strip())]
+        if exact:
+            candidates = exact
+        else:
+            # No EPC with this house number — do NOT fall back to fuzzy matching
+            # across all records (would match e.g. 47 to 69 on same street).
+            return {}
+
+    # Stage 2: Also try SAON (flat number) pre-filtering for flats
+    if saon:
+        saon_num_m = re.match(r"^(?:FLAT|APT|APARTMENT|UNIT)?\s*(\d+)", saon.strip(), re.IGNORECASE)
+        if saon_num_m:
+            saon_num = saon_num_m.group(1)
+            saon_exact = [r for r in candidates
+                          if re.search(rf"\b(?:FLAT|APT|APARTMENT|UNIT)\s*{saon_num}\b",
+                                       (r.get("address1", "") or ""), re.IGNORECASE)]
+            if saon_exact:
+                candidates = saon_exact
+
+    # Stage 3: Fuzzy match within the (possibly filtered) pool.
+    # Break ties by preferring the most recent EPC certificate (lodgement-date desc)
+    # to avoid matching old/phantom certificates with stale UPRNs.
     addr = " ".join(filter(None, [saon, paon, street, postcode])).lower()
-    best = max(epc_rows, key=lambda r: fuzz.ratio(addr, _epc_addr(r).lower()))
+    best = max(candidates, key=lambda r: (
+        fuzz.ratio(addr, _epc_addr(r).lower()),
+        r.get("lodgement-date") or r.get("lodgement_date") or "",
+    ))
     if fuzz.ratio(addr, _epc_addr(best).lower()) < 25:
         return {}
 
@@ -650,6 +722,7 @@ def _enrich(saon: str, paon: str, street: str, postcode: str,
     except Exception:
         epc_score = None
 
+    age_band_raw = _normalise_age_band(best.get("construction-age-band"))
     return {
         "epc_matched":    True,
         "epc_uprn":       best.get("uprn"),
@@ -659,6 +732,7 @@ def _enrich(saon: str, paon: str, street: str, postcode: str,
         "floor_area_sqm": area,
         "build_year":     build_year,
         "building_era":   era,
+        "construction_age_band": age_band_raw,
         "building_name":  building_name,
         "epc_rating":     best.get("current-energy-rating") or None,
         "epc_score":      epc_score,
@@ -699,6 +773,7 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
         bedrooms              = raw.get("bedrooms"),
         building_name         = raw.get("building_name"),
         building_era          = raw.get("building_era"),
+        construction_age_band = raw.get("construction_age_band"),
         build_year            = build_year,
         build_year_estimated  = build_year_estimated,
         floor_area_sqm        = raw.get("floor_area_sqm"),
@@ -759,6 +834,9 @@ async def _process_rows(
         k = _dedup_key(raw)
         if k in seen:
             continue
+        ak = _addr_dedup_key(raw)
+        if ak in seen:
+            continue
         candidates.append(raw)
 
     if not candidates:
@@ -773,6 +851,9 @@ async def _process_rows(
     for raw in candidates:
         k = _dedup_key(raw)
         if k in seen:
+            continue
+        ak = _addr_dedup_key(raw)
+        if ak in seen:
             continue
 
         # Exclude subject itself
@@ -813,6 +894,7 @@ async def _process_rows(
             enrichment = _enrich(raw["saon"], raw["paon"], raw["street"], raw["postcode"], epc_rows)
             if enrichment:
                 for field in ("property_type", "house_sub_type", "building_era",
+                              "construction_age_band", "build_year",
                               "bedrooms", "floor_area_sqm", "building_name",
                               "epc_matched", "epc_uprn", "epc_rating", "epc_score"):
                     if enrichment.get(field) is not None:
@@ -841,6 +923,7 @@ async def _process_rows(
 
         k = _dedup_key(raw)
         seen.add(k)
+        seen.add(_addr_dedup_key(raw))
         raw["_tier"]     = tier
         raw["_label"]    = labels[tier]
         raw["_window"]   = months
@@ -886,6 +969,9 @@ def _process_local_rows(
         k = _dedup_key(raw)
         if k in seen:
             continue
+        ak = _addr_dedup_key(raw)
+        if ak in seen:
+            continue
         candidates.append(raw)
 
     if not candidates:
@@ -897,6 +983,9 @@ def _process_local_rows(
     for raw in candidates:
         k = _dedup_key(raw)
         if k in seen:
+            continue
+        ak = _addr_dedup_key(raw)
+        if ak in seen:
             continue
 
         # Exclude subject itself
@@ -922,6 +1011,7 @@ def _process_local_rows(
             continue
 
         seen.add(k)
+        seen.add(_addr_dedup_key(raw))
         raw["_tier"]   = tier
         raw["_label"]  = labels[tier]
         raw["_window"] = months
@@ -1214,60 +1304,38 @@ async def _annotate_pool_with_distances(
 
     Stores _dist_m, _coord_source, _lat, _lon on the raw dict.
     """
-    # Fast path: records from local DB already have pre-resolved coordinates
-    needs_resolution = []
-    for r in pool:
-        if r.get("_lat") is not None and r.get("_lon") is not None:
-            r["_dist_m"] = _haversine_m(subj_lat, subj_lng, r["_lat"], r["_lon"])
-        else:
-            needs_resolution.append(r)
-
-    if not needs_resolution:
-        return pool
-
-    # Batch UPRN lookup (fastest path — no API calls)
-    uprn_map = {}
+    # 1. Batch UPRN lookup — building-level coords for every comp with epc_uprn
+    uprn_map: dict[str, tuple[float, float]] = {}
     if uprn_coords and uprn_coords.loaded:
-        uprns = [str(r["epc_uprn"]) for r in needs_resolution if r.get("epc_uprn")]
+        uprns = [str(r["epc_uprn"]) for r in pool if r.get("epc_uprn")]
         if uprns:
             uprn_map = uprn_coords.lookup_batch(uprns)
 
-    # Fallback: bulk postcode geocode for anything without UPRN coords
-    needs_postcode = [r["postcode"] for r in needs_resolution
-                      if not uprn_map.get(str(r.get("epc_uprn", "")))]
-    pc_coords = {}
-    if needs_postcode:
-        unique_postcodes = list(set(needs_postcode))
-        pc_coords = await _bulk_geocode_postcodes(unique_postcodes)
-
-    for r in needs_resolution:
+    # Apply UPRN coords (overrides any pre-resolved postcode-level coords)
+    needs_postcode_pcs: list[str] = []
+    for r in pool:
         epc_uprn = str(r.get("epc_uprn", "")) if r.get("epc_uprn") else ""
-
-        # 1. OS Open UPRN — building-level
         if epc_uprn and epc_uprn in uprn_map:
-            comp_lat, comp_lng = uprn_map[epc_uprn]
-            coord_source = "os_open_uprn"
-        else:
-            # 2. Postcode centroid (will try INSPIRE upgrade)
+            r["_lat"], r["_lon"] = uprn_map[epc_uprn]
+            r["_coord_source"] = "os_open_uprn"
+        elif r.get("_lat") is None or r.get("_lon") is None:
+            needs_postcode_pcs.append(r["postcode"])
+
+    # 2. Fallback: bulk postcode geocode for comps without any coords
+    pc_coords: dict[str, tuple[float, float]] = {}
+    if needs_postcode_pcs:
+        pc_coords = await _bulk_geocode_postcodes(list(set(needs_postcode_pcs)))
+
+    for r in pool:
+        if r.get("_lat") is None or r.get("_lon") is None:
             pc_latlon = pc_coords.get(r["postcode"])
             if not pc_latlon:
                 continue
-            pc_lat, pc_lng = pc_latlon
-            comp_lat, comp_lng = pc_lat, pc_lng
-            coord_source = "postcode"
+            r["_lat"], r["_lon"] = pc_latlon
+            r["_coord_source"] = "postcode"
 
-            # 3. INSPIRE upgrade from postcode centroid
-            if inspire and inspire.loaded:
-                hit = inspire.lookup(pc_lat, pc_lng)
-                if hit:
-                    comp_lat = hit["lat"]
-                    comp_lng = hit["lng"]
-                    coord_source = "inspire"
-
-        r["_dist_m"]       = _haversine_m(subj_lat, subj_lng, comp_lat, comp_lng)
-        r["_coord_source"] = coord_source
-        r["_lat"]          = comp_lat
-        r["_lon"]          = comp_lng
+        if r.get("_lat") is not None and r.get("_lon") is not None:
+            r["_dist_m"] = _haversine_m(subj_lat, subj_lng, r["_lat"], r["_lon"])
 
     return pool
 
@@ -1475,7 +1543,7 @@ def _years_months_str(expiry_iso: str, as_of: date) -> str | None:
 async def _batch_lease_remaining(uprns: list[str], as_of: date) -> dict[str, str]:
     if not uprns:
         return {}
-    db_path = Path(__file__).resolve().parent.parent / "leases.db"
+    db_path = Path(__file__).resolve().parent.parent / "data" / "leases.db"
     if not db_path.exists():
         return {}
 
@@ -1553,7 +1621,9 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
                              max_tier=req.max_tier, building_months=req.building_months,
                              neighbouring_months=req.neighbouring_months,
                              exclude_ids=req.exclude_transaction_ids + [r.get("transaction_id", "") for r in pool],
-                             exclude_address_keys=req.exclude_address_keys),
+                             exclude_address_keys=req.exclude_address_keys + [
+                                 f"{r.get('saon', '')}|{r.get('postcode', '')}" for r in pool if r.get('postcode')
+                             ]),
                 timeout=TOTAL_TIMEOUT,
             )
             pool.extend(fb_pool)
@@ -1610,6 +1680,32 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
             if uprn and str(uprn) in lease_map:
                 comp.lease_remaining = lease_map[str(uprn)]
 
+    # ── Construction age best lookup from local DB ────────────────────────
+    if local_db and local_db.loaded:
+        for comp, raw in zip(comparables, pool_sorted):
+            uprn = raw.get("epc_uprn")
+            pc   = raw.get("postcode")
+            # Build ADDRESS1 the way EPC stores it: "13 Ridge Way" or "Flat 3"
+            paon = (raw.get("paon") or "").strip()
+            street = (raw.get("street") or "").strip()
+            saon = (raw.get("saon") or "").strip()
+            # For houses: "13 Ridge Way" or "13, Ridge Way"
+            # For flats: try SAON first (e.g. "Flat 3"), then full address
+            addr = saon if saon else f"{paon} {street}".strip() if paon else ""
+            try:
+                age_info = await asyncio.to_thread(
+                    local_db.lookup_construction_age,
+                    uprn=str(uprn) if uprn else None,
+                    postcode=pc,
+                    address1=addr,
+                )
+                logging.warning("age_best lookup: uprn=%s pc=%s addr=%s -> %s",
+                                uprn, pc, addr, age_info)
+                if age_info.get("age_best"):
+                    comp.construction_age_best = int(age_info["age_best"])
+            except Exception as exc:
+                logging.warning("age_best error: %s", exc)
+
     all_relax: list[str] = []
     for c in comparables:
         for rx in c.spec_relaxations:
@@ -1661,13 +1757,21 @@ def _epc_to_enrichment(epc: dict) -> dict:
             build_year = int(cy)
     except (ValueError, TypeError):
         pass
+    if build_year is None:
+        build_year = _approx_build_year(epc.get("construction-age-band"))
+
+    age_band = _normalise_age_band(epc.get("construction-age-band"))
+    era = derive_era_from_age_band(epc.get("construction-age-band")) or derive_building_era(build_year)
+
     return {
-        "bedrooms":       epc.get("number_rooms"),
-        "floor_area_sqm": epc.get("floor_area"),
-        "epc_rating":     epc.get("energy_rating") or None,
-        "epc_score":      epc.get("energy_score"),
-        "build_year":     build_year,
-        "epc_matched":    True,
+        "bedrooms":               epc.get("number_rooms"),
+        "floor_area_sqm":         epc.get("floor_area"),
+        "epc_rating":             epc.get("energy_rating") or None,
+        "epc_score":              epc.get("energy_score"),
+        "build_year":             build_year,
+        "building_era":           era,
+        "construction_age_band":  age_band,
+        "epc_matched":            True,
     }
 
 
@@ -1857,16 +1961,8 @@ async def browse_sales(request: Request, req: BrowseRequest, _user: dict = Depen
             q = q.eq("new_build", req.new_build.upper())
         q = q.order("deed_date", desc=True)
 
-        all_rows: list[dict] = []
-        offset = 0
-        while True:
-            batch = q.range(offset, offset + 999).execute()
-            rows = batch.data or []
-            all_rows.extend(rows)
-            if len(rows) < 1000:
-                break
-            offset += 1000
-        return all_rows
+        resp = q.limit(10000).execute()
+        return resp.data or []
 
     rows = await asyncio.to_thread(_query)
 
@@ -2084,16 +2180,8 @@ async def address_lookup(request: Request, req: AddressLookupRequest, _user: dic
              .eq("outward_code", outward)
              .eq("postcode", pc)
              .order("deed_date", desc=True))
-        all_rows: list[dict] = []
-        offset = 0
-        while True:
-            batch = q.range(offset, offset + 999).execute()
-            rows = batch.data or []
-            all_rows.extend(rows)
-            if len(rows) < 1000:
-                break
-            offset += 1000
-        return all_rows
+        resp = q.limit(2000).execute()
+        return resp.data or []
 
     ppd_rows = await asyncio.to_thread(_query)
 

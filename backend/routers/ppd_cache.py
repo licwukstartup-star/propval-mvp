@@ -17,10 +17,12 @@ import csv
 import io
 import logging
 import os
+import re
+import threading
 from datetime import date, datetime, timedelta
 
 import httpx
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 from supabase import create_client
 
 # ---------------------------------------------------------------------------
@@ -165,6 +167,7 @@ def _ingest(outward: str, rows: list[dict]) -> None:
             "district": r.get("district", "").strip().upper(),
             "county": r.get("county", "").strip().upper(),
             "transaction_category": r.get("transaction_category", "").strip().upper(),
+            "uprn": None,  # resolved later via EPC matching
         })
 
     if not db_rows:
@@ -193,16 +196,33 @@ def _ingest(outward: str, rows: list[dict]) -> None:
     logging.warning("PPD cache: ingested %d rows for %s", len(db_rows), outward)
 
 
-def _evict_oldest_sync(keep_outward: str | None = None) -> None:
-    """Evict oldest cached outward codes until estimated storage drops below 90%.
-    Deletes PPD + EPC rows for the evicted outward code, oldest-fetched first.
-    Skips `keep_outward` (the code we're about to download).
+_eviction_lock = threading.Lock()
+
+
+def _evict_oldest_sync(keep_outward: str | None = None) -> bool:
+    """Evict oldest cached PPD outward codes until estimated storage drops below 90%.
+
+    Returns True if storage is within budget (safe to ingest), False if eviction
+    failed (caller must NOT ingest new data).
+
+    EPC bulk cache is excluded — it is bulk-loaded once and never evicted.
     """
+    if not _eviction_lock.acquire(blocking=False):
+        logging.warning("PPD eviction: already in progress, skipping")
+        return False
+    try:
+        return _evict_oldest_inner(keep_outward)
+    finally:
+        _eviction_lock.release()
+
+
+def _evict_oldest_inner(keep_outward: str | None = None) -> bool:
+    """Inner eviction logic (must be called under _eviction_lock)."""
     sb = _get_sb()
     limit_bytes = STORAGE_LIMIT_MB * 1024 * 1024
     threshold_bytes = int(limit_bytes * STORAGE_EVICT_THRESHOLD)
 
-    # Gather PPD row counts
+    # Gather PPD row counts (EPC excluded — never evicted)
     ppd_status = sb.table("ppd_cache_status") \
         .select("outward_code,row_count,last_fetched") \
         .order("last_fetched", desc=False) \
@@ -210,59 +230,52 @@ def _evict_oldest_sync(keep_outward: str | None = None) -> None:
     ppd_rows = {r["outward_code"]: r["row_count"] for r in (ppd_status.data or [])}
     ppd_order = [r["outward_code"] for r in (ppd_status.data or [])]
 
-    # Gather EPC row counts
-    epc_rows: dict[str, int] = {}
-    try:
-        epc_status = sb.table("epc_cache_status") \
-            .select("outward_code,row_count") \
-            .execute()
-        epc_rows = {r["outward_code"]: r["row_count"] for r in (epc_status.data or [])}
-    except Exception:
-        pass
-
-    # Estimate total size
-    total_bytes = (sum(ppd_rows.values()) * BYTES_PER_PPD_ROW +
-                   sum(epc_rows.values()) * BYTES_PER_EPC_ROW)
+    # Estimate PPD-only storage (EPC is bulk-loaded separately, not counted)
+    total_bytes = sum(ppd_rows.values()) * BYTES_PER_PPD_ROW
 
     if total_bytes < threshold_bytes:
-        return
+        return True  # no eviction needed
 
     est_mb = total_bytes / (1024 * 1024)
     logging.warning("PPD cache eviction: estimated %.0fMB (threshold %.0fMB), evicting oldest codes",
                     est_mb, threshold_bytes / (1024 * 1024))
 
-    # Evict oldest-fetched first until under threshold
+    # Evict oldest-fetched PPD codes first until under threshold
     for oc in ppd_order:
         if total_bytes < threshold_bytes:
             break
         if oc == keep_outward:
             continue
 
-        freed = ppd_rows.get(oc, 0) * BYTES_PER_PPD_ROW + epc_rows.get(oc, 0) * BYTES_PER_EPC_ROW
+        freed = ppd_rows.get(oc, 0) * BYTES_PER_PPD_ROW
         try:
             sb.table("price_paid_cache").delete().eq("outward_code", oc).execute()
             sb.table("ppd_cache_status").delete().eq("outward_code", oc).execute()
         except Exception:
-            logging.exception("PPD eviction failed for %s", oc)
-            continue
-        try:
-            sb.table("epc_cache").delete().eq("outward_code", oc).execute()
-            sb.table("epc_cache_status").delete().eq("outward_code", oc).execute()
-        except Exception:
-            pass  # EPC table may not exist for this code
+            logging.exception("PPD eviction failed for %s — aborting eviction to prevent cascade", oc)
+            return False  # ABORT: don't continue silently, don't let caller ingest
 
         total_bytes -= freed
         logging.warning("PPD cache eviction: dropped %s (freed ~%.1fMB, remaining ~%.0fMB)",
                         oc, freed / (1024 * 1024), total_bytes / (1024 * 1024))
 
+    return total_bytes < threshold_bytes
+
 
 async def ensure_cache(outward: str) -> None:
     """Ensure PPD cache is populated and fresh. PPD only — fast.
-    Used by comparable search (which has its own EPC enrichment)."""
+    Used by comparable search (which has its own EPC enrichment).
+
+    If eviction fails (Supabase overloaded), skips ingestion to prevent
+    storage growth and cascading failures.
+    """
     outward = outward.strip().upper()
     fresh = await asyncio.to_thread(_is_cache_fresh_sync, outward)
     if not fresh:
-        await asyncio.to_thread(_evict_oldest_sync, outward)
+        eviction_ok = await asyncio.to_thread(_evict_oldest_sync, outward)
+        if not eviction_ok:
+            logging.warning("PPD cache: skipping ingest for %s — eviction failed or in progress", outward)
+            return
         rows = await _download_csv(outward)
         if rows:
             await asyncio.to_thread(_ingest, outward, rows)
@@ -452,22 +465,14 @@ def _query_paon_street_sync(outward: str, paon: str, street: str, date_from: str
 def _query_street_sync(outward: str, street: str, date_from: str) -> list[dict]:
     """All transactions on a specific street within an outward code."""
     sb = _get_sb()
-    all_rows: list[dict] = []
-    offset = 0
-    while True:
-        resp = sb.table("price_paid_cache") \
-            .select("*") \
-            .eq("outward_code", outward) \
-            .eq("street", street) \
-            .gte("deed_date", date_from) \
-            .range(offset, offset + 999) \
-            .execute()
-        rows = resp.data or []
-        all_rows.extend(rows)
-        if len(rows) < 1000:
-            break
-        offset += 1000
-    return all_rows
+    resp = sb.table("price_paid_cache") \
+        .select("*") \
+        .eq("outward_code", outward) \
+        .eq("street", street) \
+        .gte("deed_date", date_from) \
+        .limit(10000) \
+        .execute()
+    return resp.data or []
 
 
 def _query_outward_sync(outward: str, date_from: str) -> list[dict]:
@@ -620,6 +625,26 @@ async def query_outward(outward: str, months: int,
     return rows
 
 
+async def query_by_uprn(uprn: str) -> list[dict]:
+    """All transactions for a UPRN — instant lookup, no address matching needed."""
+    if not uprn:
+        return []
+
+    def _query():
+        sb = _get_sb()
+        resp = sb.table("price_paid_cache") \
+            .select("*") \
+            .eq("uprn", str(uprn)) \
+            .order("deed_date", desc=True) \
+            .limit(100) \
+            .execute()
+        return resp.data or []
+
+    rows = await asyncio.to_thread(_query)
+    logging.warning("PPD query UPRN %s → %d rows", uprn, len(rows))
+    return rows
+
+
 async def query_by_postcode_all_time(postcode: str) -> list[dict]:
     """All transactions for an exact postcode — no date filter.
     Used for subject property's own sales history."""
@@ -654,13 +679,15 @@ CREATE TABLE IF NOT EXISTS price_paid_cache (
     town             TEXT,
     district         TEXT,
     county           TEXT,
-    transaction_category TEXT   -- A/B
+    transaction_category TEXT,  -- A/B
+    uprn             TEXT       -- resolved via EPC matching
 );
 
 CREATE INDEX IF NOT EXISTS idx_ppc_outward   ON price_paid_cache (outward_code);
 CREATE INDEX IF NOT EXISTS idx_ppc_postcode  ON price_paid_cache (postcode);
 CREATE INDEX IF NOT EXISTS idx_ppc_date      ON price_paid_cache (deed_date);
 CREATE INDEX IF NOT EXISTS idx_ppc_paon_str  ON price_paid_cache (outward_code, paon, street);
+CREATE INDEX IF NOT EXISTS idx_ppc_uprn      ON price_paid_cache (uprn) WHERE uprn IS NOT NULL;
 
 -- Cache freshness tracker
 CREATE TABLE IF NOT EXISTS ppd_cache_status (
@@ -852,6 +879,8 @@ async def ensure_epc_cache(outward: str) -> None:
         _epc_events[outward] = asyncio.Event()
         try:
             await _do_epc_download(outward, email, api_key)
+            # Resolve PPD UPRNs using freshly downloaded EPC data
+            await asyncio.to_thread(_resolve_ppd_uprns_sync, outward)
         finally:
             _epc_downloading.discard(outward)
             evt = _epc_events.pop(outward, None)
@@ -899,24 +928,130 @@ async def _do_epc_download(outward: str, email: str, api_key: str) -> None:
     logging.warning("EPC cache: %d unique certificates for %s", len(db_rows), outward)
 
 
+# ---------------------------------------------------------------------------
+# PPD → EPC UPRN resolution
+# ---------------------------------------------------------------------------
+
+def _normalise_addr(s: str) -> str:
+    """Collapse address to uppercase alphanumeric tokens for fast comparison."""
+    return re.sub(r"[^A-Z0-9 ]", "", s.upper()).strip()
+
+
+def _resolve_ppd_uprns_sync(outward: str) -> int:
+    """Match price_paid_cache rows to epc_cache by address, write resolved UPRNs.
+
+    Two-pass strategy: (1) exact normalised address lookup, then
+    (2) fuzzy matching (≥60 score) for unmatched rows.
+    Returns count of newly resolved rows.
+    """
+    sb = _get_sb()
+
+    # 1. Load EPC rows with UPRN for this outward code
+    resp = sb.table("epc_cache") \
+        .select("postcode, address1, address2, address3, uprn") \
+        .eq("outward_code", outward) \
+        .not_.is_("uprn", "null") \
+        .limit(10000) \
+        .execute()
+    epc_rows: list[dict] = resp.data or []
+
+    if not epc_rows:
+        logging.warning("PPD UPRN resolve: no EPC rows with UPRN for %s", outward)
+        return 0
+
+    # Build EPC index: (postcode, normalised_address) → uprn
+    epc_exact: dict[tuple[str, str], str] = {}
+    epc_by_pc: dict[str, list[tuple[str, str]]] = {}  # pc → [(norm_addr, uprn)]
+    for e in epc_rows:
+        pc = e.get("postcode", "")
+        uprn = e.get("uprn", "")
+        epc_addr = _normalise_addr(" ".join(filter(None, [
+            e.get("address1", ""), e.get("address2", ""), e.get("address3", ""),
+        ])))
+        if pc and epc_addr and uprn:
+            epc_exact[(pc, epc_addr)] = uprn
+            if pc not in epc_by_pc:
+                epc_by_pc[pc] = []
+            epc_by_pc[pc].append((epc_addr, uprn))
+
+    # 2. Load PPD rows without UPRN for this outward code
+    resp = sb.table("price_paid_cache") \
+        .select("transaction_id, postcode, saon, paon, street") \
+        .eq("outward_code", outward) \
+        .is_("uprn", "null") \
+        .limit(10000) \
+        .execute()
+    ppd_rows: list[dict] = resp.data or []
+
+    if not ppd_rows:
+        logging.warning("PPD UPRN resolve: all PPD rows already have UPRN for %s", outward)
+        return 0
+
+    # 3. Two-pass matching
+    resolved: dict[str, str] = {}  # transaction_id → uprn
+    fuzzy_queue: list[tuple[str, str, str]] = []  # (tid, ppd_addr, pc)
+
+    # Pass 1: exact
+    for r in ppd_rows:
+        tid = r.get("transaction_id", "")
+        pc = r.get("postcode", "")
+        ppd_addr = _normalise_addr(" ".join(filter(None, [
+            r.get("saon", ""), r.get("paon", ""), r.get("street", ""),
+        ])))
+        if not ppd_addr or not pc:
+            continue
+        uprn = epc_exact.get((pc, ppd_addr))
+        if uprn:
+            resolved[tid] = uprn
+        else:
+            fuzzy_queue.append((tid, ppd_addr, pc))
+
+    # Pass 2: fuzzy
+    for tid, ppd_addr, pc in fuzzy_queue:
+        candidates = epc_by_pc.get(pc, [])
+        if not candidates:
+            continue
+        best_score = 0
+        best_uprn = None
+        for epc_addr, uprn in candidates:
+            score = fuzz.token_sort_ratio(ppd_addr, epc_addr)
+            if score > best_score:
+                best_score = score
+                best_uprn = uprn
+        if best_score >= 60 and best_uprn:
+            resolved[tid] = best_uprn
+
+    if not resolved:
+        logging.warning("PPD UPRN resolve: 0 matches for %s (%d PPD rows checked)", outward, len(ppd_rows))
+        return 0
+
+    # 4. Batch-update resolved UPRNs
+    updates = [{"transaction_id": tid, "uprn": uprn} for tid, uprn in resolved.items()]
+    for i in range(0, len(updates), BATCH_SIZE):
+        batch = updates[i:i + BATCH_SIZE]
+        try:
+            sb.table("price_paid_cache") \
+                .upsert(batch, on_conflict="transaction_id") \
+                .execute()
+        except Exception:
+            logging.exception("PPD UPRN update batch %d failed for %s", i // BATCH_SIZE, outward)
+
+    logging.warning("PPD UPRN resolve: %d/%d matched for %s", len(resolved), len(ppd_rows), outward)
+    return len(resolved)
+
+
 def _get_ppd_postcodes_sync(outward: str) -> list[str]:
     """Get all unique postcodes from PPD cache for an outward code."""
     sb = _get_sb()
+    resp = sb.table("price_paid_cache") \
+        .select("postcode") \
+        .eq("outward_code", outward) \
+        .limit(10000) \
+        .execute()
     all_pcs: set[str] = set()
-    offset = 0
-    while True:
-        resp = sb.table("price_paid_cache") \
-            .select("postcode") \
-            .eq("outward_code", outward) \
-            .range(offset, offset + 999) \
-            .execute()
-        rows = resp.data or []
-        for r in rows:
-            if r.get("postcode"):
-                all_pcs.add(r["postcode"])
-        if len(rows) < 1000:
-            break
-        offset += 1000
+    for r in (resp.data or []):
+        if r.get("postcode"):
+            all_pcs.add(r["postcode"])
     return list(all_pcs)
 
 
@@ -946,39 +1081,23 @@ _EPC_OUTWARD_COLS = (
 def _query_epc_by_outward_sync(outward: str) -> list[dict]:
     """Get cached EPC records for an outward code (columns needed for EpcIndex)."""
     sb = _get_sb()
-    all_rows: list[dict] = []
-    offset = 0
-    while True:
-        resp = sb.table("epc_cache") \
-            .select(_EPC_OUTWARD_COLS) \
-            .eq("outward_code", outward) \
-            .range(offset, offset + 999) \
-            .execute()
-        rows = resp.data or []
-        all_rows.extend(rows)
-        if len(rows) < 1000:
-            break
-        offset += 1000
-    return all_rows
+    resp = sb.table("epc_cache") \
+        .select(_EPC_OUTWARD_COLS) \
+        .eq("outward_code", outward) \
+        .limit(10000) \
+        .execute()
+    return resp.data or []
 
 
 def _query_epc_outward_multi_sync(outward_codes: list[str]) -> list[dict]:
     """Get cached EPC records for multiple outward codes in one IN query."""
     sb = _get_sb()
-    all_rows: list[dict] = []
-    offset = 0
-    while True:
-        resp = sb.table("epc_cache") \
-            .select(_EPC_OUTWARD_COLS) \
-            .in_("outward_code", outward_codes) \
-            .range(offset, offset + 999) \
-            .execute()
-        rows = resp.data or []
-        all_rows.extend(rows)
-        if len(rows) < 1000:
-            break
-        offset += 1000
-    return all_rows
+    resp = sb.table("epc_cache") \
+        .select(_EPC_OUTWARD_COLS) \
+        .in_("outward_code", outward_codes) \
+        .limit(15000) \
+        .execute()
+    return resp.data or []
 
 
 async def query_epc_outward(outward: str) -> list[dict]:

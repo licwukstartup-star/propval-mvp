@@ -1,8 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/components/AuthProvider";
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+import { API_BASE } from "@/lib/constants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +48,8 @@ export interface ComparableCandidate {
   bedrooms:             number | null;
   building_name:        string | null;
   building_era:         string | null;
+  construction_age_band: string | null;
+  construction_age_best: number | null;
   build_year:            number | null;
   build_year_estimated:  boolean;
   floor_area_sqm:       number | null;
@@ -206,10 +207,20 @@ export default function ComparableSearch({
   const [filterMaxArea,       setFilterMaxArea]       = useState<string>("");
   const [filterMinRooms,      setFilterMinRooms]      = useState<string>("");
   const [filterMaxRooms,      setFilterMaxRooms]      = useState<string>("");
+  const [filterMinAge,        setFilterMinAge]        = useState<string>("");
+  const [filterMaxAge,        setFilterMaxAge]        = useState<string>("");
   const [filterEpcRating,     setFilterEpcRating]     = useState<Set<string>>(new Set());
   const [outwardEnabled,      setOutwardEnabled]      = useState(false); // outward mode only
   const [buildingMonths,      setBuildingMonths]      = useState(36);    // Tier 1 time window (same building / same street)
   const [neighbouringMonths,  setNeighbouringMonths]  = useState(12);    // outward mode only
+
+  // Sync local result with parent state when initialResult changes
+  // (e.g. case restore while component is already mounted)
+  useEffect(() => {
+    if (initialResult && !result) {
+      setResult(initialResult);
+    }
+  }, [initialResult]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When loading from saved case, fire onSearchComplete so outward tab unlocks
   useEffect(() => {
@@ -388,6 +399,10 @@ export default function ComparableSearch({
       if (minR != null && (c.bedrooms == null || c.bedrooms < minR)) return false;
       if (maxR != null && (c.bedrooms == null || c.bedrooms > maxR)) return false;
       if (filterEpcRating.size > 0 && (!c.epc_rating || !filterEpcRating.has(c.epc_rating))) return false;
+      const minAge = filterMinAge ? Number(filterMinAge) : null;
+      const maxAge = filterMaxAge ? Number(filterMaxAge) : null;
+      if (minAge != null && (c.construction_age_best == null || c.construction_age_best < minAge)) return false;
+      if (maxAge != null && (c.construction_age_best == null || c.construction_age_best > maxAge)) return false;
       return true;
     });
   }
@@ -403,6 +418,8 @@ export default function ComparableSearch({
     filterMaxArea !== "",
     filterMinRooms !== "",
     filterMaxRooms !== "",
+    filterMinAge !== "",
+    filterMaxAge !== "",
     filterEpcRating.size > 0,
   ].filter(Boolean).length;
 
@@ -410,7 +427,7 @@ export default function ComparableSearch({
     setFilterTenure("all"); setFilterType("all"); setFilterEpcVerified("all");
     setFilterNewBuild("all"); setFilterMinPrice(""); setFilterMaxPrice("");
     setFilterMinArea(""); setFilterMaxArea(""); setFilterMinRooms(""); setFilterMaxRooms("");
-    setFilterEpcRating(new Set());
+    setFilterMinAge(""); setFilterMaxAge(""); setFilterEpcRating(new Set());
   }
 
   const byTier: Record<number, ComparableCandidate[]> = {};
@@ -828,44 +845,84 @@ export default function ComparableSearch({
                     </div>
                   </div>
 
-                  {/* Row 2: Range filters */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                    {/* Price range */}
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Price Range (£)</label>
-                      <div className="flex items-center gap-1.5">
-                        <input type="number" placeholder="Min" value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)}
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                        <input type="number" placeholder="Max" value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)}
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                      </div>
-                    </div>
+                  {/* Row 2: Range filters — all dropdowns from available values */}
+                  {(() => {
+                    const comps = result ? result.comparables : [];
+                    const uniq = (vals: (number | null | undefined)[]) => [...new Set(vals.filter((v): v is number => v != null))].sort((a, b) => a - b);
+                    const prices = uniq(comps.map(c => c.price));
+                    const areas = uniq(comps.map(c => c.floor_area_sqm));
+                    const rooms = uniq(comps.map(c => c.bedrooms));
+                    const years = uniq(comps.map(c => c.construction_age_best));
+                    const selCls = "w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] cursor-pointer";
+                    const fmtPrice = (v: number) => v >= 1_000_000 ? `£${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 2)}m` : `£${(v / 1_000).toFixed(0)}k`;
+                    return (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        {/* Price range */}
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Price Range (£)</label>
+                          <div className="flex items-center gap-1.5">
+                            <select value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)} className={selCls}>
+                              <option value="">Min</option>
+                              {prices.map(p => <option key={p} value={String(p)}>{fmtPrice(p)}</option>)}
+                            </select>
+                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
+                            <select value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)} className={selCls}>
+                              <option value="">Max</option>
+                              {prices.map(p => <option key={p} value={String(p)}>{fmtPrice(p)}</option>)}
+                            </select>
+                          </div>
+                        </div>
 
-                    {/* Floor area range */}
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Floor Area (m²)</label>
-                      <div className="flex items-center gap-1.5">
-                        <input type="number" placeholder="Min" value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)}
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                        <input type="number" placeholder="Max" value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)}
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                      </div>
-                    </div>
+                        {/* Floor area range */}
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Floor Area (m²)</label>
+                          <div className="flex items-center gap-1.5">
+                            <select value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)} className={selCls}>
+                              <option value="">Min</option>
+                              {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
+                            </select>
+                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
+                            <select value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)} className={selCls}>
+                              <option value="">Max</option>
+                              {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
+                            </select>
+                          </div>
+                        </div>
 
-                    {/* Rooms range */}
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Hab. Rooms</label>
-                      <div className="flex items-center gap-1.5">
-                        <input type="number" placeholder="Min" value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} min="0" max="20"
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                        <input type="number" placeholder="Max" value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} min="0" max="20"
-                          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        {/* Rooms range */}
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Hab. Rooms</label>
+                          <div className="flex items-center gap-1.5">
+                            <select value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} className={selCls}>
+                              <option value="">Min</option>
+                              {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
+                            </select>
+                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
+                            <select value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} className={selCls}>
+                              <option value="">Max</option>
+                              {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Build year range */}
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Build Year</label>
+                          <div className="flex items-center gap-1.5">
+                            <select value={filterMinAge} onChange={e => setFilterMinAge(e.target.value)} className={selCls}>
+                              <option value="">Min</option>
+                              {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                            </select>
+                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
+                            <select value={filterMaxAge} onChange={e => setFilterMaxAge(e.target.value)} className={selCls}>
+                              <option value="">Max</option>
+                              {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                            </select>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   {/* Row 3: EPC rating multi-select */}
                   <div>
@@ -932,6 +989,12 @@ export default function ComparableSearch({
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
                             {filterMinArea || "0"}–{filterMaxArea || "∞"} m²
                             <button onClick={() => { setFilterMinArea(""); setFilterMaxArea(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinAge || filterMaxAge) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            Built {filterMinAge || "…"}–{filterMaxAge || "…"}
+                            <button onClick={() => { setFilterMinAge(""); setFilterMaxAge(""); }} className="hover:text-white">×</button>
                           </span>
                         )}
                         {(filterMinRooms || filterMaxRooms) && (
@@ -1075,16 +1138,36 @@ export default function ComparableSearch({
 
 // ─── Comparable card ──────────────────────────────────────────────────────────
 
+const EPC_BADGE: Record<string, string> = {
+  A: "bg-[#16A34A]/20 text-[var(--color-status-success)]",
+  B: "bg-[#22C55E]/20 text-[#4ADE80]",
+  C: "bg-[#FBBF24]/20 text-[#FBBF24]",
+  D: "bg-[#F97316]/20 text-[#F97316]",
+  E: "bg-[#EA580C]/20 text-[#EA580C]",
+  F: "bg-[#DC2626]/20 text-[#FF3131]",
+  G: "bg-[#DC2626]/20 text-[#FF3131]",
+};
+
+function DetailField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="bg-[var(--color-bg-surface)] px-4 py-2.5">
+      <dt className="text-[10px] uppercase tracking-wider text-[var(--color-text-secondary)]/60 mb-0.5">{label}</dt>
+      <dd className="text-sm text-[var(--color-text-primary)]">{value ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}</dd>
+    </div>
+  );
+}
+
 export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, sizeElasticity = 0, subjectSqft = null, timeAdjFactor = 1 }: {
   comp: ComparableCandidate;
   valuationYear: number;
   isAdopted: boolean;
   onAdopt?: () => void;
   onReject: () => void;
-  sizeElasticity?: number;      // 0–50 (percentage); maps to β 0.00–0.50
-  subjectSqft?: number | null;  // subject property floor area in sq ft
-  timeAdjFactor?: number;       // HPI time-adj factor (default 1 = no adj)
+  sizeElasticity?: number;
+  subjectSqft?: number | null;
+  timeAdjFactor?: number;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const relaxBadges = comp.spec_relaxations.map(r => {
     if (r === "type")     return { label: "type relaxed",     cls: "bg-[#FFB800]/10 text-[var(--color-status-warning)]" };
     if (r === "bedrooms") return { label: "rooms relaxed", cls: "bg-[#FFB800]/10 text-[var(--color-status-warning)]" };
@@ -1095,8 +1178,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
   const exactSqft = comp.floor_area_sqm != null ? comp.floor_area_sqm * 10.7639 : null;
   const pricePsf = exactSqft != null ? Math.round(comp.price / exactSqft) : null;
 
-  // (2) Building age as at valuation date
-  const buildAge = comp.build_year != null ? valuationYear - comp.build_year : null;
+  // (2) Building age — removed (build_year is an estimate from EPC age band midpoint, not reliable)
 
   // (4) Size in ft²
   const areaSqft = exactSqft != null ? Math.round(exactSqft) : null;
@@ -1127,12 +1209,17 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
   }
 
   return (
-    <div className={`px-4 py-3 flex flex-col gap-1.5 transition-colors ${isAdopted ? "bg-[#39FF14]/8" : "hover:bg-[var(--color-bg-surface)]"}`}>
+    <div className={`flex flex-col transition-colors ${isAdopted ? "bg-[#39FF14]/8" : "hover:bg-[var(--color-bg-surface)]"}`}>
+      {/* Clickable summary row */}
+      <div className="px-4 py-3 flex flex-col gap-1.5 cursor-pointer" onClick={() => setExpanded(e => !e)}>
       {/* Row 1: address + price + adopt button */}
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">{comp.address}</p>
-          <p className="text-xs text-[var(--color-text-secondary)]/70">{comp.postcode}</p>
+        <div className="min-w-0 flex-1 flex items-center gap-2">
+          <svg className={`w-3 h-3 shrink-0 text-[var(--color-text-secondary)] transition-transform ${expanded ? "rotate-90" : ""}`} fill="currentColor" viewBox="0 0 20 20"><path d="M6 4l8 6-8 6V4z"/></svg>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">{comp.address}</p>
+            <p className="text-xs text-[var(--color-text-secondary)]/70">{comp.postcode}</p>
+          </div>
         </div>
         <div className="flex items-start gap-2 shrink-0">
           <div className="text-right">
@@ -1148,7 +1235,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
           </div>
           {onAdopt && (
             <button
-              onClick={onAdopt}
+              onClick={(e) => { e.stopPropagation(); onAdopt(); }}
               title={isAdopted ? "Remove from Adopted Comparables" : "Add to Adopted Comparables"}
               className={`mt-0.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
                 isAdopted
@@ -1162,18 +1249,20 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
         </div>
       </div>
 
-      {/* Row 2: attributes */}
+      {/* Row 2: attributes — reads like a sentence: "Freehold Period House (Semi-Detached)" */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
         {comp.tenure && (
           <span className="capitalize">{comp.tenure}</span>
         )}
-        {/* (3) Lease remaining */}
         {comp.tenure === "leasehold" && comp.lease_remaining && (
           <span className={`font-medium ${
             comp.lease_remaining === "Expired" ? "text-[#FF3131]" : "text-[#CBD5E1]"
           }`}>
             {comp.lease_remaining} remaining
           </span>
+        )}
+        {comp.construction_age_best != null && (
+          <span className="text-cyan-400 font-medium">c.{comp.construction_age_best}</span>
         )}
         {comp.property_type && (
           <span className="capitalize">
@@ -1183,7 +1272,6 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
         {comp.bedrooms != null && (
           <span>{comp.bedrooms} hab. rooms</span>
         )}
-        {/* (4) Size: m² and ft² */}
         {comp.floor_area_sqm != null && (
           <span>
             {comp.floor_area_sqm} m²
@@ -1192,52 +1280,25 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             )}
           </span>
         )}
-        {/* (2) Build year, era, and age */}
-        {comp.build_year != null && (
-          <span>
-            Built {comp.build_year}
-            {comp.build_year_estimated && (
-              <span className="text-[var(--color-text-secondary)]/70 italic"> est.</span>
-            )}
-            {buildAge != null && (
-              <span className="text-[var(--color-text-secondary)]/70"> ({buildAge} yrs)</span>
-            )}
-          </span>
-        )}
-        {comp.building_era && (
-          <span className="capitalize">{comp.building_era}</span>
-        )}
         {comp.new_build && (
           <span className="bg-[#7B2FBE]/20 text-[#818CF8] px-1.5 py-0.5 rounded-full font-medium">
             New build
           </span>
         )}
-        {comp.months_ago != null && (
-          <span className="text-[var(--color-text-secondary)]/70">{fmtMonthsAgo(comp.months_ago)}</span>
-        )}
-        {comp.epc_rating && (
-          <span className={`px-1.5 py-0.5 rounded font-semibold ${
-            ({ A: "bg-[#16A34A]/20 text-[var(--color-status-success)]",
-               B: "bg-[#22C55E]/20 text-[#4ADE80]",
-               C: "bg-[#FBBF24]/20 text-[#FBBF24]",
-               D: "bg-[#F97316]/20 text-[#F97316]",
-               E: "bg-[#EA580C]/20 text-[#EA580C]",
-               F: "bg-[#DC2626]/20 text-[#FF3131]",
-               G: "bg-[#DC2626]/20 text-[#FF3131]",
-            } as Record<string, string>)[comp.epc_rating] || "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
-          }`}>
-            EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
-          </span>
+        {(comp as Record<string, unknown>).uprn != null && (
+          <span className="text-[var(--color-text-muted)] font-mono text-[10px]">UPRN {String((comp as Record<string, unknown>).uprn)}</span>
         )}
       </div>
 
       {/* Row 3: badges */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-          comp.epc_matched ? "bg-[#39FF14]/10 text-[var(--color-status-success)]" : "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
-        }`}>
-          {comp.epc_matched ? "EPC verified" : "Unverified spec"}
-        </span>
+        {comp.epc_rating && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+            EPC_BADGE[comp.epc_rating] ?? "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
+          }`}>
+            EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
+          </span>
+        )}
         {relaxBadges.map((b, i) => (
           <span key={i} className={`text-xs px-2 py-0.5 rounded-full font-medium ${b.cls}`}>
             ⚠ {b.label}
@@ -1277,6 +1338,111 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             Floor areas required for size adjustment
           </div>
         )
+      )}
+
+      </div>{/* end clickable summary */}
+
+      {/* ── Expanded detail panel ─────────────────────────────────────────── */}
+      {expanded && (
+        <div className="border-t border-[var(--color-border)]/60">
+          {/* Transaction details */}
+          <div className="px-4 py-2 border-b border-[var(--color-border)]/40">
+            <h3 className="font-orbitron text-[var(--color-accent)] text-[10px] tracking-[2px] uppercase">Transaction</h3>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-[var(--color-border)]/40">
+            <DetailField label="Price" value={fmtPrice(comp.price)} />
+            <DetailField label="Date" value={fmtDate(comp.transaction_date)} />
+            <DetailField label="£/sq ft" value={pricePsf != null ? `£${pricePsf.toLocaleString("en-GB")}` : null} />
+            <DetailField label="Category" value={comp.transaction_category === "B" ? "B (non-standard)" : comp.transaction_category === "A" ? "A (standard)" : comp.transaction_category} />
+          </div>
+
+          {/* Property details */}
+          <div className="px-4 py-2 border-b border-t border-[var(--color-border)]/40">
+            <h3 className="font-orbitron text-[var(--color-accent)] text-[10px] tracking-[2px] uppercase">Property Details</h3>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-[var(--color-border)]/40">
+            <DetailField label="Property Type" value={
+              comp.property_type
+                ? <span className="capitalize">{comp.property_type}{comp.house_sub_type ? ` (${comp.house_sub_type})` : ""}</span>
+                : null
+            } />
+            <DetailField label="Tenure" value={
+              comp.tenure ? (
+                <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                  comp.tenure === "freehold" ? "bg-[var(--color-status-success)]/15 text-[var(--color-status-success)]" : "bg-[var(--color-status-warning)]/15 text-[var(--color-status-warning)]"
+                }`}>
+                  <span className="capitalize">{comp.tenure}</span>
+                </span>
+              ) : null
+            } />
+            <DetailField label="Hab. Rooms" value={comp.bedrooms} />
+            <DetailField label="Floor Area" value={
+              comp.floor_area_sqm != null
+                ? <>{comp.floor_area_sqm} m² <span className="text-[var(--color-text-secondary)]/70">/ {areaSqft?.toLocaleString("en-GB")} ft²</span></>
+                : null
+            } />
+            <DetailField label="Construction Era" value={
+              comp.construction_age_band
+                ? <span className="capitalize">{comp.construction_age_band}</span>
+                : null
+            } />
+            <DetailField label="Building Age" value={
+              comp.construction_age_best != null
+                ? <span className="text-cyan-400 font-medium">c.{comp.construction_age_best}</span>
+                : null
+            } />
+            <DetailField label="New Build" value={comp.new_build ? "Yes" : "No"} />
+            <DetailField label="Energy Rating" value={
+              comp.epc_rating
+                ? <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${EPC_BADGE[comp.epc_rating] ?? "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"}`}>
+                    EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
+                  </span>
+                : null
+            } />
+          </div>
+
+          {/* Lease & Location */}
+          <div className="px-4 py-2 border-b border-t border-[var(--color-border)]/40">
+            <h3 className="font-orbitron text-[var(--color-accent)] text-[10px] tracking-[2px] uppercase">Lease & Location</h3>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-[var(--color-border)]/40">
+            <DetailField label="Lease Remaining" value={
+              comp.lease_remaining
+                ? <span className={comp.lease_remaining === "Expired" ? "text-[#FF3131] font-semibold" : ""}>{comp.lease_remaining}</span>
+                : comp.tenure === "freehold" ? "N/A (freehold)" : null
+            } />
+            <DetailField label="Distance" value={comp.distance_m != null ? `${Math.round(comp.distance_m).toLocaleString("en-GB")} m` : null} />
+            <DetailField label="Time Ago" value={comp.months_ago != null ? fmtMonthsAgo(comp.months_ago) : null} />
+            <DetailField label="EPC Verified" value={
+              <span className={comp.epc_matched ? "text-[var(--color-status-success)]" : "text-[var(--color-text-secondary)]"}>
+                {comp.epc_matched ? "Yes" : "No"}
+              </span>
+            } />
+            <DetailField label="UPRN" value={(comp as Record<string, unknown>).uprn != null ? String((comp as Record<string, unknown>).uprn) : null} />
+          </div>
+
+          {/* Adopt / Reject buttons at bottom of expanded panel */}
+          <div className="px-4 py-3 flex items-center gap-2 border-t border-[var(--color-border)]/40 bg-[var(--color-bg-surface)]/50">
+            {onAdopt && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onAdopt(); }}
+                className={`px-4 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  isAdopted
+                    ? "bg-[#39FF14]/15 text-[var(--color-status-success)] border-[#39FF14]/40 hover:bg-[#39FF14]/25"
+                    : "bg-transparent text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-[#39FF14]/60 hover:text-[var(--color-status-success)]"
+                }`}
+              >
+                {isAdopted ? "✓ Adopted" : "Adopt"}
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); onReject(); }}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-status-danger)]/60 hover:text-[var(--color-status-danger)] transition-colors"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
       )}
 
     </div>

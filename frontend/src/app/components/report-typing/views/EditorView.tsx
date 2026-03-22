@@ -5,6 +5,9 @@ import { EditorContent } from "@tiptap/react"
 import type { ReportTypingState, AiSectionKey } from "../types"
 import { useDocumentEditorState } from "../useDocumentEditorState"
 import AiSidebar from "./AiSidebar"
+import TemplateExportButton from "../shared/TemplateExportButton"
+import CopyPoolPanel from "../CopyPoolPanel"
+import { API_BASE } from "@/lib/constants"
 
 // ── Toolbar button component ──────────────────────────────────────────────
 
@@ -40,11 +43,45 @@ function ToolbarSep() {
 
 interface EditorViewProps {
   state: ReportTypingState
+  session?: { access_token: string } | null
+  caseId?: string | null
 }
 
-export default function EditorView({ state }: EditorViewProps) {
+export default function EditorView({ state, session, caseId }: EditorViewProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const { editor, insertTextAtSection, exportDocx, printDocument } = useDocumentEditorState(state)
+  const [copyPoolOpen, setCopyPoolOpen] = useState(false)
+  const [savingCopy, setSavingCopy] = useState(false)
+  const [copyFlash, setCopyFlash] = useState<"ok" | "err" | null>(null)
+  const { editor, insertTextAtSection, getContentHTML, getContentJSON, exportDocx, printDocument } = useDocumentEditorState(state)
+
+  const saveCopy = useCallback(async () => {
+    if (!editor || !caseId || !session?.access_token) return
+    setSavingCopy(true)
+    setCopyFlash(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/cases/${caseId}/copies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          editor_html: getContentHTML(),
+          editor_json: getContentJSON(),
+          wizard_snapshot: {
+            meta: state.meta,
+            valuer: state.valuer,
+            aiSections: state.aiSections,
+          },
+        }),
+      })
+      if (!res.ok) throw new Error("Failed to save copy")
+      setCopyFlash("ok")
+      setTimeout(() => setCopyFlash(null), 2000)
+    } catch {
+      setCopyFlash("err")
+      setTimeout(() => setCopyFlash(null), 3000)
+    } finally {
+      setSavingCopy(false)
+    }
+  }, [editor, caseId, session, getContentHTML, getContentJSON, state.meta, state.valuer, state.aiSections])
 
   const handleAiInsert = useCallback((key: AiSectionKey, text: string) => {
     insertTextAtSection(key, text)
@@ -160,6 +197,34 @@ export default function EditorView({ state }: EditorViewProps) {
             {editor.storage.characterCount.words()} words
           </span>
           <ToolbarSep />
+          {/* Save Copy button */}
+          {caseId && (
+            <button onClick={saveCopy} disabled={savingCopy}
+              className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors disabled:opacity-50"
+              style={{
+                borderColor: copyFlash === "ok" ? "var(--color-status-success)" : copyFlash === "err" ? "var(--color-status-error)" : "color-mix(in srgb, var(--color-accent) 27%, transparent)",
+                color: copyFlash === "ok" ? "var(--color-status-success)" : copyFlash === "err" ? "var(--color-status-error)" : "var(--color-accent)",
+                backgroundColor: copyFlash === "ok" ? "color-mix(in srgb, var(--color-status-success) 7%, transparent)" : copyFlash === "err" ? "color-mix(in srgb, var(--color-status-error) 7%, transparent)" : "color-mix(in srgb, var(--color-accent) 7%, transparent)",
+              }}
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" /></svg>
+              {savingCopy ? "Saving..." : copyFlash === "ok" ? "Saved!" : copyFlash === "err" ? "Error" : "Save Copy"}
+            </button>
+          )}
+          {/* Copy Pool toggle */}
+          {caseId && (
+            <button onClick={() => setCopyPoolOpen(p => !p)}
+              className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
+              style={{
+                borderColor: "color-mix(in srgb, var(--color-accent) 27%, transparent)",
+                color: "var(--color-accent)",
+                backgroundColor: copyPoolOpen ? "color-mix(in srgb, var(--color-accent) 13%, transparent)" : "color-mix(in srgb, var(--color-accent) 7%, transparent)",
+              }}
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+              Copies
+            </button>
+          )}
           <button onClick={exportDocx}
             className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
             style={{ borderColor: "color-mix(in srgb, var(--color-accent) 27%, transparent)", color: "var(--color-accent)", backgroundColor: "color-mix(in srgb, var(--color-accent) 7%, transparent)" }}
@@ -167,6 +232,7 @@ export default function EditorView({ state }: EditorViewProps) {
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
             .docx
           </button>
+          <TemplateExportButton state={state} session={session || null} />
           <button onClick={printDocument}
             className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
             style={{ borderColor: "var(--color-border)", color: "var(--color-text-secondary)" }}
@@ -193,6 +259,16 @@ export default function EditorView({ state }: EditorViewProps) {
             <EditorContent editor={editor} />
           </div>
         </div>
+
+        {/* Copy Pool Panel */}
+        {caseId && copyPoolOpen && (
+          <CopyPoolPanel
+            caseId={caseId}
+            session={session}
+            onClose={() => setCopyPoolOpen(false)}
+            copyFlash={copyFlash}
+          />
+        )}
 
         {/* AI Sidebar */}
         <AiSidebar

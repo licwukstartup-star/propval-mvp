@@ -13,9 +13,10 @@ import AdditionalComparable from "@/components/AdditionalComparable";
 import { exportWordReport, type WordReportData } from "./components/exportWordReport";
 import { useAuth } from "@/components/AuthProvider";
 import ReportTyping from "./components/ReportTyping";
-import ReportPreview from "./components/ReportPreview";
 import SEMVTab from "./components/SEMVTab";
 import HpiTab from "./components/HpiTab";
+import QATab from "./components/QATab";
+import AgenticReportTab from "./components/AgenticReportTab";
 import SaveCaseDialog from "./components/SaveCaseDialog";
 import MyCasesPanel from "./components/MyCasesPanel";
 
@@ -29,7 +30,7 @@ import { hpiKeyForComp, computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjus
 const PropertyMap = dynamic(() => import("./components/PropertyMap"), { ssr: false });
 import type { CrimeCluster } from "./components/PropertyMap";
 
-const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "hpi", "comparables", "wider", "additional", "adopted", "semv", "report_typing", "report"];
+const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "hpi", "comparables", "wider", "additional", "adopted", "semv", "report_typing", "agentic_report", "qa"];
 const COMP_CLUSTER_TABS: TabKey[] = ["comparables", "wider", "additional", "adopted"];
 
 export default function Home() {
@@ -170,7 +171,7 @@ export default function Home() {
   const [mapShowIncome, setMapShowIncome] = useState(false);
   const [mapShowEducation, setMapShowEducation] = useState(false);
   const [mapShowHeritage, setMapShowHeritage] = useState(false);
-  const [mapShowTitleBoundary, setMapShowTitleBoundary] = useState(false);
+  const [mapShowTitleBoundary, setMapShowTitleBoundary] = useState(true);
   const [titleBoundaryData, setTitleBoundaryData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [mapTileLayer, setMapTileLayer] = useState<"dark" | "satellite" | "street">("dark");
   const [mapLandUseCache, setMapLandUseCache] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -184,15 +185,28 @@ export default function Home() {
   useEffect(() => {
     if (!result?.lat || !result?.lon || mapLandUseCache || landUseFetchRef.current) return;
     landUseFetchRef.current = true;
-    const query = `[out:json][timeout:30];(way["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${result.lat},${result.lon});relation["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${result.lat},${result.lon});way["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${result.lat},${result.lon});relation["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${result.lat},${result.lon}););out body;>;out skel qt;`;
-    fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(query),
-    })
-      .then(r => { if (!r.ok) throw new Error(`Overpass ${r.status}`); return r.json(); })
+    const query = `[out:json][timeout:25];(way["landuse"~"retail|commercial|industrial"](around:1500,${result.lat},${result.lon});way["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:1500,${result.lat},${result.lon}););out body;>;out skel qt;`;
+    const endpoints = [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+    ];
+    const tryFetch = (idx: number): Promise<Response> => {
+      if (idx >= endpoints.length) return Promise.reject(new Error("All Overpass endpoints failed"));
+      return fetch(endpoints[idx], {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "data=" + encodeURIComponent(query),
+      }).then(r => {
+        if (!r.ok) throw new Error(`Overpass ${r.status}`);
+        return r;
+      }).catch(err => {
+        console.warn(`[LandUse] ${endpoints[idx]} failed:`, err.message);
+        return tryFetch(idx + 1);
+      });
+    };
+    tryFetch(0)
+      .then(r => r.json())
       .then(data => {
-        // Inline osmToGeoJSON — same logic as PropertyMap
         const nodes = new Map<number, [number, number]>();
         const ways = new Map<number, { nodes: number[]; tags?: Record<string, string> }>();
         for (const el of data.elements) {
@@ -207,22 +221,10 @@ export default function Home() {
           if (coords.length < 3) continue;
           features.push({ type: "Feature", properties: { landuse: way.tags?.landuse, leisure: way.tags?.leisure, name: way.tags?.name }, geometry: { type: "Polygon", coordinates: [coords] } });
         }
-        for (const el of data.elements) {
-          const tag = el.tags?.landuse ?? el.tags?.leisure;
-          if (el.type !== "relation" || !tag || !el.members) continue;
-          for (const member of el.members) {
-            if (member.type === "way" && member.role === "outer") {
-              const way = ways.get(member.ref);
-              if (!way) continue;
-              const coords = way.nodes.map((nid: number) => nodes.get(nid)).filter(Boolean) as [number, number][];
-              if (coords.length < 3) continue;
-              features.push({ type: "Feature", properties: { landuse: el.tags?.landuse, leisure: el.tags?.leisure, name: el.tags?.name }, geometry: { type: "Polygon", coordinates: [coords] } });
-            }
-          }
-        }
+        console.log("[LandUse] features:", features.length);
         setMapLandUseCache({ type: "FeatureCollection", features });
       })
-      .catch(() => { /* silently ignore */ })
+      .catch(() => { /* all endpoints failed — land use layer unavailable */ })
       .finally(() => { landUseFetchRef.current = false; });
   }, [result?.lat, result?.lon, mapLandUseCache]);
 
@@ -309,9 +311,11 @@ export default function Home() {
   const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [navbarSlot, setNavbarSlot] = useState<HTMLElement | null>(null);
-  useEffect(() => { setNavbarSlot(document.getElementById("navbar-status-slot")); }, []);
+  const [navbarCustomiseSlot, setNavbarCustomiseSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => { setNavbarSlot(document.getElementById("navbar-status-slot")); setNavbarCustomiseSlot(document.getElementById("navbar-customise-slot")); }, []);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadedAtRef = useRef(0);   // timestamp of last case load — suppress auto-save for 3s after
+  const loadedAtRef = useRef(0);   // timestamp of last case load — suppress auto-save for 5s after
+  const loadingCaseRef = useRef(false);  // true while loadCase is in progress — blocks auto-save
   const [pendingExitAfterSave, setPendingExitAfterSave] = useState(false);
   const pendingExitRef = useRef(false);
   const [pendingHomeReset, setPendingHomeReset] = useState(false);
@@ -364,13 +368,14 @@ export default function Home() {
     setMapEducationCache(null);
     setMapCrimeCache(null);
     setTitleBoundaryData(null);
-    titleBoundaryFetchRef.current = false;
+    titleBoundaryFpRef.current = "";
     landUseFetchRef.current = false;
     imdFetchRef.current = false;
     crimeFetchRef.current = false;
     setCompCoords({});
     setPendingExitAfterSave(false);
     setManualMode(false);
+    setReportContent(null);
   }, []);
 
   // Keep UI state in a ref so fire-and-forget save always captures latest
@@ -424,6 +429,7 @@ export default function Home() {
       snapshot_id:    snap.id as string,
       case_comp_id:   cc.id as string,
       source:         snap.source as string,
+      uprn:           (snap.uprn as string) ?? null,
     };
   }
 
@@ -435,6 +441,7 @@ export default function Home() {
       case_id: caseId,
       source,
       source_ref: comp.transaction_id ?? undefined,
+      uprn: (comp as Record<string, unknown>).uprn ?? undefined,
       address: comp.address,
       postcode: comp.postcode,
       outward_code: comp.outward_code,
@@ -597,6 +604,8 @@ export default function Home() {
 
   async function saveCase(silent = false) {
     if (!result || !session?.access_token) return;
+    // Block silent (auto) saves while a case is being loaded to prevent cross-case writes
+    if (silent && loadingCaseRef.current) return;
     if (!silent) setSavingCase(true);
     if (silent) setAutoSaveStatus("saving");
     try {
@@ -640,6 +649,7 @@ export default function Home() {
   const fireAndForgetSave = useCallback(() => {
     if (!currentCaseId || !result || !session?.access_token) return;
     if (["issued", "archived"].includes(currentCaseStatus)) return;
+    if (loadingCaseRef.current) return;  // block save during case switch
     const url = `${API_BASE}/api/cases/${currentCaseId}`;
     const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
     try {
@@ -665,11 +675,13 @@ export default function Home() {
   useEffect(() => {
     if (!currentCaseId || ["issued", "archived"].includes(currentCaseStatus)) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    // Skip auto-save for 3s after loading a case (avoids race with stale state)
-    if (Date.now() - loadedAtRef.current < 3000) return;
+    // Block auto-save while a case is being loaded (prevents cross-case contamination)
+    if (loadingCaseRef.current) return;
+    // Skip auto-save for 5s after loading a case (avoids race with stale state)
+    if (Date.now() - loadedAtRef.current < 5000) return;
     autoSaveTimerRef.current = setTimeout(() => {
       saveCaseRef.current(true);
-    }, 1500);
+    }, 5000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, epcBeta, floorPremium, currentCaseId, currentCaseStatus,
@@ -682,6 +694,7 @@ export default function Home() {
     if (currentCaseId && currentCaseId !== c.id && !["issued", "archived"].includes(currentCaseStatus)) {
       await saveCaseRef.current(true);
     }
+    loadingCaseRef.current = true;  // block auto-save during entire load sequence
     setCasesLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/cases/${c.id}`, {
@@ -691,8 +704,34 @@ export default function Home() {
       const data = await res.json();
       const snapshot = (data.property_snapshot ?? data.property_data) as PropertyResult;
       loadedAtRef.current = Date.now();  // suppress auto-save during state restoration
+      // CRITICAL: Clear stale state from previous case BEFORE loading new data
+      // to prevent cross-case data leakage (polygons, map caches, etc.).
+      setTitleBoundaryData(null);
+      titleBoundaryFpRef.current = "";
+      setMapMounted(false);
+      setMapLandUseCache(null);
+      setMapImdCache(null);
+      setMapIncomeCache(null);
+      setMapEducationCache(null);
+      setMapCrimeCache(null);
+      landUseFetchRef.current = false;
+      imdFetchRef.current = false;
+      crimeFetchRef.current = false;
+      setCompCoords({});
+      // Set case ID and clear comps BEFORE loading new comps to prevent
+      // auto-save from writing Case B's comps into Case A's record (race condition).
+      setCurrentCaseId(data.id);
+      setAdoptedComparables([]);
       setResult(snapshot);
       setEnrichSlowDone(true);  // saved case already enriched
+      // Backfill lease details from local DB (single source of truth)
+      if (snapshot?.uprn && !snapshot.lease_commencement) {
+        fetch(`${API_BASE}/api/property/lease-details/${snapshot.uprn}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }).then(r => r.ok ? r.json() : null).then(lease => {
+          if (lease?.lease_commencement) setResult(prev => prev ? { ...prev, ...lease } : prev);
+        }).catch(() => {});
+      }
       // Try loading comps from case-comps API (Option E), fall back to JSON blob
       const apiComps = await loadCompsFromAPI(data.id);
       setAdoptedComparables(apiComps ?? data.comparables ?? []);
@@ -736,6 +775,17 @@ export default function Home() {
           })
           .catch(() => {});
       }
+      // Backfill sale history if empty (may have been missed due to prior matching bugs)
+      if ((!snapshot?.sales || snapshot.sales.length === 0) && snapshot?.postcode) {
+        fetch(`${API_BASE}/api/property/sales-refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ address: snapshot.address ?? c.address ?? "", postcode: snapshot.postcode, uprn: snapshot.uprn ?? undefined }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.sales?.length) setResult(prev => prev ? { ...prev, sales: d.sales } : prev); })
+          .catch(() => {});
+      }
       // Backfill HPI if missing from old case
       if (!snapshot?.hpi && snapshot?.postcode) {
         fetch(`${API_BASE}/api/property/hpi`, {
@@ -772,7 +822,7 @@ export default function Home() {
       setSizeElasticity(data.size_elasticity ?? 0);
       setEpcBeta(data.epc_beta ?? 50);
       setFloorPremium(data.floor_premium ?? 50);
-      setCurrentCaseId(data.id);
+      // currentCaseId already set at top of loadCase to prevent auto-save race
       setSaveCaseType(data.case_type ?? "research");
       setCurrentCaseStatus(data.status === "draft" ? "in_progress" : (data.status ?? "in_progress"));
       setAddress(data.address);
@@ -793,7 +843,7 @@ export default function Home() {
           setMapShowIncome(ui.mapLayers.income ?? false);
           setMapShowEducation(ui.mapLayers.education ?? false);
           setMapShowHeritage(ui.mapLayers.heritage ?? false);
-          setMapShowTitleBoundary(ui.mapLayers.titleBoundary ?? false);
+          setMapShowTitleBoundary(true);  // always show — no UI toggle exists yet
         }
         if (ui.mapTileLayer) setMapTileLayer(ui.mapTileLayer);
       } else {
@@ -803,7 +853,11 @@ export default function Home() {
       setShowCasesPanel(false);
       setError(null);
     } catch { alert("Failed to load case."); }
-    finally { setCasesLoading(false); }
+    finally {
+      loadingCaseRef.current = false;  // release auto-save lock
+      loadedAtRef.current = Date.now();  // reset suppression timer AFTER all state is set
+      setCasesLoading(false);
+    }
   }
 
   async function deleteCase(id: string) {
@@ -815,7 +869,12 @@ export default function Home() {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       setCasesList(prev => prev.filter(c => c.id !== id));
-      if (currentCaseId === id) setCurrentCaseId(null);
+      if (currentCaseId === id) {
+        setCurrentCaseId(null);
+        setReportContent(null);
+        setTitleBoundaryData(null);
+        titleBoundaryFpRef.current = "";
+      }
     } catch { alert("Failed to delete case."); }
   }
 
@@ -841,6 +900,8 @@ export default function Home() {
     window.addEventListener("afterprint",  onAfter);
     const onOpenCases = () => { setShowCasesPanel(true); fetchCases(true); };
     window.addEventListener("open-my-cases", onOpenCases);
+    const onNavigateQA = () => { setActiveTab("qa"); };
+    window.addEventListener("propval-navigate-qa", onNavigateQA);
     // Save on exit: fire a keepalive save when user closes tab/browser
     const onBeforeUnload = () => { fireAndForgetSaveRef.current(); };
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -863,6 +924,7 @@ export default function Home() {
       window.removeEventListener("beforeprint", onBefore);
       window.removeEventListener("afterprint",  onAfter);
       window.removeEventListener("open-my-cases", onOpenCases);
+      window.removeEventListener("propval-navigate-qa", onNavigateQA);
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("propval-before-navigate", onBeforeNavigate);
       window.removeEventListener("propval-reset-home", onResetHome);
@@ -914,35 +976,77 @@ export default function Home() {
   }
 
   // Build comparable coordinates from API-provided lat/lon (building-level from OS Open UPRN).
-  // Falls back to postcodes.io bulk geocode only for comps without API coords.
+  // For comps without coords, resolves via batch UPRN lookup, then postcodes.io as last resort.
   useEffect(() => {
-    if (activeTab !== "map" || adoptedComparables.length === 0) return;
+    if (adoptedComparables.length === 0) return;
 
-    // 1. Use API-provided building-level coords (keyed by transaction_id for uniqueness)
-    const updates: Record<string, { lat: number; lon: number }> = {};
+    // Priority: 1. UPRN lookup (building-level ~1-5m) → 2. API-provided lat/lon → 3. postcode centroid
+    // Always prefer UPRN coords even if lat/lon already set (they may be postcode-level).
+    const uprnsToLookup: { key: string; uprn: string }[] = [];
+    const fallbackUpdates: Record<string, { lat: number; lon: number }> = {};
     const needsPostcodeFallback: string[] = [];
 
     for (const c of adoptedComparables) {
-      const key = c.transaction_id || c.postcode;
+      const key = c.transaction_id || c.address;
       if (compCoords[key]) continue;
-      if (c.lat != null && c.lon != null) {
-        updates[key] = { lat: c.lat, lon: c.lon };
+      const uprn = (c as Record<string, unknown>).epc_uprn ?? (c as Record<string, unknown>).uprn;
+      if (uprn) {
+        uprnsToLookup.push({ key, uprn: String(uprn) });
+      } else if (c.lat != null && c.lon != null) {
+        fallbackUpdates[key] = { lat: c.lat, lon: c.lon };
       } else if (!compCoords[c.postcode]) {
         needsPostcodeFallback.push(c.postcode);
       }
     }
 
-    if (Object.keys(updates).length > 0) {
-      setCompCoords(prev => ({ ...prev, ...updates }));
+    // 1. Batch UPRN lookup — same as subject property coord resolution
+    if (uprnsToLookup.length > 0 && session?.access_token) {
+      const uniqueUPRNs = [...new Set(uprnsToLookup.map(u => u.uprn))];
+      fetch(`${API_BASE}/api/property/batch-uprn-coords`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ uprns: uniqueUPRNs }),
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data?.coords) return;
+          const uprUpdates: Record<string, { lat: number; lon: number }> = {};
+          const stillMissing: string[] = [];
+          for (const { key, uprn } of uprnsToLookup) {
+            const coord = data.coords[uprn];
+            if (coord) {
+              uprUpdates[key] = { lat: coord.lat, lon: coord.lon };
+            } else {
+              // UPRN not in coords DB — use API-provided lat/lon or postcode fallback
+              const comp = adoptedComparables.find(c => (c.transaction_id || c.address) === key);
+              if (comp?.lat != null && comp?.lon != null) {
+                uprUpdates[key] = { lat: comp.lat, lon: comp.lon };
+              } else if (comp) {
+                stillMissing.push(comp.postcode);
+              }
+            }
+          }
+          if (Object.keys(uprUpdates).length > 0) setCompCoords(prev => ({ ...prev, ...uprUpdates }));
+          const missingPcs = [...new Set(stillMissing)].filter(pc => !compCoords[pc]);
+          if (missingPcs.length > 0) _fetchPostcodeCoords(missingPcs);
+        })
+        .catch(() => { /* silently ignore */ });
     }
 
-    // 2. Fallback: postcodes.io for comps without API coords
+    // 2. Comps without UPRN — use API-provided lat/lon directly
+    if (Object.keys(fallbackUpdates).length > 0) {
+      setCompCoords(prev => ({ ...prev, ...fallbackUpdates }));
+    }
+
+    // 3. Last resort: postcodes.io for comps without any coords
     const missingPcs = [...new Set(needsPostcodeFallback)].filter(pc => !compCoords[pc]);
-    if (missingPcs.length > 0) {
+    if (missingPcs.length > 0) _fetchPostcodeCoords(missingPcs);
+
+    function _fetchPostcodeCoords(postcodes: string[]) {
       fetch("https://api.postcodes.io/postcodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ postcodes: missingPcs }),
+        body: JSON.stringify({ postcodes }),
       })
         .then(r => r.json())
         .then(data => {
@@ -958,55 +1062,55 @@ export default function Home() {
     }
   }, [activeTab, adoptedComparables]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch INSPIRE title boundary polygons for subject + adopted comparables
-  const titleBoundaryFetchRef = useRef(false);
+  // Fetch ALL INSPIRE title boundary polygons within 1 mile of subject.
+  // Displays every title boundary in the neighbourhood as a base layer.
+  // Subject polygon highlighted orange, adopted comps pink, rest neutral cyan.
+  const titleBoundaryFpRef = useRef("");
   useEffect(() => {
-    if (!mapShowTitleBoundary || !result?.lat || !result?.lon || !session?.access_token) {
-      return;
-    }
-    // Build coordinate list: subject first, then adopted comparables with known coords
-    const coords: { lat: number; lon: number; label: string }[] = [
-      { lat: result.lat, lon: result.lon, label: result.address },
-    ];
+    if (!mapShowTitleBoundary || !session?.access_token) return;
+    // Use OS Open UPRN coords (building-level ~1-5m accuracy) for polygon matching
+    const uprn_coords = result?.all_coords?.os_open_uprn;
+    const subjectLat = uprn_coords?.lat ?? result?.inspire_lat ?? result?.lat;
+    const subjectLon = uprn_coords?.lon ?? result?.inspire_lon ?? result?.lon;
+    if (!subjectLat || !subjectLon) return;
+
+    // Build dots array: subject + all adopted comparables
+    const dots: { lat: number; lon: number }[] = [{ lat: subjectLat, lon: subjectLon }];
     for (const c of adoptedComparables) {
-      const key = c.transaction_id || c.postcode;
-      const cc = compCoords[key] ?? (c.lat != null && c.lon != null ? { lat: c.lat, lon: c.lon } : null);
-      if (cc) {
-        coords.push({ lat: cc.lat, lon: cc.lon, label: c.address });
-      }
+      const key = c.transaction_id || c.address;
+      const cc = compCoords[key] || compCoords[c.postcode];
+      const clat = c.lat ?? cc?.lat;
+      const clon = c.lon ?? cc?.lon;
+      if (clat != null && clon != null) dots.push({ lat: clat, lon: clon });
     }
 
-    // Skip if we already fetched for the same set
-    const fingerprint = coords.map(c => `${c.lat.toFixed(5)},${c.lon.toFixed(5)}`).join("|");
-    if (titleBoundaryFetchRef.current && titleBoundaryData && (titleBoundaryData as unknown as { _fp?: string })._fp === fingerprint) return;
+    const fingerprint = dots.map(d => `${d.lat.toFixed(5)},${d.lon.toFixed(5)}`).sort().join("|");
+    if (fingerprint === titleBoundaryFpRef.current) return;
 
-    fetch(`${API_BASE}/api/property/inspire-polygons`, {
+    fetch(`${API_BASE}/api/property/inspire-polygons-area`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-      body: JSON.stringify({ coords }),
+      body: JSON.stringify({ dots, radius_m: 50 }),
     })
       .then(r => r.ok ? r.json() : null)
       .then(fc => {
-        if (fc && fc.features) {
-          (fc as unknown as { _fp: string })._fp = fingerprint;
+        if (fc?.features) {
+          titleBoundaryFpRef.current = fingerprint;
           setTitleBoundaryData(fc);
-          titleBoundaryFetchRef.current = true;
-          // Backfill inspire_area_sqm on result from the subject property's polygon
+          // Backfill inspire_area_sqm from polygon closest to subject
           if (result && fc.features.length > 0) {
-            const subjectLat = result.lat;
-            const subjectLon = result.lon;
-            // Find polygon closest to subject coords
             let bestFeat: GeoJSON.Feature | null = null;
             let bestDist = Infinity;
             for (const f of fc.features) {
               const clat = f.properties?.centroid_lat as number | undefined;
               const clon = f.properties?.centroid_lon as number | undefined;
-              if (clat != null && clon != null && subjectLat != null && subjectLon != null) {
-                const d = Math.hypot(clat - subjectLat, clon - subjectLon);
+              if (clat != null && clon != null) {
+                // Scale longitude difference by cos(lat) so distance is proportional to real metres
+                const d = Math.hypot(clat - subjectLat, (clon - subjectLon) * Math.cos(subjectLat * Math.PI / 180));
                 if (d < bestDist) { bestDist = d; bestFeat = f; }
               }
             }
-            if (bestFeat && bestFeat.properties?.area_sqm != null) {
+            if (bestFeat?.properties?.area_sqm != null) {
               setResult(prev => prev ? {
                 ...prev,
                 inspire_area_sqm: prev.inspire_area_sqm ?? bestFeat!.properties!.area_sqm,
@@ -1016,8 +1120,8 @@ export default function Home() {
           }
         }
       })
-      .catch(() => { /* silently ignore */ });
-  }, [mapShowTitleBoundary, result?.lat, result?.lon, adoptedComparables, compCoords, session?.access_token]); // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(() => {});
+  }, [mapShowTitleBoundary, result?.lat, result?.lon, result?.inspire_lat, result?.inspire_lon, result?.all_coords, adoptedComparables, compCoords, session?.access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleAddressChange(val: string) {
     setAddress(val);
@@ -1091,28 +1195,48 @@ export default function Home() {
     const normTenure = (data.tenure ?? "").toLowerCase() === "freehold" ? "freehold" : "leasehold";
 
     // Derive era from age band
-    const ageBand = data.construction_age_band;
+    // Normalise EPC age band: strip regional prefix, reject junk values
+    const NO_DATA = new Set(["no data!", "no data", "n/a", "unknown", "not recorded", "invalid!"]);
+    const normaliseAgeBand = (raw: string | null): string | null => {
+      if (!raw) return null;
+      let b = raw.trim();
+      if (NO_DATA.has(b.toLowerCase())) return null;
+      if (b.includes(": ")) b = b.split(": ").slice(1).join(": ");
+      if (/^\d{4}$/.test(b.trim())) return null; // bare year, not a band
+      return b;
+    };
+    const ageBand = normaliseAgeBand(data.construction_age_band);
     const deriveEra = (ab: string | null): "period" | "modern" | null => {
-      if (!ab) return null;
-      const b = ab.toLowerCase().trim();
-      if (b.includes("onwards") || b.includes("new")) return "modern";
-      if (b.includes("before")) return "period";
-      const years = [...b.matchAll(/\d{4}/g)].map(m => parseInt(m[0], 10));
+      const b = normaliseAgeBand(ab);
+      if (!b) {
+        // Check bare year in raw input
+        if (ab && /^\d{4}$/.test(ab.trim())) return parseInt(ab.trim()) >= 2000 ? "modern" : "period";
+        return null;
+      }
+      const bl = b.toLowerCase();
+      if (bl.includes("onwards") || bl.includes("new")) return "modern";
+      if (bl.includes("before")) return "period";
+      const years = [...bl.matchAll(/\d{4}/g)].map(m => parseInt(m[0], 10));
       if (years.length === 0) return null;
       return Math.max(...years) >= 2000 ? "modern" : "period";
     };
-    const era = deriveEra(ageBand);
+    const era = deriveEra(data.construction_age_band);
 
     // Derive build year from age band
     const ageBandYearMap: Record<string, number> = {
       "before 1900": 1890, "1900-1929": 1915, "1930-1949": 1940,
       "1950-1966": 1958, "1967-1975": 1971, "1976-1982": 1979,
       "1983-1990": 1987, "1991-1995": 1993, "1996-2002": 1999,
-      "2003-2006": 2005, "2007 onwards": 2010,
+      "2003-2006": 2005, "2007-2011": 2009, "2012-2021": 2016,
+      "2007 onwards": 2010,
     };
     const buildYear = (() => {
-      if (!ageBand) return null;
-      const b = ageBand.toLowerCase().trim();
+      if (!ageBand) {
+        // Check bare year
+        if (data.construction_age_band && /^\d{4}$/.test(data.construction_age_band.trim())) return parseInt(data.construction_age_band.trim());
+        return null;
+      }
+      const b = ageBand.toLowerCase();
       for (const [key, yr] of Object.entries(ageBandYearMap)) {
         if (key.includes(b) || b.includes(key)) return yr;
       }
@@ -1224,6 +1348,14 @@ export default function Home() {
       setResult(data);
       setError(null);
       setActiveTab("property");
+      // Backfill lease details from local DB (single source of truth)
+      if (data.uprn && !data.lease_commencement) {
+        fetch(`${API_BASE}/api/property/lease-details/${data.uprn}`, {
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }).then(r => r.ok ? r.json() : null).then(lease => {
+          if (lease?.lease_commencement) setResult(prev => prev ? { ...prev, ...lease } : prev);
+        }).catch(() => {});
+      }
       // Fire slow enrichment (council tax + planning flood) in background
       setEnrichSlowDone(false);
       setEnrichSlowError(false);
@@ -1257,8 +1389,9 @@ export default function Home() {
           .then(d => { if (d?.hpi) setResult(prev => prev ? { ...prev, hpi: d.hpi } : prev); })
           .catch(() => {});
       }
-      // AI narrative: reset (user must click to generate)
+      // AI narrative & report content: reset on new search
       setAiNarrative(null);
+      setReportContent(null);
       setBuildingSearchIds([]);
       setBuildingSearchAddressKeys([]);
       setBuildingSearchDone(false);
@@ -1271,7 +1404,7 @@ export default function Home() {
       setMapEducationCache(null);
       setMapCrimeCache(null);
       setTitleBoundaryData(null);
-      titleBoundaryFetchRef.current = false;
+      titleBoundaryFpRef.current = "";
       landUseFetchRef.current = false;
       setAdoptedComparables([]);
       setCurrentCaseId(null);
@@ -1319,7 +1452,8 @@ export default function Home() {
         ["Built form", result.built_form],
         ["Floor area (GIA)", result.floor_area_m2 != null ? `${result.floor_area_m2} m\u00B2 / ${Math.round(result.floor_area_m2 * 10.764).toLocaleString("en-GB")} sq ft` : null],
         ["Site area", result.inspire_area_sqm != null ? `${result.inspire_area_sqm.toLocaleString("en-GB", { maximumFractionDigits: 0 })} m\u00B2 / ${(result.inspire_area_sqm / 4047).toFixed(2)} acres` : null],
-        ["Construction era", result.construction_age_band],
+        ["Construction Era", result.construction_age_band],
+        ["Building Age", result.construction_age_best != null ? `c.${result.construction_age_best}` : null],
         ["Habitable rooms", result.num_rooms],
         ["Heating", result.heating_type],
         ["Inspection date", result.inspection_date],
@@ -1654,7 +1788,7 @@ export default function Home() {
             {/* Scrollable tab strip */}
             <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[var(--color-border)] scrollbar-hide scroll-smooth" onScroll={updateFades}>
               {(() => {
-                const labels: Record<TabKey, string> = { property: "Property Information", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", additional: "Additional Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", report: "Report" };
+                const labels: Record<TabKey, string> = { property: "Subject Property Info", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", additional: "Additional Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", agentic_report: "Agentic Report", qa: "QA" };
                 const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", additional: "Additional", adopted: "Adopted" };
                 let compClusterRendered = false;
                 return tabOrder.map((tab) => {
@@ -1772,35 +1906,41 @@ export default function Home() {
             <div ref={rightFadeRef} className="pointer-events-none absolute right-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to left, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("right")} onMouseLeave={stopTabScroll} />
           </div>
 
-          {/* ── Action bar: customise only (shown on property tab) ── */}
-          {activeTab === "property" && (
-            <div className="flex items-center justify-end gap-2 mb-3 no-print">
+          {/* ── Customise gear button — portalled into navbar (next to theme toggle) ── */}
+          {navbarCustomiseSlot && activeTab === "property" && result && ReactDOM.createPortal(
+            <div className="flex items-center gap-1.5 no-print">
               {isCustomising && (
                 <button
                   onClick={resetCardSizes}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] hover:bg-[var(--color-bg-surface)] transition-colors"
+                  className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-medium rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] hover:bg-[var(--color-bg-surface)] transition-colors"
                 >
-                  ↺ Reset
+                  Reset
                 </button>
               )}
               <button
                 onClick={() => setIsCustomising(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                aria-label={isCustomising ? "Done customising" : "Customise layout"}
+                className={`flex items-center justify-center w-[30px] h-[30px] rounded-lg border transition-colors ${
                   isCustomising
                     ? "border-[var(--color-accent)]/60 bg-[var(--color-btn-primary-bg)]/10 text-[var(--color-accent)]"
-                    : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)] hover:bg-[var(--color-bg-surface)]"
+                    : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
                 }`}
               >
-                {isCustomising ? "✓ Done" : "⊹ Customise"}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
               </button>
-            </div>
+            </div>,
+            navbarCustomiseSlot
           )}
 
           {/* ── Tab 1: Property Information ─────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "property" ? undefined : "none" }}>
             <div className="space-y-5">
 
-            {/* Search bar — disabled while a case is loaded (Close Case to unlock) */}
+            {/* Search bar — hidden when a result is loaded (Subject Property Info shows the address) */}
+            {!result && (<>
             <form ref={searchFormRef2} onSubmit={handleSearch} className="flex gap-2 items-center">
               <div style={{ position: "relative", flex: 1 }}>
                 <input
@@ -1872,6 +2012,7 @@ export default function Home() {
                 ← Back to postcode lookup
               </button>
             )}
+            </>)}
 
             {loading && (
               <div className="flex justify-center py-8">
@@ -2054,7 +2195,9 @@ export default function Home() {
             </PropCard>
 
             {/* Tenure card */}
-            {result.tenure && (
+            {result.tenure && (() => {
+              const tenureNorm = result.tenure.trim().toLowerCase();
+              return (
             <PropCard id="tenure" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
               <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
                 <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
@@ -2064,19 +2207,19 @@ export default function Home() {
                 <div className="px-6 py-4 space-y-3">
                   {/* Badge */}
                   <div className="flex items-center gap-3">
-                    {result.tenure === "Freehold" && (
+                    {tenureNorm === "freehold" && (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-status-success)]/15 px-3 py-1.5 text-sm font-semibold text-[var(--color-status-success)]">
                         <span className="h-2 w-2 rounded-full bg-[var(--color-status-success)]" />
                         Freehold
                       </span>
                     )}
-                    {result.tenure === "Leasehold" && (
+                    {tenureNorm === "leasehold" && (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-status-warning)]/15 px-3 py-1.5 text-sm font-semibold text-[var(--color-status-warning)]">
                         <span className="h-2 w-2 rounded-full bg-[var(--color-status-warning)]" />
                         Leasehold
                       </span>
                     )}
-                    {result.tenure !== "Freehold" && result.tenure !== "Leasehold" && (
+                    {tenureNorm !== "freehold" && tenureNorm !== "leasehold" && (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-border)] px-3 py-1.5 text-sm font-semibold text-[var(--color-text-primary)]">
                         {result.tenure}
                       </span>
@@ -2084,7 +2227,7 @@ export default function Home() {
                   </div>
 
                   {/* Lease details */}
-                  {result.tenure === "Leasehold" && (
+                  {tenureNorm === "leasehold" && (
                     <div>
                       {(result.lease_commencement && result.lease_expiry_date) ? (() => {
                         const start = new Date(result.lease_commencement);
@@ -2136,7 +2279,8 @@ export default function Home() {
                 </div>
               </div>
             </PropCard>
-            )}
+              );
+            })()}
 
             {/* Coordinates card */}
             <PropCard id="coordinates" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
@@ -2398,21 +2542,6 @@ export default function Home() {
                     )}
                   </div>
 
-                  {/* Green Belt */}
-                  <div className="flex-1">
-                    <p className="text-xs text-[var(--color-text-secondary)]/70 mb-1">Green Belt</p>
-                    {result.green_belt ? (
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)] shrink-0" />
-                        <span className="text-sm font-semibold text-[var(--color-text-primary)]">Within Green Belt</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-[var(--color-status-success)]/50 shrink-0" />
-                        <span className="text-sm text-[var(--color-text-secondary)]">Not in Green Belt</span>
-                      </div>
-                    )}
-                  </div>
                 </div>
 
                 {/* Radon */}
@@ -2878,228 +3007,8 @@ export default function Home() {
             })()}
             </PropCard>
 
-            {/* Connectivity (Broadband & Mobile) card */}
-            <PropCard id="connectivity" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/30 overflow-hidden h-full">
-                <div className="px-6 py-4 border-b border-[var(--color-border)]/60">
-                  <h2 className="font-orbitron text-[var(--color-accent)] text-xs tracking-[2px] uppercase">Connectivity</h2>
-                  <p className="text-xs text-[var(--color-text-secondary)]/70 mt-0.5">Ofcom Connected Nations · broadband & mobile coverage</p>
-                </div>
-                <div className="px-6 py-4 space-y-4">
-                  {!enrichSlowDone && !result.broadband && (
-                    <p className="text-sm text-[var(--color-text-secondary)]/60 animate-pulse">Loading connectivity data...</p>
-                  )}
-                  {enrichSlowDone && !result.broadband && !result.mobile && (
-                    <p className="text-sm text-[var(--color-text-secondary)]/60">No connectivity data available{!enrichSlowError ? " — Ofcom API key may not be configured" : ""}</p>
-                  )}
-
-                  {/* Broadband speeds */}
-                  {result.broadband && (() => {
-                    const bb = result.broadband;
-                    const maxDown = bb.max_download;
-                    const tier = maxDown != null
-                      ? maxDown >= 300 ? "Ultrafast" : maxDown >= 30 ? "Superfast" : maxDown >= 10 ? "Standard" : "Basic"
-                      : "Unknown";
-                    const tierColor = tier === "Ultrafast" ? "#39FF14" : tier === "Superfast" ? "#00F0FF" : tier === "Standard" ? "#FFB800" : tier === "Basic" ? "#FF3131" : "#94A3B8";
-                    return (
-                      <div>
-                        <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">Broadband</span>
-                          <span className="px-2 py-0.5 rounded-full text-xs font-semibold" style={{ background: `${tierColor}15`, color: tierColor }}>
-                            {tier}
-                          </span>
-                          {!bb.uprn_matched && (
-                            <span className="text-[10px] text-[var(--color-status-warning)]">postcode-level (UPRN not matched)</span>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          {[
-                            ["Max download", bb.max_download, "Mbps"],
-                            ["Max upload", bb.max_upload, "Mbps"],
-                            ["Superfast ↓", bb.superfast_download, "Mbps"],
-                            ["Ultrafast ↓", bb.ultrafast_download, "Mbps"],
-                          ].map(([label, val, unit]) => (
-                            <div key={label as string} className="rounded-lg bg-[var(--color-bg-surface)] px-3 py-2">
-                              <p className="text-[10px] text-[var(--color-text-secondary)] uppercase">{label as string}</p>
-                              <p className="text-sm font-semibold text-[var(--color-text-primary)]">
-                                {val != null && (val as number) >= 0 ? `${val} ${unit}` : "N/A"}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* Mobile coverage */}
-                  {result.mobile && (() => {
-                    const mob = result.mobile;
-                    const coverageLabel = (v: number | null) =>
-                      v === 4 ? "Strong" : v === 3 ? "Limited" : v === 0 ? "None" : "—";
-                    const coverageColor = (v: number | null) =>
-                      v === 4 ? "#39FF14" : v === 3 ? "#FFB800" : v === 0 ? "#FF3131" : "#94A3B8";
-                    return (
-                      <div>
-                        <div className="flex items-center gap-2 mb-3">
-                          <span className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">Mobile Coverage</span>
-                          {!mob.uprn_matched && (
-                            <span className="text-[10px] text-[var(--color-status-warning)]">postcode-level</span>
-                          )}
-                        </div>
-                        <div className="overflow-hidden rounded-lg border border-[var(--color-border)]">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="bg-[var(--color-bg-surface)]">
-                                <th className="px-3 py-2 text-left text-[var(--color-text-secondary)] font-medium">Operator</th>
-                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Data (outdoor)</th>
-                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Data (indoor)</th>
-                                <th className="px-3 py-2 text-center text-[var(--color-text-secondary)] font-medium">Voice</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {Object.entries(mob.operators).map(([name, cov], i) => (
-                                <tr key={name} className={i % 2 === 0 ? "bg-[var(--color-bg-panel)]" : "bg-[var(--color-bg-surface)]"}>
-                                  <td className="px-3 py-2 font-medium text-[var(--color-text-primary)]">{name}</td>
-                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.data_outdoor) }}>
-                                    {coverageLabel(cov.data_outdoor)}
-                                  </td>
-                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.data_indoor) }}>
-                                    {coverageLabel(cov.data_indoor)}
-                                  </td>
-                                  <td className="px-3 py-2 text-center font-semibold" style={{ color: coverageColor(cov.voice_indoor) }}>
-                                    {coverageLabel(cov.voice_indoor)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-                <div className="px-6 py-3 bg-[var(--color-bg-surface)] border-t border-[var(--color-border)]/60">
-                  <p className="text-[10px] text-[var(--color-text-secondary)]/60">Source: Ofcom Connected Nations. Predicted coverage — actual speeds may vary. Updated annually.</p>
-                </div>
-              </div>
-            </PropCard>
 
             {/* IMD (Deprivation) card */}
-            <PropCard id="imd" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="h-full rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 flex flex-col gap-3 overflow-hidden">
-                <div className="flex items-center gap-2">
-                  <h2 className="font-orbitron text-[var(--color-accent)] text-xs tracking-[2px] uppercase">Deprivation (IMD)</h2>
-                </div>
-                {!enrichSlowDone ? (
-                  <div className="flex items-center justify-center flex-1">
-                    <p className="text-sm text-[var(--color-text-secondary)]/60 animate-pulse">Loading IMD data...</p>
-                  </div>
-                ) : !result.imd ? (
-                  <div className="flex items-center justify-center flex-1">
-                    <p className="text-sm text-[var(--color-text-secondary)]/60">No IMD data available{result.lsoa_code && !result.lsoa_code.startsWith("E") ? " (England only)" : ""}</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
-                    {/* Overall rank + decile hero */}
-                    <div className="flex items-center gap-3 mb-1">
-                      <div className={`px-3 py-1.5 rounded-lg text-center font-bold text-lg ${
-                        (result.imd.overall_decile ?? 10) <= 3 ? "bg-[#FF3131]/15 text-[#FF3131]" :
-                        (result.imd.overall_decile ?? 10) <= 5 ? "bg-[#FFB800]/15 text-[#FFB800]" :
-                        "bg-[#39FF14]/15 text-[#39FF14]"
-                      }`}>
-                        {result.imd.overall_decile ?? "—"}
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-[var(--color-text-primary)]">
-                          Decile {result.imd.overall_decile} of 10
-                        </p>
-                        <p className="text-[10px] text-[var(--color-text-secondary)]">
-                          {(result.imd.overall_decile ?? 10) <= 3 ? "Most deprived" : (result.imd.overall_decile ?? 10) <= 5 ? "Below average" : "Least deprived"} — rank {result.imd.overall_rank?.toLocaleString() ?? "—"} of 32,844
-                        </p>
-                      </div>
-                    </div>
-                    {/* Domain breakdown */}
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                      {([
-                        ["Income", result.imd.income_decile],
-                        ["Employment", result.imd.employment_decile],
-                        ["Education", result.imd.education_decile],
-                        ["Health", result.imd.health_decile],
-                        ["Crime", result.imd.crime_decile],
-                        ["Housing", result.imd.housing_decile],
-                        ["Environment", result.imd.environment_decile],
-                      ] as [string, number | null][]).map(([label, dec]) => (
-                        <div key={label} className="flex items-center justify-between py-0.5">
-                          <span className="text-[10px] text-[var(--color-text-secondary)]">{label}</span>
-                          <div className="flex items-center gap-1">
-                            <div className="w-16 h-1.5 rounded-full bg-[var(--color-border)] overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${
-                                  (dec ?? 10) <= 3 ? "bg-[#FF3131]" : (dec ?? 10) <= 5 ? "bg-[#FFB800]" : "bg-[#39FF14]"
-                                }`}
-                                style={{ width: `${((dec ?? 0) / 10) * 100}%` }}
-                              />
-                            </div>
-                            <span className="text-[10px] font-mono text-[var(--color-text-primary)] w-4 text-right">{dec ?? "—"}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-[10px] text-[var(--color-text-secondary)]/60 mt-auto">Source: MHCLG English IMD 2019. Decile 1 = most deprived 10% of LSOAs.</p>
-                  </div>
-                )}
-              </div>
-            </PropCard>
-
-            {/* Nearby Schools card */}
-            <PropCard id="schools" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
-              <div className="h-full rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 flex flex-col gap-3 overflow-hidden">
-                <div className="flex items-center gap-2">
-                  <h2 className="font-orbitron text-[var(--color-accent)] text-xs tracking-[2px] uppercase">Nearby Schools</h2>
-                  {result.nearby_schools && result.nearby_schools.length > 0 && (
-                    <span className="text-[10px] text-[var(--color-text-secondary)] ml-auto">{result.nearby_schools.length} within 1.5 km</span>
-                  )}
-                </div>
-                {!result.nearby_schools || result.nearby_schools.length === 0 ? (
-                  <div className="flex items-center justify-center flex-1">
-                    <p className="text-sm text-[var(--color-text-secondary)]/60">No schools found within 1.5 km</p>
-                  </div>
-                ) : (
-                  <div className="flex-1 overflow-y-auto">
-                    <table className="w-full text-[10px]">
-                      <thead>
-                        <tr className="text-[var(--color-text-secondary)] border-b border-[var(--color-border)]">
-                          <th className="text-left py-1 font-semibold">School</th>
-                          <th className="text-left py-1 font-semibold">Phase</th>
-                          <th className="text-left py-1 font-semibold">Ages</th>
-                          <th className="text-left py-1 font-semibold">Ofsted</th>
-                          <th className="text-right py-1 font-semibold">Dist</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.nearby_schools.map((s, i) => {
-                          const ofstedColor = s.ofsted_rating === "Outstanding" ? "text-[#39FF14]"
-                            : s.ofsted_rating === "Good" ? "text-[#00F0FF]"
-                            : s.ofsted_rating === "Requires improvement" ? "text-[#FFB800]"
-                            : s.ofsted_rating === "Inadequate" ? "text-[#FF3131]"
-                            : "text-[var(--color-text-secondary)]/60";
-                          return (
-                            <tr key={s.urn || i} className={i % 2 === 0 ? "bg-[var(--color-surface)]" : ""}>
-                              <td className="py-1 pr-2 text-[var(--color-text-primary)] font-medium max-w-[160px] truncate" title={s.name}>{s.name}</td>
-                              <td className="py-1 pr-2 text-[var(--color-text-secondary)]">{s.phase}</td>
-                              <td className="py-1 pr-2 text-[var(--color-text-secondary)]">{s.low_age}\u2013{s.high_age}</td>
-                              <td className={`py-1 pr-2 font-semibold ${ofstedColor}`}>{s.ofsted_rating || "\u2014"}</td>
-                              <td className="py-1 text-right text-[var(--color-text-secondary)] font-mono">{s.distance_m < 1000 ? `${s.distance_m}m` : `${(s.distance_m / 1000).toFixed(1)}km`}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    <p className="text-[10px] text-[var(--color-text-secondary)]/60 mt-2">Source: DfE Get Information About Schools (GIAS). Ofsted ratings are legacy grades where available.</p>
-                  </div>
-                )}
-              </div>
-            </PropCard>
 
             </div>
 
@@ -3113,7 +3022,7 @@ export default function Home() {
               Direct Comparables
             </h2>
             <ComparableSearch
-              key={`building-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
+              key={`building-${result.uprn ?? result.postcode}`}
               mode="building"
               initialResult={buildingSearchResult}
               onSearchResult={setBuildingSearchResult}
@@ -3153,7 +3062,7 @@ export default function Home() {
               Wider Comparables
             </h2>
             <ComparableSearch
-              key={`wider-${result.uprn ?? result.postcode}-${currentCaseId ?? "new"}`}
+              key={`wider-${result.uprn ?? result.postcode}`}
               mode="outward"
               initialResult={outwardSearchResult}
               onSearchResult={setOutwardSearchResult}
@@ -3207,12 +3116,25 @@ export default function Home() {
                   <span className="ml-1 text-[var(--color-status-success)]">({adoptedComparables.length})</span>
                 )}
               </h2>
-              <button
-                onClick={() => setShowManualForm(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[var(--color-accent-pink)]/10 text-[var(--color-accent-pink)] hover:bg-[var(--color-accent-pink)]/20 transition-colors"
-              >
-                <span>✏️</span> Add Manual
-              </button>
+              <div className="flex items-center gap-2">
+                {adoptedComparables.length > 0 && (
+                  <button
+                    onClick={() => {
+                      adoptedComparables.forEach(c => { if (c.case_comp_id && currentCaseId) unadoptCompAPI(c); });
+                      setAdoptedComparables([]);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF3131]/40 bg-[#FF3131]/10 text-[#FF3131] hover:bg-[#FF3131]/25 transition-colors"
+                  >
+                    Unadopt All ({adoptedComparables.length})
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowManualForm(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#FF2D78]/40 bg-[var(--color-accent-pink)]/10 text-[var(--color-accent-pink)] hover:bg-[var(--color-accent-pink)]/20 transition-colors"
+                >
+                  <span>✏️</span> Add Manual
+                </button>
+              </div>
             </div>
             {adoptedComparables.length === 0 ? (
               <div className="text-center py-16 text-[var(--color-text-secondary)]/70 space-y-3">
@@ -3384,10 +3306,16 @@ export default function Home() {
             );
           })()}
 
-          {/* ── Tab 5: Report (Print Preview) ──────────────────────────────── */}
-          <div className="pb-8" style={{ display: activeTab === "report" ? undefined : "none" }}>
-            <ReportPreview result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} valuationDate={valuationDate} />
+          {/* ── Agentic Report tab — full AI-generated valuation report ── */}
+          <div className="pb-8" style={{ display: activeTab === "agentic_report" ? undefined : "none" }}>
+            <AgenticReportTab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} />
           </div>
+
+          {/* ── QA tab — AI quality assurance for report copies ── */}
+          <div className="pb-8" style={{ display: activeTab === "qa" ? undefined : "none" }}>
+            <QATab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} />
+          </div>
+
 
           {/* ── Map tab — full-bleed: edge-to-edge, fills remaining viewport ── */}
           {mapMounted && (
@@ -3456,7 +3384,7 @@ export default function Home() {
           </div>
           {/* ── Tab: Report Typing ─────────────────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
-            <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} />
+            <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} caseId={currentCaseId} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} />
           </div>
 
         </div>

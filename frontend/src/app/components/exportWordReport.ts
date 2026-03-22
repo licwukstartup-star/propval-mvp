@@ -78,7 +78,6 @@ export interface WordReportData {
   planning_flood_zone: string | null;
   listed_buildings: ListedBuilding[];
   conservation_areas: ConservationArea[];
-  green_belt: boolean;
   aonb: string | null;
   brownfield: BrownfieldSite[];
   coal_mining_high_risk: boolean;
@@ -145,7 +144,7 @@ function fmtK(n: number): string {
 }
 
 function fmtPsf(n: number): string {
-  return `£${Math.round(n)}/sqft`;
+  return `£${Math.round(n).toLocaleString("en-GB")}/sqft`;
 }
 
 function fmtDateGB(iso: string): string {
@@ -334,7 +333,6 @@ export async function exportWordReport(data: WordReportData) {
     ["NPPF Planning Flood Zone", data.planning_flood_zone ?? "Zone 1 (Low probability)", "planning.data.gov.uk"],
     ["Listed Buildings (75m)", data.listed_buildings.length === 0 ? "None within 75m" : data.listed_buildings.map(lb => `${lb.grade}: ${lb.name}`).join(" | "), "Historic England NHLE"],
     ["Conservation Area", data.conservation_areas.length === 0 ? "Not within a conservation area" : data.conservation_areas.map(ca => ca.name).join(", "), "planning.data.gov.uk"],
-    ["Green Belt", data.green_belt ? "Within Green Belt" : "Not in Green Belt", "Natural England"],
     ["AONB / National Landscape", data.aonb ?? "Not within an AONB", "Natural England"],
     ["Brownfield Land (100m)", data.brownfield.length === 0 ? "No brownfield sites within 100m" : `${data.brownfield.length} site(s) identified within 100m`, "planning.data.gov.uk"],
     ["Coal Mining - High Risk Area", data.coal_mining_high_risk ? "Within Development High Risk Area" : "Not in High Risk Area", "Mining Remediation Authority"],

@@ -67,11 +67,13 @@ function StepContent({ step, state }: { step: number; state: ReportTypingState }
       </div>
     )
     case 1: return <div className="space-y-4"><SummaryContent state={state} /></div>
-    case 2: return <div className="space-y-4"><InstructionsScopeContent state={state} /></div>
-    case 3: return <div className="space-y-4"><PropertyContent state={state} /></div>
-    case 4: return <div className="space-y-4"><TenureMarketContent state={state} /></div>
-    case 5: return <div className="space-y-4"><ValuationContent state={state} /></div>
-    case 6: return <div className="space-y-4"><AppendicesContent /></div>
+    case 2: return <div className="space-y-4"><InstructionsScopeContent state={state} page={1} /></div>
+    case 3: return <div className="space-y-4"><InstructionsScopeContent state={state} page={2} /></div>
+    case 4: return <div className="space-y-4"><PropertyContent state={state} page={1} /></div>
+    case 5: return <div className="space-y-4"><PropertyContent state={state} page={2} /></div>
+    case 6: return <div className="space-y-4"><TenureMarketContent state={state} /></div>
+    case 7: return <div className="space-y-4"><ValuationContent state={state} /></div>
+    case 8: return <div className="space-y-4"><AppendicesContent /></div>
     default: return null
   }
 }
@@ -96,8 +98,8 @@ export default function WizardView({ state }: { state: ReportTypingState }) {
         <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-primary)" }}>
           {WIZARD_STEPS[current].label}
         </h3>
-        <span className="text-xs font-mono" style={{ color: stepCompletions[current] === 100 ? "var(--color-status-success)" : "var(--color-accent)" }}>
-          {stepCompletions[current]}% complete
+        <span className="text-xs font-mono italic" style={{ color: state.overallCompletion === 100 ? "var(--color-status-success)" : "var(--color-accent)" }}>
+          Overall {state.overallCompletion}% complete
         </span>
       </div>
 
@@ -119,9 +121,6 @@ export default function WizardView({ state }: { state: ReportTypingState }) {
           </svg>
           Back
         </button>
-        <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-          Step {current + 1} of {WIZARD_STEPS.length}
-        </span>
         <button
           onClick={() => setCurrent(c => Math.min(WIZARD_STEPS.length - 1, c + 1))}
           disabled={current === WIZARD_STEPS.length - 1}
@@ -133,6 +132,18 @@ export default function WizardView({ state }: { state: ReportTypingState }) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
         </button>
+      </div>
+
+      {/* Floating step completion — positioned left of the centered Save Draft button */}
+      <div className="fixed bottom-6 z-50 text-xs font-mono italic px-3 py-2 rounded-lg pointer-events-none"
+        style={{
+          left: "calc(50% + 70px)",
+          color: stepCompletions[current] === 100 ? "var(--color-status-success)" : "var(--color-accent)",
+          backgroundColor: "var(--color-bg-base)",
+          border: `1px solid ${stepCompletions[current] === 100 ? "color-mix(in srgb, var(--color-status-success) 30%, transparent)" : "color-mix(in srgb, var(--color-accent) 30%, transparent)"}`,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+        }}>
+        {stepCompletions[current]}% complete
       </div>
     </div>
   )

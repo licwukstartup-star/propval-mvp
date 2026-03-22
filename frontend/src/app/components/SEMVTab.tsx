@@ -198,6 +198,7 @@ interface SimulationResult {
   p95: number;
   percentile: number;
   sigma: number;
+  mode: number;
   compsUsed: number;
 }
 
@@ -251,7 +252,7 @@ function runMonteCarlo(
     });
 
   if (compsWithData.length < 3) {
-    return { simMVs: [], mean: 0, stdDev: 0, p5: 0, p95: 0, percentile: 0, sigma: 0, compsUsed: compsWithData.length };
+    return { simMVs: [], mean: 0, stdDev: 0, p5: 0, p95: 0, percentile: 0, sigma: 0, mode: 0, compsUsed: compsWithData.length };
   }
 
   const n = compsWithData.length;
@@ -425,13 +426,36 @@ function runMonteCarlo(
   const percentile = Math.round((lo / N_SIMS) * 100);
   const sigma = stdDev > 0 ? (adoptedMV - mean) / stdDev : 0;
 
-  return { simMVs: Array.from(sorted), mean, stdDev, p5, p95, percentile, sigma, compsUsed: n };
+  // Compute mode: find the value at the peak of the distribution
+  // Use histogram binning on sorted array to find the densest region
+  const modeBins = 70;
+  const modeRange = sorted[N_SIMS - 1] - sorted[0] || 1;
+  const modeBinWidth = modeRange / modeBins;
+  let maxCount = 0;
+  let modeIdx = 0;
+  for (let b = 0; b < modeBins; b++) {
+    const lo2 = sorted[0] + b * modeBinWidth;
+    const hi2 = lo2 + modeBinWidth;
+    let count = 0;
+    for (let i = 0; i < N_SIMS; i++) {
+      if (sorted[i] >= lo2 && sorted[i] < hi2) count++;
+      else if (sorted[i] >= hi2) break;
+    }
+    if (count > maxCount) {
+      maxCount = count;
+      modeIdx = b;
+    }
+  }
+  const mode = Math.round((sorted[0] + (modeIdx + 0.5) * modeBinWidth) / 1000) * 1000;
+
+  return { simMVs: Array.from(sorted), mean, stdDev, p5, p95, percentile, sigma, mode, compsUsed: n };
 }
 
 // ── PDF Chart (SVG) ──────────────────────────────────────────────────────────
 function PdfChart({
   simMVs,
   mean,
+  mode,
   adoptedMV,
   p5,
   p95,
@@ -440,6 +464,7 @@ function PdfChart({
 }: {
   simMVs: number[];
   mean: number;
+  mode: number;
   adoptedMV: number;
   p5: number;
   p95: number;
@@ -603,6 +628,7 @@ function PdfChart({
   }
 
   const meanX = xScale(mean);
+  const modeX = xScale(mode);
   const mvX = xScale(displayMV);
 
   // X-axis labels — snap to clean round numbers so labels align with actual values
@@ -676,13 +702,40 @@ function PdfChart({
         );
       })}
 
-      {/* Mean dashed line */}
+      {/* Mean dashed line + label hugging the line inside chart */}
       <line
         x1={meanX} y1={PAD_T} x2={meanX} y2={PAD_T + plotH}
         stroke="var(--color-accent)" strokeWidth={1.5} strokeDasharray="6,4" opacity={0.7}
       />
-      <text x={meanX} y={PAD_T - 5} fill="var(--color-accent)" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif">
-        Mean {fmtFull(mean)}
+      <text
+        x={meanX + 5} y={PAD_T + 15}
+        fill="var(--color-accent)" fontSize={10} textAnchor="start" fontFamily="Inter, sans-serif" opacity={0.9}
+      >
+        Mean
+      </text>
+      <text
+        x={meanX + 5} y={PAD_T + 27}
+        fill="var(--color-accent)" fontSize={10} textAnchor="start" fontFamily="Inter, sans-serif" fontWeight="bold" opacity={0.9}
+      >
+        {fmtFull(mean)}
+      </text>
+
+      {/* Mode line + label hugging the line inside chart, lower position */}
+      <line
+        x1={modeX} y1={PAD_T} x2={modeX} y2={PAD_T + plotH}
+        stroke="var(--color-status-success)" strokeWidth={1.5} strokeDasharray="3,3" opacity={0.7}
+      />
+      <text
+        x={modeX - 5} y={PAD_T + plotH * 0.45}
+        fill="var(--color-status-success)" fontSize={10} textAnchor="end" fontFamily="Inter, sans-serif" opacity={0.85}
+      >
+        Mode
+      </text>
+      <text
+        x={modeX - 5} y={PAD_T + plotH * 0.45 + 12}
+        fill="var(--color-status-success)" fontSize={10} textAnchor="end" fontFamily="Inter, sans-serif" fontWeight="bold" opacity={0.85}
+      >
+        {fmtFull(mode)}
       </text>
 
       {/* Adopted MV — draggable line + marker */}
@@ -1102,11 +1155,11 @@ export default function SEMVTab({
   // Derive Monte Carlo size elasticity override from the unified prop
   const sizeElasticityOverride = compSizeElasticity === 0 ? null : compSizeElasticity / 100;
 
-  // Effective MV: use adopted MV from Report Typing, or fall back to indicative mid from comparables
-  const effectiveMV = hasMV ? adoptedMV! : (adoptedStats.indMid ?? null);
-  const hasEffectiveMV = effectiveMV != null && effectiveMV > 0;
+  // Seed MV for simulation: user-entered MV if available, otherwise indicative mid from comparables
+  const seedMV = hasMV ? adoptedMV! : (adoptedStats.indMid ?? null);
+  const hasSeedMV = seedMV != null && seedMV > 0;
 
-  const ready = hasLayer1 && hasAdopted && hasEffectiveMV && hasSize && compsWithSize.length >= 3;
+  const ready = hasLayer1 && hasAdopted && hasSeedMV && hasSize && compsWithSize.length >= 3;
 
   // Run simulation on selected Layer 1 (max 20 best comps)
   const sim = useMemo(() => {
@@ -1114,7 +1167,7 @@ export default function SEMVTab({
     return runMonteCarlo(
       selectedLayer1,
       subjectSizeSqft!,
-      effectiveMV!,
+      seedMV!,
       hpiTrend,
       valuationDate,
       subjectPropertyType,
@@ -1126,7 +1179,10 @@ export default function SEMVTab({
       epcBeta,
       floorPremium
     );
-  }, [selectedLayer1, subjectSizeSqft, effectiveMV, hpiTrend, valuationDate, subjectPropertyType, subjectHouseSubType, subjectEpcScore, subjectSaon, sizeElasticityOverride, hpiCorrelation, epcBeta, floorPremium, ready]);
+  }, [selectedLayer1, subjectSizeSqft, seedMV, hpiTrend, valuationDate, subjectPropertyType, subjectHouseSubType, subjectEpcScore, subjectSaon, sizeElasticityOverride, hpiCorrelation, epcBeta, floorPremium, ready]);
+
+  // Effective MV: use adopted MV from Report Typing, or default to the distribution mode
+  const effectiveMV = hasMV ? adoptedMV! : (sim?.mode ?? seedMV);
 
   // Build adopted set for quick lookup
   const adoptedIds = useMemo(() => {
@@ -1150,7 +1206,7 @@ export default function SEMVTab({
     const missing: string[] = [];
     if (!hasLayer1) missing.push("comparable search (minimum 3 results)");
     if (!hasAdopted) missing.push("adopted comparables");
-    if (!hasEffectiveMV) missing.push("adopted comparables with floor area (for indicative MV)");
+    if (!hasSeedMV) missing.push("adopted comparables with floor area (for indicative MV)");
     if (!hasSize) missing.push("subject property floor area");
     if (hasLayer1 && compsWithSize.length < 3) missing.push("at least 3 comparables with floor area data");
 
@@ -1176,7 +1232,18 @@ export default function SEMVTab({
     );
   }
 
-  const { simMVs, mean, stdDev, p5, p95, percentile, sigma } = sim!;
+  const { simMVs, mean, stdDev, p5, p95, mode } = sim!;
+  // Recalculate percentile and sigma against the effective MV (which may be mode, not seed)
+  const percentile = useMemo(() => {
+    if (!simMVs.length) return 0;
+    let lo = 0, hi = simMVs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (simMVs[mid] < effectiveMV!) lo = mid + 1; else hi = mid;
+    }
+    return Math.round((lo / simMVs.length) * 100);
+  }, [simMVs, effectiveMV]);
+  const sigma = stdDev > 0 ? (effectiveMV! - mean) / stdDev : 0;
 
   return (
     <div className="space-y-3 pb-6">
@@ -1243,8 +1310,8 @@ export default function SEMVTab({
               {[
                 { label: "Price Range", value: `${fmtK(adoptedStats.priceMin)}–${fmtK(adoptedStats.priceMax)}`, sub: `avg ${fmtK(adoptedStats.priceAvg)}` },
                 { label: "£/sqft", value: adoptedStats.psfMin != null ? `${fmtPsf(adoptedStats.psfMin)}–${fmtPsf(adoptedStats.psfMax!)}` : "—", sub: adoptedStats.psfAvg != null ? `avg ${fmtPsf(adoptedStats.psfAvg)}${adoptedStats.adjPsfAvg != null && hpiCorrelation > 0 && adoptedStats.adjPsfAvg !== Math.round(adoptedStats.psfAvg!) ? ` · adj ${fmtPsf(adoptedStats.adjPsfAvg)}` : ""}` : undefined },
-                { label: "Floor Area", value: adoptedStats.sizeMin != null ? `${Math.round(adoptedStats.sizeMin)}–${Math.round(adoptedStats.sizeMax!)} m²` : "—", sub: adoptedStats.sizeAvg != null ? `avg ${Math.round(adoptedStats.sizeAvg)} m²` : undefined },
-                { label: "Date Range", value: adoptedStats.dateMin ? fmtDateShort(adoptedStats.dateMin) : "—", sub: adoptedStats.dateMax ? `to ${fmtDateShort(adoptedStats.dateMax)}` : undefined },
+                { label: "Floor Area", value: adoptedStats.sizeMin != null ? `${Math.round(adoptedStats.sizeMin * 10.764).toLocaleString()}–${Math.round(adoptedStats.sizeMax! * 10.764).toLocaleString()} sqft` : "—", sub: adoptedStats.sizeAvg != null ? `avg ${Math.round(adoptedStats.sizeAvg * 10.764).toLocaleString()} sqft` : undefined },
+                { label: "Date Range", value: adoptedStats.dateMin ? `${fmtDateShort(adoptedStats.dateMin)}–${fmtDateShort(adoptedStats.dateMax ?? adoptedStats.dateMin)}` : "—" },
               ].map((s, i) => (
                 <div key={i} className="bg-[var(--color-bg-panel)] px-3 py-2">
                   <p className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide mb-0.5">{s.label}</p>
@@ -1273,10 +1340,11 @@ export default function SEMVTab({
       {/* Row 2: Monte Carlo stats (single row) + PDF chart side by side */}
       <div className="grid grid-cols-[280px_1fr] gap-3">
         {/* Left: Stats column */}
-        <div className="grid grid-rows-6 gap-1.5">
+        <div className="grid auto-rows-auto gap-1.5">
           {[
-            { label: "Adopted MV", value: fmtGBP(effectiveMV!), color: "var(--color-accent-pink)" },
-            { label: "Sim Mean", value: fmtGBP(mean), color: "var(--color-accent)" },
+            { label: "Adopted MV", value: subjectSizeSqft ? `${fmtGBP(effectiveMV!)} / £${Math.round(effectiveMV! / subjectSizeSqft).toLocaleString()} psf` : fmtGBP(effectiveMV!), color: "var(--color-accent-pink)" },
+            { label: "Mode (Peak)", value: subjectSizeSqft ? `${fmtGBP(mode)} / £${Math.round(mode / subjectSizeSqft).toLocaleString()} psf` : fmtGBP(mode), color: "var(--color-status-success)" },
+            { label: "Sim Mean", value: subjectSizeSqft ? `${fmtGBP(mean)} / £${Math.round(mean / subjectSizeSqft).toLocaleString()} psf` : fmtGBP(mean), color: "var(--color-accent)" },
             { label: "Std Dev (1σ)", value: fmtGBP(stdDev), color: "var(--color-text-primary)" },
             { label: "1σ Range (68%)", value: `${fmtGBP(mean - stdDev)} – ${fmtGBP(mean + stdDev)}`, color: "var(--color-text-primary)" },
             { label: "2σ Range (95%)", value: `${fmtGBP(mean - 2 * stdDev)} – ${fmtGBP(mean + 2 * stdDev)}`, color: "var(--color-text-primary)" },
@@ -1292,7 +1360,7 @@ export default function SEMVTab({
         {/* Right: PDF chart */}
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-3">
           <p className="text-[9px] tracking-[0.12em] text-[var(--color-text-secondary)] uppercase mb-1">Probability Density Function</p>
-          <PdfChart simMVs={simMVs} mean={mean} adoptedMV={effectiveMV!} p5={p5} p95={p95} stdDev={stdDev} onAdoptedMVChange={onAdoptedMVChange} />
+          <PdfChart simMVs={simMVs} mean={mean} mode={mode} adoptedMV={effectiveMV!} p5={p5} p95={p95} stdDev={stdDev} onAdoptedMVChange={onAdoptedMVChange} />
         </div>
       </div>
 
@@ -1414,7 +1482,7 @@ export default function SEMVTab({
 
       {/* 6. Methodology Footer */}
       <p className="text-[10px] text-[var(--color-text-muted)] text-center leading-relaxed max-w-2xl mx-auto">
-        SEMV V1.0 &middot; 10,000 Monte Carlo simulations &middot;
+        SEMV V1.0 &middot; 100,000 Monte Carlo simulations &middot;
         Auto-selected top {selectedLayer1.length} of {layer1Comps.length} comps by similarity &middot;
         Hard size gate &plusmn;25% &middot; Similarity-biased selection &amp; weighting &middot;
         HPI [{hpiCorrelation}%], Size &alpha; [{compSizeElasticity === 0 ? "-15% to 50%" : `fixed ${compSizeElasticity}%`}], EPC [{epcBeta}%], Floor [{floorPremium}%] &middot;

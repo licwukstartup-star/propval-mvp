@@ -34,7 +34,7 @@ PropVal is not a valuation tool — it is property intelligence infrastructure. 
 
 Three terminals:
 
-1. **Terminal 1 — Backend:** `cd backend && uvicorn app.main:app --reload --port 8000`
+1. **Terminal 1 — Backend:** `cd backend && uvicorn main:app --reload --port 8000`
 2. **Terminal 2 — Frontend:** `cd frontend && npm run dev`
 3. **Terminal 3 — Claude Code:** Working terminal
 
@@ -93,10 +93,9 @@ User enters postcode
 | 4 | Natural England SSSI/AONB | ArcGIS REST/WFS | BNG conversion may be needed. |
 | 5 | BGS Geology | lat/lon (WGS84) | Subsidence risk, radon data. |
 | 6 | NaPTAN Transport | Proximity search | PTAL proxy calculation. |
-| 7 | DfE Schools (GIAS) | Postcode proximity | Ofsted no longer gives single grades (Jan 2025 change). |
-| 8 | Companies House | Company number | 600 req/5min. API key required. |
-| 9 | FSA Hygiene Ratings | Postcode proximity | Neighbourhood amenity indicator. |
-| 10 | HMLR UK HPI | SPARQL | Already partially done — enhance with trend charts. |
+| 7 | Companies House | Company number | 600 req/5min. API key required. |
+| 8 | FSA Hygiene Ratings | Postcode proximity | Neighbourhood amenity indicator. |
+| 9 | HMLR UK HPI | SPARQL | Already partially done — enhance with trend charts. |
 
 See `UK_Property_Free_API_Research_Feb2026.docx` for full API documentation and endpoint references.
 
@@ -215,24 +214,27 @@ If any API fails: return cached data (even stale) with `data_stale: true` flag, 
 ## File Structure Reference
 
 ```
-propval/
+propval-mvp/
 ├── CLAUDE.md                                    ← You are here
-├── PropVal_Claude_Code_Mandate_v1.0.md          ← Engineering standards (READ FIRST)
-├── PROPVAL_REPORT_ARCHITECTURE.md               ← RICS report spec
+├── docs/
+│   ├── PropVal_Claude_Code_Mandate_v1.0.md      ← Engineering standards (READ FIRST)
+│   └── PROPVAL_REPORT_ARCHITECTURE.md           ← RICS report spec
 ├── backend/
-│   ├── app/
-│   │   ├── main.py                              ← FastAPI app, CORS, startup
-│   │   ├── config.py                            ← Environment variable settings
-│   │   ├── routers/                             ← Route handlers by domain
-│   │   ├── services/                            ← Business logic, API clients
-│   │   ├── models/                              ← Pydantic request/response models
-│   │   └── utils/                               ← Coordinate transforms, validators
+│   ├── main.py                                  ← FastAPI app, CORS, startup
+│   ├── routers/                                 ← Route handlers by domain
+│   ├── services/                                ← Business logic, API clients
+│   ├── tests/                                   ← Pytest test suite
+│   ├── data/                                    ← INSPIRE polygons, reference DBs
 │   └── requirements.txt
 ├── frontend/
-│   ├── app/                                     ← Next.js App Router pages
-│   ├── components/                              ← Reusable UI components
-│   ├── lib/                                     ← API utilities, helpers
-│   └── package.json
+│   └── src/
+│       ├── app/                                 ← Next.js App Router pages + components
+│       ├── components/                          ← Reusable UI components
+│       ├── lib/                                 ← API utilities, constants, Supabase client
+│       └── types/                               ← Shared TypeScript types
+├── supabase/
+│   └── migrations/                              ← Numbered SQL migration files
+├── scripts/                                     ← Backup, import, build utilities
 └── .gitignore
 ```
 
@@ -242,7 +244,7 @@ propval/
 
 ```bash
 # Start backend
-cd backend && uvicorn app.main:app --reload --port 8000
+cd backend && uvicorn main:app --reload --port 8000
 
 # Start frontend
 cd frontend && npm run dev

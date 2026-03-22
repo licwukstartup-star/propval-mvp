@@ -51,7 +51,7 @@ export default function AiBlock({ sectionKey, label, text, loading, editing, onG
         <div>
           <p className="text-xs italic mb-1.5" style={{ color: "var(--color-status-warning)" }}>AI-Assisted Draft — Requires Professional Review</p>
           <div className="text-sm leading-relaxed space-y-2" style={{ color: "var(--color-text-primary)" }}>
-            {text.split("\n\n").map((para, i) => (
+            {text.split(/\n\n|(?=•\s)/).map(p => p.trim()).filter(Boolean).map((para, i) => (
               <p key={i}>{para}</p>
             ))}
           </div>

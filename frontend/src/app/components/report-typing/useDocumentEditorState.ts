@@ -267,6 +267,7 @@ export function useDocumentEditorState(state: ReportTypingState) {
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3, 4] },
+        underline: false,
       }),
       Underline,
       TextAlign.configure({
@@ -308,6 +309,28 @@ export function useDocumentEditorState(state: ReportTypingState) {
       setDirty(true)
     },
   })
+
+  // ── Rebuild editor content when case/property changes ───────────────────
+  // Track the result address to detect case switches. When the address changes,
+  // the editor is displaying stale content from the previous case.
+  const resultAddressRef = useRef(state.result?.address)
+  useEffect(() => {
+    if (!editor) return
+    const currentAddr = state.result?.address
+    if (currentAddr && currentAddr !== resultAddressRef.current) {
+      resultAddressRef.current = currentAddr
+      const newContent = buildReportContent({
+        firmTemplate: state.firmTemplate as any,
+        meta: state.meta,
+        result: state.result,
+        aiSections: state.aiSections,
+        valuer: state.valuer,
+        adoptedComparables: state.adoptedComparables,
+      })
+      editor.commands.setContent(newContent)
+      setDirty(false)
+    }
+  }, [editor, state.result?.address, state.meta, state.result, state.aiSections, state.valuer, state.adoptedComparables, state.firmTemplate])
 
   // ── Auto-save every 15 seconds ──────────────────────────────────────────
 

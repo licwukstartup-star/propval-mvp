@@ -24,7 +24,7 @@ export function fmtK(n: number): string {
 }
 
 export function fmtPsf(n: number): string {
-  return `£${Math.round(n)}/sqft`;
+  return `£${Math.round(n).toLocaleString("en-GB")}/sqft`;
 }
 
 export function fmtDateShort(iso: string): string {

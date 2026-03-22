@@ -110,9 +110,36 @@ _DEFAULT_SECTION_PROMPTS: dict[str, str] = {
         "direction, and supply/demand dynamics. 200-350 words, formal third person."
     ),
     "valuation_considerations": (
-        "Write 2-4 paragraphs covering valuation considerations. Include positive "
-        "value factors, adverse or risk factors, tenure and legal constraints, "
-        "and a brief summary. 250-400 words, formal third person."
+        "Write a structured valuation considerations discussion based on the adopted comparable evidence "
+        "provided below. Follow this structure strictly:\n\n"
+        "PARAGRAPH 1 — OVERVIEW: State that in forming the opinion of Market Value as at the valuation date, "
+        "regard has been had to the comparable sales evidence set out in Section 3.5. Describe the comparables "
+        "collectively (e.g. property type, tenure, location pattern). State why they are considered appropriate.\n\n"
+        "PARAGRAPH 2 — PSF ANALYSIS: Using each comparable's price and floor area, state the analysed £/sq ft range. "
+        "Compare these rates against the subject property's own GIA (from SUBJECT PROPERTY GIA). Explain what drives "
+        "the variation (e.g. floor level, condition, size, aspect, date of transaction, specification).\n\n"
+        "PARAGRAPH 3 — STRONGEST COMPARABLE: Identify which comparable is most similar to the subject property "
+        "and explain why (closest in location, size, date, specification, or property type). State that this "
+        "transaction has been afforded significant weight.\n\n"
+        "PARAGRAPH 4 — SUPPORTING COMPARABLES: Explain that the remaining comparables have each been chosen "
+        "for relevance to distinct attributes. Note that collectively they provide a comprehensive basis for "
+        "valuation by aligning with various key characteristics.\n\n"
+        "PARAGRAPH 5 — SUBJECT POSITIONING: Describe how the subject property compares to the evidence — "
+        "its relative strengths and weaknesses (size, condition, floor level, aspect, amenities).\n\n"
+        "PARAGRAPH 6 — CONCLUSION: Draw together the evidence and market sentiment (reference Section 3.3). "
+        "State the adopted £/sq ft rate (from ADOPTED RATE) applied to the subject's GIA (from SUBJECT PROPERTY GIA), "
+        "producing the Market Value figure (from VALUER MARKET VALUE). Use the exact figures provided. "
+        "Present this as a fair, reasonable and defensible assessment.\n\n"
+        "FORMATTING RULES:\n"
+        "- Start each paragraph with a bullet point (•).\n"
+        "- Separate each bullet-point paragraph with a BLANK LINE between them.\n"
+        "- Each bullet paragraph must be its own block of text — do NOT run them together.\n\n"
+        "STYLE RULES:\n"
+        "- Third-person, present tense, formal surveyor register.\n"
+        "- Use 'We consider…', 'We understand…' for facts not personally verified.\n"
+        "- Never use superlatives or marketing language.\n"
+        "- 350-500 words total.\n"
+        "- The discussion MUST lead to the Market Value conclusion figure provided."
     ),
 }
 
@@ -181,6 +208,66 @@ def _build_prompt(data: dict, custom_prompts: dict[str, str] | None = None) -> t
             else:
                 lines.append(f"  - {date}: £{price}")
 
+    # ── Adopted comparables (for valuation_considerations) ──────────────
+    comps = data.get("adopted_comparables") or []
+    if comps:
+        lines.append(f"\nAdopted comparable evidence ({len(comps)} comparables):")
+        for ci, c in enumerate(comps, 1):
+            addr = c.get("address", "Unknown")
+            price = c.get("price")
+            date = c.get("transaction_date", "?")
+            prop_type = c.get("property_type", "")
+            tenure = c.get("tenure", "")
+            area_sqm = c.get("floor_area_sqm")
+            beds = c.get("bedrooms")
+            tier = c.get("tier_label", "")
+            epc = c.get("epc_rating", "")
+
+            price_str = f"£{price:,.0f}" if isinstance(price, (int, float)) else f"£{price}"
+            area_str = ""
+            psf_str = ""
+            if area_sqm:
+                try:
+                    sqm = float(area_sqm)
+                    sqft = sqm * 10.7639
+                    area_str = f", {sqm:.0f} sqm ({sqft:.0f} sqft)"
+                    if isinstance(price, (int, float)) and sqft > 0:
+                        psf = price / sqft
+                        psf_str = f", £{psf:.0f}/sqft"
+                except (ValueError, TypeError):
+                    pass
+
+            bed_str = f", {beds} bed" if beds else ""
+            lines.append(
+                f"  Comp {ci}: {addr} — {price_str}, {date}, {prop_type}{bed_str}, "
+                f"{tenure}{area_str}{psf_str}"
+                f"{f', {tier}' if tier else ''}{f', EPC {epc}' if epc else ''}"
+            )
+
+    # ── Subject property size (adopted GIA) ─────────────────────────────
+    gia_raw = data.get("gia_sqm") or data.get("floor_area_m2")
+    subject_sqm = None
+    subject_sqft = None
+    if gia_raw:
+        try:
+            subject_sqm = float(str(gia_raw))
+            subject_sqft = subject_sqm * 10.7639
+            lines.append(f"\nSUBJECT PROPERTY GIA: {subject_sqm:.0f} sqm ({subject_sqft:.0f} sqft)")
+        except (ValueError, TypeError):
+            pass
+
+    # ── Valuer market value (for valuation_considerations conclusion) ──
+    mv = data.get("market_value")
+    if mv:
+        try:
+            mv_num = float(str(mv).replace(",", "").replace("£", ""))
+            lines.append(f"VALUER MARKET VALUE: £{mv_num:,.0f}")
+            if subject_sqft and subject_sqft > 0:
+                adopted_psf = mv_num / subject_sqft
+                lines.append(f"ADOPTED RATE: £{adopted_psf:,.0f}/sqft (£{mv_num:,.0f} ÷ {subject_sqft:.0f} sqft)")
+        except (ValueError, TypeError):
+            lines.append(f"\nVALUER MARKET VALUE: {mv}")
+
     # ── HPI ────────────────────────────────────────────────────────────────
     hpi = data.get("hpi")
     if hpi and isinstance(hpi, dict):
@@ -246,8 +333,6 @@ def _build_prompt(data: dict, custom_prompts: dict[str, str] | None = None) -> t
         for ca in areas[:3]:
             if isinstance(ca, dict) and ca.get("name"):
                 lines.append(f"  - {ca['name']}")
-    if data.get("green_belt"):
-        lines.append("Green Belt: Yes — property is within Green Belt")
     if data.get("aonb"):
         lines.append(f"AONB: {data['aonb']}")
     if data.get("sssi"):
@@ -262,25 +347,6 @@ def _build_prompt(data: dict, custom_prompts: dict[str, str] | None = None) -> t
     if data.get("brownfield"):
         bf = data["brownfield"]
         lines.append(f"Brownfield: {len(bf)} site(s) nearby")
-
-    # ── Schools ────────────────────────────────────────────────────────────
-    schools = data.get("nearby_schools") or []
-    if schools:
-        lines.append(f"\nNearby schools ({len(schools)}):")
-        for sch in schools[:8]:
-            if isinstance(sch, dict):
-                name = sch.get("name", "Unknown")
-                phase = sch.get("phase", "")
-                ofsted = sch.get("ofsted_rating", "")
-                dist = sch.get("distance_miles") or sch.get("distance_km")
-                parts = [name]
-                if phase:
-                    parts.append(f"({phase})")
-                if ofsted:
-                    parts.append(f"— Ofsted: {ofsted}")
-                if dist is not None:
-                    parts.append(f"— {dist}mi" if sch.get("distance_miles") else f"— {dist}km")
-                lines.append(f"  - {' '.join(parts)}")
 
     # ── Broadband & connectivity ───────────────────────────────────────────
     bb = data.get("broadband")

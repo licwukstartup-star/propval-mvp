@@ -252,6 +252,18 @@ async def create_and_adopt(
     sb = get_user_supabase(user)
     firm_id = _get_firm_id(user)
 
+    # 0. Verify the user owns the target case (prevents cross-case contamination)
+    case_check = (
+        sb.table("cases")
+        .select("id")
+        .eq("id", body.case_id)
+        .eq("surveyor_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    if not case_check.data:
+        raise HTTPException(403, "Case not found or not owned by user")
+
     is_official = body.source in ("hmlr_ppd", "epc")
 
     # 1. Check for existing snapshot with same source_ref (avoid duplicates)

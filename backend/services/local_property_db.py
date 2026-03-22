@@ -29,7 +29,7 @@ import duckdb
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent.parent / "EPC PPD merge project" / "db" / "propval.duckdb"
+_DEFAULT_PATH = Path(__file__).resolve().parent.parent.parent / "Research" / "EPC PPD merge project" / "db" / "propval.duckdb"
 
 
 def _approx_build_year(age_band: str | None) -> int | None:
@@ -108,6 +108,147 @@ class LocalPropertyDB:
         # Cache all outward codes in memory for O(1) has_outward checks
         rows = self._con.execute("SELECT DISTINCT outward_code FROM matched").fetchall()
         self._outward_codes: frozenset[str] = frozenset(r[0] for r in rows if r[0])
+
+    def lookup_construction_age(self, uprn: str | None, postcode: str | None,
+                                address1: str | None = None) -> dict:
+        """Look up PropVal's best construction age estimate from the enriched table.
+
+        Returns dict with keys: age_best, age_estimated, age_source, age_band.
+        Matches by UPRN first, then falls back to ADDRESS1+POSTCODE.
+        """
+        result = {"age_best": None, "age_estimated": None, "age_source": None, "age_band": None}
+
+        with self._lock:
+            # Try UPRN match first (most reliable)
+            if uprn:
+                uprn_clean = str(uprn).strip()
+                row = self._con.execute("""
+                    SELECT age_best, age_estimated, age_source, CONSTRUCTION_AGE_BAND
+                    FROM construction_age
+                    WHERE UPRN = ?
+                    LIMIT 1
+                """, [uprn_clean]).fetchone()
+                if row:
+                    result["age_best"] = row[0]
+                    result["age_estimated"] = row[1]
+                    result["age_source"] = row[2]
+                    result["age_band"] = row[3]
+                    return result
+
+            # Fallback: ADDRESS1 + POSTCODE
+            if address1 and postcode:
+                row = self._con.execute("""
+                    SELECT age_best, age_estimated, age_source, CONSTRUCTION_AGE_BAND
+                    FROM construction_age
+                    WHERE POSTCODE = ? AND ADDRESS1 = ?
+                    LIMIT 1
+                """, [postcode.strip().upper(), address1.strip()]).fetchone()
+                if row:
+                    result["age_best"] = row[0]
+                    result["age_estimated"] = row[1]
+                    result["age_source"] = row[2]
+                    result["age_band"] = row[3]
+                    return result
+
+        return result
+
+    def query_sale_history(self, uprn: str | None, postcode: str | None,
+                           saon: str | None = None, paon: str | None = None) -> list[dict]:
+        """Look up sale history from both matched and unmatched PPD tables.
+
+        Matches by UPRN first. Falls back to SAON+postcode or PAON+postcode.
+        Returns list of dicts with: date, price, tenure, new_build, category.
+        """
+        results: list[dict] = []
+        with self._lock:
+            # Try UPRN match first (most reliable)
+            if uprn:
+                uprn_clean = str(uprn).strip()
+                rows = self._con.execute("""
+                    SELECT date_of_transfer, price, duration, old_new, ppd_category,
+                           saon, paon, street
+                    FROM matched
+                    WHERE UPRN = ?
+                    ORDER BY date_of_transfer DESC
+                """, [uprn_clean]).fetchall()
+                if rows:
+                    for r in rows:
+                        results.append({
+                            "date": str(r[0])[:10], "price": r[1],
+                            "tenure": "leasehold" if r[2] == "L" else "freehold" if r[2] == "F" else None,
+                            "new_build": r[3] == "Y",
+                            "category": "A (standard)" if r[4] == "A" else "B (non-standard)" if r[4] == "B" else r[4],
+                            "saon": r[5], "paon": r[6], "street": r[7],
+                        })
+                    return results
+
+            # Fallback: SAON + postcode (for flats)
+            if saon and postcode:
+                saon_upper = saon.strip().upper()
+                # Try exact match, then FLAT/APARTMENT swap
+                variants = [saon_upper]
+                if saon_upper.startswith("APARTMENT "):
+                    variants.append("FLAT " + saon_upper[len("APARTMENT "):])
+                elif saon_upper.startswith("APT "):
+                    variants.append("FLAT " + saon_upper[len("APT "):])
+                elif saon_upper.startswith("FLAT "):
+                    variants.append("APARTMENT " + saon_upper[len("FLAT "):])
+                # Also try just the number
+                m = re.search(r"(\d+\w*)", saon_upper)
+                if m:
+                    variants.append(m.group(1))
+
+                pc = postcode.strip().upper()
+                for table in ("matched", "unmatched"):
+                    placeholders = " OR ".join(["UPPER(saon) = ?"] * len(variants))
+                    rows = self._con.execute(f"""
+                        SELECT date_of_transfer, price, duration, old_new, ppd_category,
+                               saon, paon, street
+                        FROM {table}
+                        WHERE postcode = ? AND ({placeholders})
+                        ORDER BY date_of_transfer DESC
+                    """, [pc] + variants).fetchall()
+                    for r in rows:
+                        results.append({
+                            "date": str(r[0])[:10], "price": r[1],
+                            "tenure": "leasehold" if r[2] == "L" else "freehold" if r[2] == "F" else r[2],
+                            "new_build": r[3] == "Y",
+                            "category": "A (standard)" if r[4] == "A" else "B (non-standard)" if r[4] == "B" else r[4],
+                            "saon": r[5], "paon": r[6], "street": r[7],
+                        })
+                if results:
+                    # Deduplicate by date+price
+                    seen = set()
+                    deduped = []
+                    for r in results:
+                        key = (r["date"], r["price"])
+                        if key not in seen:
+                            seen.add(key)
+                            deduped.append(r)
+                    return deduped
+
+            # Fallback: PAON + postcode (for houses)
+            if paon and postcode:
+                pc = postcode.strip().upper()
+                paon_upper = paon.strip().upper()
+                for table in ("matched", "unmatched"):
+                    rows = self._con.execute(f"""
+                        SELECT date_of_transfer, price, duration, old_new, ppd_category,
+                               saon, paon, street
+                        FROM {table}
+                        WHERE postcode = ? AND UPPER(paon) = ?
+                        ORDER BY date_of_transfer DESC
+                    """, [pc, paon_upper]).fetchall()
+                    for r in rows:
+                        results.append({
+                            "date": str(r[0])[:10], "price": r[1],
+                            "tenure": "leasehold" if r[2] == "L" else "freehold" if r[2] == "F" else r[2],
+                            "new_build": r[3] == "Y",
+                            "category": "A (standard)" if r[4] == "A" else "B (non-standard)" if r[4] == "B" else r[4],
+                            "saon": r[5], "paon": r[6], "street": r[7],
+                        })
+
+        return results
 
     def _row_to_dict(self, row: tuple, cols: list[str]) -> dict:
         """Convert a DuckDB row + column names into a dict matching the ppd_cache format

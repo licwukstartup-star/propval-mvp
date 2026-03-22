@@ -2,9 +2,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import type { ComparableCandidate } from "./ComparableSearch";
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-const FULL_POSTCODE_RE = /[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i;
+import { API_BASE, FULL_POSTCODE_RE } from "@/lib/constants";
 
 interface Props {
   onAdopt: (comp: ComparableCandidate) => void;
@@ -520,7 +518,7 @@ export default function AdditionalComparable({ onAdopt, adoptedIds, valuationDat
             <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--color-border)] bg-[var(--color-bg-base)]">
               <div className="text-xs text-[var(--color-text-muted)]">
                 {form.price && form.floorAreaSqm && parseFloat(form.floorAreaSqm) > 0 && parseInt(form.price.replace(/,/g, ""), 10) > 0
-                  ? `£${Math.round(parseInt(form.price.replace(/,/g, ""), 10) / (parseFloat(form.floorAreaSqm) * 10.764))}/sqft`
+                  ? `£${Math.round(parseInt(form.price.replace(/,/g, ""), 10) / (parseFloat(form.floorAreaSqm) * 10.764)).toLocaleString()}/sqft`
                   : ""}
                 {addedCount > 0 && (
                   <span className="ml-3 text-[var(--color-status-success)]">{addedCount} added</span>

@@ -5,7 +5,7 @@ Convert the HMLR Registered Leases CSV into a local SQLite database.
 Usage (from project root):
     py -3.11 scripts/build_leases_db.py LEASES_FULL_2026_02.csv
 
-Output: backend/leases.db  (~300 MB, git-ignored)
+Output: backend/data/leases.db  (~300 MB, git-ignored)
 
 The backend queries this file directly — no Supabase required.
 """
@@ -62,7 +62,7 @@ def run(csv_path: str) -> None:
     if not src.exists():
         sys.exit(f"ERROR: File not found: {csv_path}")
 
-    db_path = Path(__file__).resolve().parent.parent / "backend" / "leases.db"
+    db_path = Path(__file__).resolve().parent.parent / "backend" / "data" / "leases.db"
     print(f"Source : {src}")
     print(f"Output : {db_path}")
     print()

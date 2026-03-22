@@ -53,21 +53,6 @@ export interface NearbyPlanningApp {
   distance_m: number | null;
 }
 
-export interface NearbySchool {
-  urn: string;
-  name: string;
-  type: string;
-  phase: string;
-  low_age: number;
-  high_age: number;
-  ofsted_rating: string | null;
-  ofsted_date: string | null;
-  postcode: string;
-  distance_m: number;
-  gender: string;
-  religious_character: string | null;
-}
-
 export interface PropertyResult {
   uprn: string | null;
   postcode: string | null;
@@ -83,6 +68,7 @@ export interface PropertyResult {
   street_name: string | null;
   floor_area_m2: number | null;
   construction_age_band: string | null;
+  construction_age_best: number | null;
   num_rooms: number | null;
   heating_type: string | null;
   inspection_date: string | null;
@@ -107,7 +93,6 @@ export interface PropertyResult {
   sssi: string[];
   aonb: string | null;
   ancient_woodland: AncientWoodland[];
-  green_belt: boolean;
   coal_mining_high_risk: boolean;
   coal_mining_in_coalfield: boolean;
   radon_risk: string | null;
@@ -120,7 +105,6 @@ export interface PropertyResult {
   brownfield: BrownfieldSite[];
   nearby_planning: NearbyPlanningApp[];
   nearby_planning_london_only: boolean;
-  nearby_schools: NearbySchool[];
   tenure: string | null;
   lease_commencement: string | null;
   lease_term_years: number | null;
@@ -172,7 +156,7 @@ export interface PropertyResult {
 
 export type CardSizeKey = "1x1" | "2x1" | "3x1" | "1x2" | "2x2";
 
-export type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "report" | "hpi" | "map" | "report_typing" | "semv";
+export type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "hpi" | "map" | "report_typing" | "semv" | "qa" | "agentic_report";
 
 export type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
 

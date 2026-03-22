@@ -4,13 +4,14 @@ import { useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from './AuthProvider'
 import { useTheme } from './ThemeProvider'
+import NotificationBell from '@/app/components/NotificationBell'
 
 function saveBeforeNavigate() {
   window.dispatchEvent(new CustomEvent('propval-before-navigate'));
 }
 
 export default function Navbar() {
-  const { user, role, isAdmin, signOut } = useAuth()
+  const { user, session, role, isAdmin, signOut } = useAuth()
   const { theme, toggleTheme } = useTheme()
   const router = useRouter()
   const signOutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -96,24 +97,26 @@ export default function Navbar() {
             onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'var(--color-accent-purple-dim)'; }}
             onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; }}
           >
-            Admin
+            Platform Admin
           </a>
         )}
 
         {/* ── Separator ────────────────────────────────────────── */}
         <span className="w-px h-4" style={{ backgroundColor: 'var(--color-border)' }} />
 
-        {/* ── User info ────────────────────────────────────────── */}
-        <span
-          className="text-[10px] px-2 py-1 rounded-full font-medium uppercase tracking-wide"
-          style={
-            isAdmin
-              ? { backgroundColor: 'var(--color-badge-admin-bg)', color: 'var(--color-badge-admin-text)' }
-              : { backgroundColor: 'var(--color-badge-surveyor-bg)', color: 'var(--color-badge-surveyor-text)' }
+        {/* ── Notifications ──────────────────────────────────── */}
+        <NotificationBell session={session} onNavigate={(link) => {
+          // Parse notification deep links (e.g., "/qa?copy=xxx")
+          if (link.startsWith("/qa")) {
+            const params = new URLSearchParams(link.split("?")[1] || "")
+            const copyId = params.get("copy")
+            window.dispatchEvent(new CustomEvent("propval-navigate-qa", { detail: { copyId } }))
+          } else {
+            router.push(link)
           }
-        >
-          {isAdmin ? 'Admin' : 'Surveyor'}
-        </span>
+        }} />
+
+        {/* ── User info ────────────────────────────────────────── */}
         <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
           {user.email}
         </span>
@@ -122,6 +125,7 @@ export default function Navbar() {
         <span className="w-px h-4" style={{ backgroundColor: 'var(--color-border)' }} />
 
         {/* ── Utility group ────────────────────────────────────── */}
+        <div id="navbar-customise-slot" className="flex items-center" />
         <button
           onClick={toggleTheme}
           aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}

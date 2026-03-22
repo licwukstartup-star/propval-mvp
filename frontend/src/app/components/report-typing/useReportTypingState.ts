@@ -2,14 +2,14 @@
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import type { FirmTemplate } from "../FirmTemplateSettings"
+import type { Signatory } from "./shared/SignatorySelect"
 import type { ReportMetadata, ValuerInputs, AiSectionKey, ReportContentData, ReportTypingProps, ReportTypingState } from "./types"
 import { EMPTY_META, EMPTY_VALUER } from "./constants"
 import { calculateAllCompletions } from "./completion"
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+import { API_BASE } from "@/lib/constants"
 
 export default function useReportTypingState({
-  result, adoptedComparables, session, reportContent, onReportContentChange, onSave, valuationDate: parentValuationDate,
+  result, adoptedComparables, session, caseId, reportContent, onReportContentChange, onSave, valuationDate: parentValuationDate,
 }: ReportTypingProps): ReportTypingState {
   /* ── Core state ───────────────────────────────────────────────────────── */
   const [meta, setMeta] = useState<ReportMetadata>({ ...EMPTY_META, ...reportContent?.metadata })
@@ -27,17 +27,34 @@ export default function useReportTypingState({
   const dirtyRef = useRef(false)
 
   const [firmTemplate, setFirmTemplate] = useState<FirmTemplate>({})
-  const [showFirmSettings, setShowFirmSettings] = useState(false)
+  const [showFirmSettings, setShowFirmSettingsRaw] = useState(false)
+  const [firmSettingsTarget, setFirmSettingsTarget] = useState<string | null>(null)
 
-  /* ── Load firm template on mount ──────────────────────────────────────── */
+  const setShowFirmSettings = useCallback((show: boolean) => {
+    setShowFirmSettingsRaw(show)
+    if (!show) setFirmSettingsTarget(null)
+  }, [])
+
+  const openFirmSettingsAt = useCallback((fieldKey: string) => {
+    setFirmSettingsTarget(fieldKey)
+    setShowFirmSettingsRaw(true)
+  }, [])
+
+  const [signatories, setSignatories] = useState<Signatory[]>([])
+  const [showSignatorySettings, setShowSignatorySettings] = useState(false)
+
+  /* ── Load firm template + signatories on mount ───────────────────────── */
   useEffect(() => {
     if (!session?.access_token) return
-    fetch(`${API_BASE}/api/firm-templates`, {
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    })
+    const h = { Authorization: `Bearer ${session.access_token}` }
+    fetch(`${API_BASE}/api/firm-templates`, { headers: h })
       .then(r => r.json())
       .then(data => setFirmTemplate(data))
       .catch(err => console.error("Failed to load firm template:", err))
+    fetch(`${API_BASE}/api/firm-signatories`, { headers: h })
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setSignatories(data) })
+      .catch(err => console.error("Failed to load signatories:", err))
   }, [session])
 
   /* ── Sync from parent ONLY on genuine case load (not our own edits) ── */
@@ -118,7 +135,13 @@ export default function useReportTypingState({
     if (!session?.access_token || !result) { console.log("[AI] Early return — missing session or result"); return }
     setAiLoading(prev => ({ ...prev, [key]: true }))
     try {
-      const body = { ...result, requested_section: key }
+      const body: Record<string, unknown> = { ...result, requested_section: key }
+      // For valuation considerations, include adopted comparables and valuer inputs
+      if (key === "valuation_considerations") {
+        body.adopted_comparables = adoptedComparables
+        body.market_value = valuer.market_value
+        body.gia_sqm = valuer.gia_sqm || result?.floor_area_m2
+      }
       console.log("[AI] Fetching from:", `${API_BASE}/api/property/ai-narrative`)
       const res = await fetch(`${API_BASE}/api/property/ai-narrative`, {
         method: "POST",
@@ -143,7 +166,7 @@ export default function useReportTypingState({
     } finally {
       setAiLoading(prev => ({ ...prev, [key]: false }))
     }
-  }, [session, result, wrappedOnReportContentChange])
+  }, [session, result, adoptedComparables, valuer, wrappedOnReportContentChange])
 
   const saveAiEdit = useCallback((key: AiSectionKey, text: string) => {
     setAiSections(prev => {
@@ -165,6 +188,7 @@ export default function useReportTypingState({
   const handleFirmSaved = useCallback((t: FirmTemplate) => {
     setFirmTemplate(t)
     setShowFirmSettings(false)
+    setFirmSettingsTarget(null)
   }, [])
 
   /* ── Save handler ─────────────────────────────────────────────────────── */
@@ -268,10 +292,10 @@ export default function useReportTypingState({
   )
 
   return {
-    meta, valuer, aiSections, aiLoading, aiEditing, firmTemplate, saving, saveFlash, showFirmSettings,
+    meta, valuer, aiSections, aiLoading, aiEditing, firmTemplate, signatories, showSignatorySettings, saving, saveFlash, showFirmSettings, firmSettingsTarget,
     updateMeta, updateValuer, updateValuerBatch, generateAiSection, saveAiEdit, setAiEditing,
-    setShowFirmSettings, handleFirmSaved, handleSave, numberToWords,
+    setShowFirmSettings, openFirmSettingsAt, setShowSignatorySettings, setSignatories, handleFirmSaved, handleSave, numberToWords,
     sectionCompletion, overallCompletion,
-    result, adoptedComparables, onSave,
+    result, adoptedComparables, caseId, onSave,
   }
 }

@@ -2,13 +2,11 @@
 
 import { useState, useEffect } from "react"
 import dynamic from "next/dynamic"
+import FirmSignatorySettings from "./FirmSignatorySettings"
 import FirmTemplateSettings from "./FirmTemplateSettings"
 import useReportTypingState from "./report-typing/useReportTypingState"
 import FloatingSaveButton from "./report-typing/shared/FloatingSaveButton"
-import ClassicView from "./report-typing/views/ClassicView"
 import WizardView from "./report-typing/views/WizardView"
-import DashboardView from "./report-typing/views/DashboardView"
-import DocumentView from "./report-typing/views/DocumentView"
 import type { ViewMode, ReportTypingProps } from "./report-typing/types"
 
 // Re-export types for backwards compatibility (used by ReportPreview.tsx)
@@ -28,11 +26,8 @@ const EditorView = dynamic(() => import("./report-typing/views/EditorView"), {
   ),
 })
 
-const VIEW_LABELS: Record<ViewMode, string> = {
-  classic: "Classic",
+const VIEW_LABELS: Partial<Record<ViewMode, string>> = {
   wizard: "Wizard",
-  dashboard: "Dashboard",
-  document: "Document",
   editor: "Editor",
 }
 
@@ -40,12 +35,13 @@ const LS_KEY = "propval-report-view-mode"
 
 export default function ReportTyping(props: ReportTypingProps) {
   const state = useReportTypingState(props)
-  const [viewMode, setViewMode] = useState<ViewMode>("classic")
+  const [viewMode, setViewMode] = useState<ViewMode>("wizard")
 
   // Load persisted view preference
   useEffect(() => {
     const saved = localStorage.getItem(LS_KEY) as ViewMode | null
     if (saved && saved in VIEW_LABELS) setViewMode(saved)
+    else if (saved === "classic" || saved === "dashboard" || saved === "document") setViewMode("wizard")
   }, [])
 
   const changeView = (mode: ViewMode) => {
@@ -61,8 +57,18 @@ export default function ReportTyping(props: ReportTypingProps) {
       {state.showFirmSettings && (
         <FirmTemplateSettings
           session={props.session}
-          onClose={() => state.setShowFirmSettings(false)}
+          onClose={() => { state.setShowFirmSettings(false) }}
           onSaved={state.handleFirmSaved}
+          scrollToField={state.firmSettingsTarget}
+        />
+      )}
+
+      {/* Signatory Registry Modal */}
+      {state.showSignatorySettings && (
+        <FirmSignatorySettings
+          session={props.session}
+          onClose={() => state.setShowSignatorySettings(false)}
+          onChanged={state.setSignatories}
         />
       )}
 
@@ -107,11 +113,8 @@ export default function ReportTyping(props: ReportTypingProps) {
       </div>
 
       {/* Active view */}
-      {viewMode === "classic" && <ClassicView state={state} />}
       {viewMode === "wizard" && <WizardView state={state} />}
-      {viewMode === "dashboard" && <DashboardView state={state} />}
-      {viewMode === "document" && <DocumentView state={state} />}
-      {viewMode === "editor" && <EditorView state={state} />}
+      {viewMode === "editor" && <EditorView state={state} session={props.session} caseId={props.caseId} />}
 
       {/* Floating save button */}
       {props.onSave && (

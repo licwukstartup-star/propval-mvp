@@ -311,7 +311,8 @@ const LANDUSE_STYLES: Record<string, { fill: string; stroke: string; label: stri
 
 function landUseStyle(feature: GeoJSON.Feature | undefined) {
   const landuse = (feature?.properties?.landuse ?? feature?.properties?.leisure) as string | undefined;
-  const style = LANDUSE_STYLES[landuse ?? ""] ?? LANDUSE_STYLES.commercial;
+  const style = LANDUSE_STYLES[landuse ?? ""];
+  if (!style) return { fillOpacity: 0, opacity: 0, weight: 0 };
   return {
     fillColor: style.fill,
     fillOpacity: 0.2,
@@ -323,58 +324,26 @@ function landUseStyle(feature: GeoJSON.Feature | undefined) {
 
 // ── Title boundary (INSPIRE) styles ──────────────────────────────────────────
 
-function titleBoundaryStyle(isSubject: boolean) {
-  return {
-    fillColor: isSubject ? "var(--color-accent)" : "var(--color-accent-pink)",
-    fillOpacity: isSubject ? 0.18 : 0.10,
-    color: isSubject ? "var(--color-accent)" : "var(--color-accent-pink)",
-    weight: isSubject ? 2.5 : 1.5,
-    opacity: isSubject ? 0.9 : 0.6,
-    dashArray: isSubject ? undefined : "4 4",
-  };
+function titleBoundaryStyle(tier: "subject" | "comp" | "neutral") {
+  if (tier === "subject") {
+    return { fillColor: "#FF9500", fillOpacity: 0.35, color: "#FF9500", weight: 4, opacity: 1.0 };
+  }
+  if (tier === "comp") {
+    return { fillColor: "#FF375F", fillOpacity: 0.20, color: "#FF375F", weight: 2, opacity: 0.7, dashArray: "4 4" };
+  }
+  // Neutral — all other title boundaries in the area
+  return { fillColor: "transparent", fillOpacity: 0, color: "#4ECDC4", weight: 1, opacity: 0.4 };
 }
 
 // ── Hook: fetch land use polygons from Overpass ───────────────────────────────
 
 function useLandUseGeoJSON(
-  lat: number, lon: number, enabled: boolean,
-  cache: GeoJSON.FeatureCollection | null, setCache: (v: GeoJSON.FeatureCollection | null) => void,
+  _lat: number, _lon: number, _enabled: boolean,
+  cache: GeoJSON.FeatureCollection | null, _setCache: (v: GeoJSON.FeatureCollection | null) => void,
 ) {
+  // Land use data is pre-fetched by page.tsx — this hook only consumes the cache
   const [geoKey, setGeoKey] = useState(0);
-  const loadingRef = useRef(false);
 
-  useEffect(() => {
-    if (cache || loadingRef.current) return;
-    if (!enabled) return;
-    loadingRef.current = true;
-
-    let cancelled = false;
-    const query = `[out:json][timeout:30];(way["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${lat},${lon});relation["landuse"~"retail|commercial|industrial|recreation_ground"](around:4828,${lat},${lon});way["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${lat},${lon});relation["leisure"~"park|garden|recreation_ground|playground|nature_reserve"](around:4828,${lat},${lon}););out body;>;out skel qt;`;
-
-    fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(query),
-    })
-      .then(r => {
-        if (!r.ok) throw new Error(`Overpass ${r.status}`);
-        return r.json();
-      })
-      .then(data => {
-        if (cancelled) return;
-        const fc = osmToGeoJSON(data);
-        console.log("[LandUse] features:", fc.features.length);
-        setCache(fc);
-        setGeoKey(k => k + 1);
-      })
-      .catch(err => {
-        console.warn("[LandUse] fetch failed:", err);
-      })
-      .finally(() => { loadingRef.current = false; });
-    return () => { cancelled = true; loadingRef.current = false; };
-  }, [lat, lon, enabled, cache, setCache]);
-
-  // Bump key whenever cache arrives (pre-fetch or local fetch)
   const prevCacheRef = useRef(cache);
   useEffect(() => {
     if (cache && cache !== prevCacheRef.current) setGeoKey(k => k + 1);
@@ -534,7 +503,7 @@ function ComparableClusterLayer({
 
     comparables.forEach((comp, i) => {
       // Prefer building-level coords (keyed by transaction_id) over postcode centroid
-      const coords = compCoords[comp.transaction_id || comp.postcode] || compCoords[comp.postcode];
+      const coords = compCoords[comp.transaction_id || comp.address] || compCoords[comp.postcode];
       if (!coords || coords.lat == null || coords.lon == null) return;
 
       const marker = L.marker([coords.lat, coords.lon], { icon: compIcon });
@@ -542,10 +511,14 @@ function ComparableClusterLayer({
         ? "£" + Math.round(comp.price / (comp.floor_area_sqm * 10.764)).toLocaleString("en-GB") + "/sqft"
         : null;
       const price = "£" + comp.price.toLocaleString("en-GB");
+      marker.bindTooltip(`${price} — ${comp.address}`, {
+        direction: "top", offset: [0, -10],
+        className: "propval-land-use-tooltip",
+      });
       const removeId = `remove-comp-${comp.transaction_id ?? i}`;
 
       marker.bindPopup(
-        `<div style="font-family:system-ui;min-width:270px;max-width:340px">
+        `<div style="font-family:system-ui;min-width:270px;max-width:660px;width:640px">
           <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;flex-wrap:wrap">
             <span style="font-size:13px;color:var(--color-accent-pink);text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Comp ${i + 1}</span>
             <span style="font-weight:700;font-size:16px;color:var(--color-text-primary)">${price}</span>
@@ -554,10 +527,10 @@ function ComparableClusterLayer({
           </div>
           <div style="font-size:14px;line-height:1.3;color:var(--color-text-primary);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${comp.address}</div>
           ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
-            ? `<div style="width:100%;height:180px;margin-bottom:${onRemoveRef.current ? 8 : 0}px;border-radius:8px;overflow:hidden;background:#1a1a2e">
+            ? `<div style="width:100%;height:360px;margin-bottom:${onRemoveRef.current ? 8 : 0}px;border-radius:8px;overflow:hidden;background:#1a1a2e">
                 <iframe
                   width="100%" height="100%" style="border:none;display:block"
-                  loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                  loading="eager" referrerpolicy="no-referrer-when-downgrade"
                   src="https://www.google.com/maps/embed/v1/streetview?location=${coords.lat},${coords.lon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
                 </iframe>
               </div>`
@@ -577,11 +550,17 @@ function ComparableClusterLayer({
             border-radius:6px;cursor:pointer;
           ">Remove Comparable</button>` : ""}
         </div>`,
-        { className: "propval-popup", maxWidth: 350, autoPanPadding: L.point(40, 40), autoPan: true, closeOnClick: false }
+        { className: "propval-popup", maxWidth: 660, autoPan: false, closeOnClick: false }
       );
 
-      if (onRemoveRef.current) {
-        marker.on("popupopen", () => {
+      marker.on("popupopen", () => {
+        // Center the map so popup appears in the middle of the screen
+        const px = map.project(marker.getLatLng(), map.getZoom());
+        px.y -= 160; // offset up to account for popup height above marker
+        const center = map.unproject(px, map.getZoom());
+        map.panTo(center, { animate: true, duration: 0.3 });
+
+        if (onRemoveRef.current) {
           const btn = document.getElementById(removeId);
           if (btn) {
             btn.onclick = () => {
@@ -589,8 +568,8 @@ function ComparableClusterLayer({
               map.closePopup();
             };
           }
-        });
-      }
+        }
+      });
 
       cluster.addLayer(marker);
     });
@@ -610,23 +589,27 @@ function ComparableClusterLayer({
       popupAnchor: [0, -16],
     });
     const subjectMarker = L.marker([subjectLat, subjectLon], { icon: sIcon, zIndexOffset: 10000 });
+    subjectMarker.bindTooltip(subjectAddress, {
+      direction: "top", offset: [0, -14],
+      className: "propval-land-use-tooltip",
+    });
     const floodBadge = subjectFloodRisk
       ? `<span style="font-size:10px;font-weight:600;color:${subjectFloodRisk === "High" ? "var(--color-status-danger)" : subjectFloodRisk === "Medium" ? "var(--color-status-warning)" : "var(--color-status-success)"}">${subjectFloodRisk}</span>` : "";
     const epcBadge = subjectEpc
       ? `<span style="font-size:10px;font-weight:700;color:var(--color-status-success)">${subjectEpc}</span>` : "";
     const badges = [epcBadge, floodBadge].filter(Boolean).join('<span style="color:var(--color-border);margin:0 4px">·</span>');
     subjectMarker.bindPopup(
-      `<div style="font-family:system-ui;min-width:270px;max-width:340px">
+      `<div style="font-family:system-ui;min-width:270px;max-width:660px;width:640px">
         <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;flex-wrap:wrap">
           <span style="font-size:13px;color:var(--color-accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700">Subject</span>
           ${badges}
         </div>
         <div style="font-size:14px;line-height:1.3;color:var(--color-text-primary);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${subjectAddress}</div>
         ${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY
-          ? `<div style="width:100%;height:180px;border-radius:8px;overflow:hidden;background:#1a1a2e">
+          ? `<div style="width:100%;height:360px;border-radius:8px;overflow:hidden;background:#1a1a2e">
               <iframe
                 width="100%" height="100%" style="border:none;display:block"
-                loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                loading="eager" referrerpolicy="no-referrer-when-downgrade"
                 src="https://www.google.com/maps/embed/v1/streetview?location=${subjectLat},${subjectLon}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_KEY}">
               </iframe>
             </div>`
@@ -640,17 +623,27 @@ function ComparableClusterLayer({
             </a>`
         }
       </div>`,
-      { className: "propval-popup", maxWidth: 350, autoPanPadding: L.point(40, 40), autoPan: true, closeOnClick: false }
+      { className: "propval-popup", maxWidth: 660, autoPan: false, closeOnClick: false }
     );
+    subjectMarker.on("popupopen", () => {
+      const px = map.project(subjectMarker.getLatLng(), map.getZoom());
+      px.y -= 160;
+      const center = map.unproject(px, map.getZoom());
+      map.panTo(center, { animate: true, duration: 0.3 });
+    });
     cluster.addLayer(subjectMarker);
 
-    // Close popups that auto-open during spiderfy animation (marker lands under cursor),
-    // but only if the popup opened within the spiderfy animation window (not user-initiated).
-    let spiderfyTime = 0;
-    cluster.on("spiderfied", () => { spiderfyTime = Date.now(); });
-    cluster.on("popupopen", () => {
-      if (Date.now() - spiderfyTime < 300) {
-        setTimeout(() => map.closePopup(), 50);
+    // Prevent popups auto-opening during spiderfy animation (marker lands under cursor).
+    // Disable popup interaction briefly during spiderfy, then re-enable.
+    let spiderfying = false;
+    cluster.on("spiderfied", () => {
+      spiderfying = true;
+      setTimeout(() => { spiderfying = false; }, 500);
+    });
+    cluster.on("popupopen", (e: L.LeafletEvent) => {
+      if (spiderfying) {
+        const popup = (e as unknown as { popup?: L.Popup }).popup;
+        if (popup) map.closePopup(popup);
       }
     });
 
@@ -766,58 +759,6 @@ function HeritageClusterLayer({ buildings }: { buildings: ListedBuildingMarker[]
   }, [map, buildings]);
 
   return null;
-}
-
-// ── Minimal OSM JSON → GeoJSON converter ──────────────────────────────────────
-
-function osmToGeoJSON(osm: { elements: Array<{ type: string; id: number; tags?: Record<string, string>; lat?: number; lon?: number; nodes?: number[]; members?: Array<{ type: string; ref: number; role: string }>; }> }): GeoJSON.FeatureCollection {
-  const nodes = new Map<number, [number, number]>();
-  const ways = new Map<number, { nodes: number[]; tags?: Record<string, string> }>();
-
-  for (const el of osm.elements) {
-    if (el.type === "node" && el.lat != null && el.lon != null) {
-      nodes.set(el.id, [el.lon, el.lat]);
-    }
-    if (el.type === "way") {
-      ways.set(el.id, { nodes: el.nodes ?? [], tags: el.tags });
-    }
-  }
-
-  const features: GeoJSON.Feature[] = [];
-
-  // Convert ways to polygons
-  for (const [, way] of ways) {
-    const tag = way.tags?.landuse ?? way.tags?.leisure;
-    if (!tag) continue;
-    const coords = way.nodes.map(nid => nodes.get(nid)).filter(Boolean) as [number, number][];
-    if (coords.length < 3) continue;
-    features.push({
-      type: "Feature",
-      properties: { landuse: way.tags?.landuse, leisure: way.tags?.leisure, name: way.tags?.name },
-      geometry: { type: "Polygon", coordinates: [coords] },
-    });
-  }
-
-  // Convert relations (multipolygons) - outer ways only for simplicity
-  for (const el of osm.elements) {
-    const tag = el.tags?.landuse ?? el.tags?.leisure;
-    if (el.type !== "relation" || !tag || !el.members) continue;
-    for (const member of el.members) {
-      if (member.type === "way" && member.role === "outer") {
-        const way = ways.get(member.ref);
-        if (!way) continue;
-        const coords = way.nodes.map(nid => nodes.get(nid)).filter(Boolean) as [number, number][];
-        if (coords.length < 3) continue;
-        features.push({
-          type: "Feature",
-          properties: { landuse: el.tags?.landuse, leisure: el.tags?.leisure, name: el.tags?.name },
-          geometry: { type: "Polygon", coordinates: [coords] },
-        });
-      }
-    }
-  }
-
-  return { type: "FeatureCollection", features };
 }
 
 // ── IMD Deprivation decile colours (1 = most deprived → 10 = least) ──────
@@ -1172,6 +1113,35 @@ function DeferredOverlays({
 
   return (
     <>
+      {/* Distance rings — always on, bottomest layer */}
+      {DISTANCE_RINGS.map(ring => {
+        const labelLat = subjectLat + ring.radius / 111320;
+        const ringLabelIcon = L.divIcon({
+          className: "",
+          html: `<div style="
+            font-size:9px;font-weight:700;color:#E0AAFF;
+            text-shadow:0 0 6px #BF5AF2,0 0 14px #BF5AF2,0 1px 2px #000;
+            letter-spacing:0.06em;white-space:nowrap;
+            pointer-events:none;
+          ">${ring.label}</div>`,
+          iconSize: [40, 14],
+          iconAnchor: [20, 14],
+        });
+        return (
+          <span key={ring.radius}>
+            <Circle
+              center={[subjectLat, subjectLon]}
+              radius={ring.radius}
+              pathOptions={{
+                color: "#BF5AF2", weight: 2, opacity: 0.8,
+                fill: false, dashArray: ring.dash,
+              }}
+            />
+            <Marker position={[labelLat, subjectLon]} icon={ringLabelIcon} interactive={false} />
+          </span>
+        );
+      })}
+
       {/* EA NaFRA2 flood risk WMS overlay */}
       {showFlood && (
         <WMSTileLayer url={FLOOD_WMS} layers="rofrs_4band" transparent={true} opacity={0.55} format="image/png" version="1.3.0" />
@@ -1201,40 +1171,6 @@ function DeferredOverlays({
       {showEducation && educationData && educationData.features && educationData.features.length > 0 && (
         <GeoJSON key={`edu-${educationKey}`} data={educationData} style={educationStyle} onEachFeature={onEachEducation} />
       )}
-
-      {/* Land use overlay (retail / commercial / industrial) */}
-      {showLandUse && landUseData && landUseData.features && landUseData.features.length > 0 && (
-        <GeoJSON key={`lu-${landUseKey}`} data={landUseData} style={landUseStyle} onEachFeature={onEachLandUse} />
-      )}
-
-      {/* Distance rings around subject with labels */}
-      {showRings && DISTANCE_RINGS.map(ring => {
-        const labelLat = subjectLat + ring.radius / 111320;
-        const ringLabelIcon = L.divIcon({
-          className: "",
-          html: `<div style="
-            font-size:9px;font-weight:700;color:var(--color-accent-purple-text);
-            text-shadow:0 0 4px var(--color-accent-purple),0 1px 2px #000;
-            letter-spacing:0.06em;white-space:nowrap;
-            pointer-events:none;
-          ">${ring.label}</div>`,
-          iconSize: [40, 14],
-          iconAnchor: [20, 14],
-        });
-        return (
-          <span key={ring.radius}>
-            <Circle
-              center={[subjectLat, subjectLon]}
-              radius={ring.radius}
-              pathOptions={{
-                color: "var(--color-accent-purple-text)", weight: 2, opacity: 0.8,
-                fillColor: "var(--color-accent-purple)", fillOpacity: 0.03, dashArray: ring.dash,
-              }}
-            />
-            <Marker position={[labelLat, subjectLon]} icon={ringLabelIcon} interactive={false} />
-          </span>
-        );
-      })}
 
       {/* Crime clusters */}
       {showCrime && crimeData && crimeData.map((cluster, i) => {
@@ -1270,6 +1206,11 @@ function DeferredOverlays({
           </CircleMarker>
         );
       })}
+
+      {/* Land use overlay — rendered last so it's always on top */}
+      {showLandUse && landUseData && landUseData.features && landUseData.features.length > 0 && (
+        <GeoJSON key={`lu-${landUseKey}`} data={landUseData} style={landUseStyle} onEachFeature={onEachLandUse} />
+      )}
     </>
   );
 }
@@ -1318,7 +1259,8 @@ export default function PropertyMap({
   const [imdToggle, setImdToggle] = useState(0);
   const [incToggle, setIncToggle] = useState(0);
   const [eduToggle, setEduToggle] = useState(0);
-  useEffect(() => { if (showLandUse) setLuToggle(n => n + 1); }, [showLandUse]);
+  const landUseReady = showLandUse && landUseData;
+  useEffect(() => { if (landUseReady) setLuToggle(n => n + 1); }, [landUseReady]);
   useEffect(() => { if (showDeprivation) setImdToggle(n => n + 1); }, [showDeprivation]);
   useEffect(() => { if (showIncome) setIncToggle(n => n + 1); }, [showIncome]);
   useEffect(() => { if (showEducation) setEduToggle(n => n + 1); }, [showEducation]);
@@ -1374,50 +1316,88 @@ export default function PropertyMap({
   }, []);
 
   const onEachLandUse = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
+    const p = layer as L.Path;
     const landuse = (feature.properties?.landuse ?? feature.properties?.leisure) as string;
     const name = feature.properties?.name as string | undefined;
-    const style = LANDUSE_STYLES[landuse] ?? LANDUSE_STYLES.commercial;
-    const label = name ? `<b>${name}</b><br/>${style.label}` : style.label;
-    (layer as L.Path).bindPopup(
-      `<div style="font-size:11px;color:var(--color-text-primary)">${label}</div>`,
+    const s = LANDUSE_STYLES[landuse];
+    if (!s) return;
+    // Tooltip on hover (sticky follows cursor)
+    p.bindTooltip(name ? `${name} — ${s.label}` : s.label, {
+      sticky: true, direction: "top", offset: [0, -8],
+      className: "propval-land-use-tooltip",
+    });
+    // Popup on click
+    p.bindPopup(
+      `<div style="font-size:11px;color:var(--color-text-primary)">${name ? `<b>${name}</b><br/>` : ""}${s.label}</div>`,
       { className: "propval-popup" }
     );
-    // Prevent click events from bubbling to layers below, which causes
-    // popups to fail when multiple polygon overlays are stacked.
-    (layer as L.Path).on("click", (e: L.LeafletMouseEvent) => {
-      L.DomEvent.stopPropagation(e);
-    });
+    // Highlight on hover
+    p.on("mouseover", () => { p.setStyle({ fillOpacity: 0.4, weight: 2.5 }); p.bringToFront(); });
+    p.on("mouseout", () => { p.setStyle({ fillOpacity: 0.2, weight: 1.5 }); });
+    p.on("click", (e: L.LeafletMouseEvent) => { L.DomEvent.stopPropagation(e); });
   }, []);
 
   // Title boundary (INSPIRE) style + popup per feature
-  const titleBoundaryKey = useMemo(() => titleBoundaryData?.features?.length ?? 0, [titleBoundaryData]);
+  const titleBoundaryKey = useMemo(() => {
+    if (!titleBoundaryData?.features?.length) return "empty";
+    const n = titleBoundaryData.features.length;
+    const first = titleBoundaryData.features[0]?.properties?.inspire_id ?? "";
+    const last = titleBoundaryData.features[n - 1]?.properties?.inspire_id ?? "";
+    return `${n}-${first}-${last}`;
+  }, [titleBoundaryData]);
+
+  // Compute inspire_ids for adopted comparables by matching nearest polygon centroid
+  const compInspireIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!titleBoundaryData?.features?.length || !adoptedComparables?.length) return ids;
+    for (const c of adoptedComparables) {
+      const clat = c.lat ?? compCoords[c.transaction_id || c.address]?.lat;
+      const clon = c.lon ?? compCoords[c.transaction_id || c.address]?.lon;
+      if (clat == null || clon == null) continue;
+      let bestId = "";
+      let bestDist = Infinity;
+      for (const f of titleBoundaryData.features) {
+        const flat = f.properties?.centroid_lat as number | undefined;
+        const flon = f.properties?.centroid_lon as number | undefined;
+        if (flat != null && flon != null) {
+          const d = Math.hypot(flat - clat, (flon - clon) * Math.cos(clat * Math.PI / 180));
+          if (d < bestDist) { bestDist = d; bestId = f.properties?.inspire_id ?? ""; }
+        }
+      }
+      // Only match if within ~50m (0.0005 degrees)
+      if (bestId && bestDist < 0.0005) ids.add(bestId);
+    }
+    return ids;
+  }, [titleBoundaryData, adoptedComparables, compCoords]);
 
   const titleBoundaryStyleFn = useCallback((feature: GeoJSON.Feature | undefined) => {
     const iid = feature?.properties?.inspire_id;
-    const isSubject = iid != null && iid === subjectInspireId;
-    return titleBoundaryStyle(isSubject);
-  }, [subjectInspireId]);
+    if (iid != null && iid === subjectInspireId) return titleBoundaryStyle("subject");
+    if (iid != null && compInspireIds.has(iid)) return titleBoundaryStyle("comp");
+    return titleBoundaryStyle("neutral");
+  }, [subjectInspireId, compInspireIds]);
 
   const onEachTitleBoundary = useCallback((feature: GeoJSON.Feature, layer: L.Layer) => {
     const area = feature.properties?.area_sqm as number | undefined;
-    const label = feature.properties?.label as string | undefined;
     const iid = feature.properties?.inspire_id;
     const isSubject = iid != null && iid === subjectInspireId;
+    const isComp = !isSubject && iid != null && compInspireIds.has(iid);
     const areaStr = area != null ? `${area.toLocaleString("en-GB", { maximumFractionDigits: 0 })} m²` : "—";
     const acresStr = area != null ? `${(area / 4047).toFixed(2)} acres` : "";
     const tag = isSubject
-      ? '<span style="color:var(--color-accent);font-weight:bold">Subject Property</span>'
-      : '<span style="color:var(--color-accent-pink)">Comparable</span>';
+      ? '<span style="color:#FF9500;font-weight:bold">Subject Property</span>'
+      : isComp
+      ? '<span style="color:#FF375F;font-weight:bold">Adopted Comparable</span>'
+      : '<span style="color:#4ECDC4">Title Boundary</span>';
     (layer as L.Path).bindPopup(
       `<div style="font-size:11px;color:var(--color-text-primary)">
         ${tag}<br/>
-        ${label ? `<b>${label}</b><br/>` : ""}
         <span style="font-size:10px">Site area: ${areaStr}</span><br/>
         ${acresStr ? `<span style="font-size:10px;color:var(--color-text-secondary)">${acresStr}</span>` : ""}
       </div>`,
       { className: "propval-popup" }
     );
-  }, [subjectInspireId]);
+  }, [subjectInspireId, compInspireIds]);
 
   const tile = TILE_LAYERS[tileLayer];
 
@@ -1532,9 +1512,7 @@ export default function PropertyMap({
           <ToggleBtn label="Education" active={showEducation} color="#3B82F6" onClick={() => setShowEducation(!showEducation)} />
         </ToggleBtnGroup>
         <ToggleBtn label="Crime" active={showCrime} color="#DC2626" onClick={() => setShowCrime(!showCrime)} />
-        <ToggleBtn label="Heritage" active={showHeritage} color="var(--color-status-warning)" onClick={() => setShowHeritage(!showHeritage)} />
-        <ToggleBtn label="Title" active={showTitleBoundary} color="var(--color-accent)" onClick={() => setShowTitleBoundary(!showTitleBoundary)} />
-        <ToggleBtn label="Rings" active={showRings} color="var(--color-accent-purple)" onClick={() => setShowRings(!showRings)} />
+        <ToggleBtn label="Title Boundary" active={showTitleBoundary} color="#4ECDC4" onClick={() => setShowTitleBoundary(!showTitleBoundary)} />
       </div>
 
       <MapContainer
@@ -1542,6 +1520,7 @@ export default function PropertyMap({
         center={[subjectLat, subjectLon]}
         zoom={15}
         scrollWheelZoom={true}
+        preferCanvas={true}
         style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
@@ -1602,8 +1581,7 @@ export default function PropertyMap({
         <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--color-text-muted)", marginBottom: 2 }}>Legend</div>
         <LegendItem color="var(--color-accent)" glow label="Subject property" />
         <LegendItem color="var(--color-accent-pink)" label="Comparable" />
-        {showTitleBoundary && <LegendItem color="var(--color-accent)" filled label="Title boundary" />}
-        {showRings && <LegendItem color="var(--color-accent-purple)" dashed label="Distance rings" />}
+        <LegendItem color="var(--color-accent-purple)" dashed label="Distance rings" />
         {showFlood && <LegendItem color="#3B82F6" filled label="Flood risk zone" />}
         {showRoadNoise && <LegendItem color="#EF4444" filled label="Road noise (Lden)" />}
         {showRailNoise && <LegendItem color="#A855F7" filled label="Rail noise (Lden)" />}

@@ -14,7 +14,7 @@ export const CAT_COLORS: Record<string, { bg: string; text: string; label: strin
 export const EMPTY_META: ReportMetadata = {
   report_reference: "", report_date: "", instruction_date: "", inspection_date: "",
   valuation_date: "", client_name: "", applicant_name: "", bank_reference: "",
-  preparer_name: "", counter_signatory: "",
+  preparer_name: "", preparer_qualifications: "", counter_signatory: "", counter_signatory_qualifications: "",
 }
 
 export const EMPTY_VALUER: ValuerInputs = {
@@ -98,12 +98,29 @@ export const SECTION_DEFS: SectionDef[] = [
   },
 ]
 
+/* ── Subsection → Firm Template field key mapping ────────────────────── */
+export const SUB_TO_FIRM_FIELD: Record<string, string> = {
+  "1.1": "instructions",
+  "1.3": "purpose",
+  "1.9–1.11": "responsibility",
+  "1.12": "expertise",
+  "1.13": "inspection",
+  "2.9": "environmental",
+  "2.15": "asbestos",
+  "2.18": "fire_risk",
+  "3.3": "ai_prompt_market",
+  "4.1": "methodology",
+  "4.6": "general_comments",
+}
+
 /* ── Wizard step labels ───────────────────────────────────────────────── */
 export const WIZARD_STEPS = [
   { label: "Cover", sectionIds: ["cover", "toc"] },
   { label: "Summary", sectionIds: ["summary"] },
-  { label: "Instructions & Scope", sectionIds: ["s1"] },
-  { label: "The Property", sectionIds: ["s2"] },
+  { label: "Engagement", sectionIds: ["s1"] },
+  { label: "Compliance", sectionIds: ["s1"] },
+  { label: "Description", sectionIds: ["s2"] },
+  { label: "Condition & Risk", sectionIds: ["s2"] },
   { label: "Tenure & Market", sectionIds: ["s3"] },
   { label: "Valuation", sectionIds: ["s4"] },
   { label: "Appendices", sectionIds: ["appendices"] },

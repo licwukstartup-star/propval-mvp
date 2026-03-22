@@ -2,8 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import type { ComparableCandidate } from "@/components/ComparableSearch";
-
-const API_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+import { API_BASE } from "@/lib/constants";
 
 // ---------------------------------------------------------------------------
 // Types

@@ -26,8 +26,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from routers.auth import get_current_user, require_admin
-from routers.rate_limit import limiter
+from .auth import get_current_user, require_admin
+from .rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 

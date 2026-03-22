@@ -23,7 +23,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "uprn_coords.db"
+_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "uprn_coords.db"
 
 
 class UPRNCoordService:

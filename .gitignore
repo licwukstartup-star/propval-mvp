@@ -30,11 +30,11 @@ LEASES_FULL_*.csv
 *.db
 *.db-shm
 *.db-wal
-backend/leases.db
+backend/data/
 
 # Debug / test artifacts
 backend/debug_search.log
-backend/test_epc.pdf
+backend/tests/test_epc.pdf
 tmp_*.json
 
 # IDE

@@ -15,7 +15,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com",
   "img-src 'self' data: https: blob:",
-  `connect-src 'self' ${backendUrl} https://*.supabase.co https://nominatim.openstreetmap.org https://api.postcodes.io https://epc.opendatacommunities.org https://*.arcgis.com https://services-eu1.arcgis.com https://environment.data.gov.uk https://historicengland.org.uk https://www.planning.data.gov.uk https://find-energy-certificate.service.gov.uk https://landregistry.data.gov.uk https://overpass-api.de https://data.police.uk`,
+  `connect-src 'self' ${backendUrl} https://*.supabase.co https://nominatim.openstreetmap.org https://api.postcodes.io https://epc.opendatacommunities.org https://*.arcgis.com https://services-eu1.arcgis.com https://environment.data.gov.uk https://historicengland.org.uk https://www.planning.data.gov.uk https://find-energy-certificate.service.gov.uk https://landregistry.data.gov.uk https://overpass-api.de https://overpass.kumi.systems https://data.police.uk`,
   "frame-src 'self' https://www.google.com",
   "frame-ancestors 'none'",
 ].join("; ") + ";";
