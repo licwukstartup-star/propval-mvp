@@ -539,13 +539,14 @@ export default function Home() {
 
   /** Bulk-sync local-only comps (no case_comp_id) to the API after first save. */
   async function syncLocalCompsToAPI(comps: ComparableCandidate[], caseId: string): Promise<ComparableCandidate[]> {
-    const results: ComparableCandidate[] = [];
-    for (const comp of comps) {
-      if (comp.case_comp_id) { results.push(comp); continue; } // already synced
-      const synced = await adoptCompAPI(comp, caseId);
-      results.push(synced ?? comp); // keep original if API fails
-    }
-    return results;
+    const settled = await Promise.all(
+      comps.map(comp =>
+        comp.case_comp_id
+          ? Promise.resolve(comp)
+          : adoptCompAPI(comp, caseId).then(synced => synced ?? comp)
+      )
+    );
+    return settled;
   }
 
   // ---------------------------------------------------------------------------
@@ -3417,7 +3418,7 @@ export default function Home() {
 
           {/* ── QA tab — AI quality assurance for report copies ── */}
           <div className="pb-8" style={{ display: activeTab === "qa" ? undefined : "none" }}>
-            <QATab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} />
+            <QATab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} visible={activeTab === "qa"} />
           </div>
 
 

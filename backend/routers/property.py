@@ -108,8 +108,15 @@ def _upsert_property_library(
         # For trackable sources (EPC, land_registry), archive the old version
         # if the payload has changed, building a history over time.
         _TRACK_HISTORY = {"epc", "land_registry"}
+        # Sources where null = API failure, not "no data". Don't cache nulls.
+        _SKIP_NULL = {"council_tax", "flood_risk", "radon"}
         if enrichment:
             for source, payload in enrichment.items():
+                # Skip caching null payloads for failure-prone sources
+                if source in _SKIP_NULL and isinstance(payload, dict) and all(
+                    v is None for v in payload.values()
+                ):
+                    continue
                 if source in _TRACK_HISTORY:
                     # Check if existing data differs
                     existing = (
@@ -141,6 +148,30 @@ def _upsert_property_library(
                 ).execute()
     except Exception as exc:
         logging.warning("property library upsert failed (non-fatal): %s", exc)
+
+
+def _upsert_enrichment_only(uprn: str, sources: dict[str, dict]) -> None:
+    """Write enrichment payloads to cache without touching the properties table.
+
+    Used by /enrich-slow to persist successful results so future /search calls
+    benefit from the cache instead of re-fetching.
+    """
+    sb = _get_supabase()
+    if sb is None or not uprn:
+        return
+    try:
+        for source, payload in sources.items():
+            sb.table("property_enrichment").upsert(
+                {
+                    "uprn": uprn,
+                    "data_source": source,
+                    "payload": payload,
+                    "fetched_at": "now()",
+                },
+                on_conflict="uprn,data_source",
+            ).execute()
+    except Exception as exc:
+        logging.warning("enrichment writeback failed (non-fatal): %s", exc)
 
 
 # Per-source cache TTLs in seconds (Mandate S3.3)
@@ -2519,7 +2550,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                     "coal_mining": coal,
                     "radon": {"risk": radon},
                     "brownfield": {"is_brownfield": brownfield},
-                    "council_tax": {"band": council_tax_band},
+                    # council_tax: deferred to /enrich-slow — only cached via writeback
                     "lease": lease_details,
                     "hpi": hpi,
                     "nearby_planning": nearby_planning,
@@ -3005,6 +3036,29 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
                         "ok" if broadband else "none", "ok" if mobile else "none",
                         "dec" + str(imd.get("overall_decile")) if imd else "none",
                         (time.monotonic() - t0) * 1000)
+
+        # Write successful results back to cache so future /search calls benefit
+        if body.uprn:
+            _writeback: dict[str, dict] = {}
+            if ct:
+                _writeback["council_tax"] = {"band": ct}
+            if flood.get("rivers_sea_risk") is not None:
+                _writeback["flood_risk"] = {
+                    "rivers_sea_risk": flood["rivers_sea_risk"],
+                    "surface_water_risk": flood["surface_water_risk"],
+                    "planning_flood_zone": pf,
+                }
+            if broadband:
+                _writeback["broadband"] = broadband
+            if mobile:
+                _writeback["mobile"] = mobile
+            if imd:
+                _writeback["imd"] = imd
+            if _writeback:
+                asyncio.create_task(asyncio.to_thread(
+                    _upsert_enrichment_only, body.uprn, _writeback
+                ))
+
         return {
             "council_tax_band": ct,
             "planning_flood_zone": pf,
