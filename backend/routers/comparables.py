@@ -649,8 +649,14 @@ def _parse_ppd_row(row: dict) -> dict | None:
         age_band = row.get("construction_age_band")
         if age_band:
             parsed["construction_age_band"] = _normalise_age_band(age_band)
-            parsed["build_year"] = row.get("age_best") or _approx_build_year(age_band)
-            parsed["building_era"] = derive_building_era(parsed.get("build_year"))
+        age_best = row.get("age_best")
+        if age_best:
+            parsed["age_best"] = age_best
+            parsed["build_year"] = age_best
+        elif age_band:
+            parsed["build_year"] = _approx_build_year(age_band)
+        if parsed.get("build_year"):
+            parsed["building_era"] = derive_building_era(parsed["build_year"])
 
     return parsed
 
@@ -786,9 +792,19 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
     addr = " ".join(filter(None, [raw["saon"], raw["paon"], raw["street"],
                                    raw["postcode"]])).title()
 
-    # Build year from EPC enrichment (preferred)
+    # Build year from EPC enrichment (preferred), then spine age_best
     build_year: int | None = raw.get("build_year")
     build_year_estimated = False
+    # Spine age_best as construction_age_best
+    age_best_val: int | None = None
+    if raw.get("age_best"):
+        try:
+            age_best_val = int(raw["age_best"])
+        except (ValueError, TypeError):
+            pass
+    # Fallback: use age_best as build_year if EPC didn't provide one
+    if build_year is None and age_best_val:
+        build_year = age_best_val
     # Fallback: new builds → approximate build year from the sale date.
     # Not EPC-verified but useful when enrichment wasn't possible.
     if build_year is None and raw.get("new_build"):
@@ -812,6 +828,7 @@ def _make_candidate(raw: dict, tier: int, tier_label: str,
         building_name         = raw.get("building_name"),
         building_era          = raw.get("building_era"),
         construction_age_band = raw.get("construction_age_band"),
+        construction_age_best = age_best_val,
         build_year            = build_year,
         build_year_estimated  = build_year_estimated,
         floor_area_sqm        = raw.get("floor_area_sqm"),
