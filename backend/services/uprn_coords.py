@@ -1,107 +1,99 @@
 """
 OS Open UPRN Coordinate Service
 ================================
-Provides building-level coordinate lookups via a local SQLite database
-containing ~41.5M UPRNs mapped to WGS84 lat/lon coordinates.
+Provides building-level coordinate lookups via Supabase PostGIS table
+containing ~6M London UPRNs mapped to WGS84 lat/lon coordinates.
 
 Source: OS Open UPRN (Ordnance Survey, Open Government Licence)
 Accuracy: Within building footprint (~1-5m)
-Coverage: All of Great Britain
+Coverage: London (Greater London bounding box)
 
 Contains OS data Crown copyright and database right 2026.
 
 Usage:
-    svc = UPRNCoordService.load()         # called once at startup
+    svc = UPRNCoordService()
     result = svc.lookup("10008331635")    # (lat, lon) or None
     results = svc.lookup_batch(["10008331635", "5300009236"])  # {uprn: (lat, lon)}
 """
 
 import logging
-import sqlite3
-import time
-from pathlib import Path
+import os
+from supabase import create_client
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "uprn_coords.db"
+_supabase_client = None
+
+
+def _get_sb():
+    global _supabase_client
+    if _supabase_client is None:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        if url and key:
+            _supabase_client = create_client(url, key)
+    return _supabase_client
 
 
 class UPRNCoordService:
-    """SQLite-backed UPRN → coordinate lookup service."""
+    """Supabase PostGIS-backed UPRN → coordinate lookup service."""
 
-    def __init__(self, db_path: Path):
-        self._db_path = db_path
-        self._con = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._con.execute("PRAGMA journal_mode=WAL")
-        self._con.execute("PRAGMA cache_size=-256000")  # 256 MB cache
-        self._con.execute("PRAGMA mmap_size=1073741824")  # 1 GB mmap
-        self._count = self._con.execute("SELECT count(*) FROM uprn_coords").fetchone()[0]
+    def __init__(self):
+        self._loaded = True
 
     def lookup(self, uprn: str | int | None) -> tuple[float, float] | None:
         """Return (lat, lon) for a single UPRN, or None if not found."""
         if uprn is None:
             return None
-        try:
-            uprn_int = int(str(uprn).strip())
-        except (ValueError, TypeError):
+        sb = _get_sb()
+        if sb is None:
             return None
-        row = self._con.execute(
-            "SELECT lat, lon FROM uprn_coords WHERE uprn = ?", (uprn_int,)
-        ).fetchone()
-        return (row[0], row[1]) if row else None
+        try:
+            uprn_str = str(uprn).strip()
+            resp = sb.rpc("lookup_uprn_coords", {"p_uprn": uprn_str}).execute()
+            if resp.data:
+                return (resp.data[0]["lat"], resp.data[0]["lon"])
+            return None
+        except Exception:
+            log.exception("UPRN coords lookup failed for %s", uprn)
+            return None
 
     def lookup_batch(self, uprns: list[str | int]) -> dict[str, tuple[float, float]]:
         """Return {uprn_str: (lat, lon)} for a batch of UPRNs."""
         if not uprns:
             return {}
+        sb = _get_sb()
+        if sb is None:
+            return {}
         result = {}
-        # Process in chunks of 500 (SQLite variable limit)
         clean = []
         for u in uprns:
             try:
-                clean.append((str(u).strip(), int(str(u).strip())))
+                clean.append(str(u).strip())
             except (ValueError, TypeError):
                 continue
 
+        # Process in chunks of 500
         for i in range(0, len(clean), 500):
             batch = clean[i:i + 500]
-            placeholders = ",".join("?" for _ in batch)
-            int_vals = [b[1] for b in batch]
-            rows = self._con.execute(
-                f"SELECT uprn, lat, lon FROM uprn_coords WHERE uprn IN ({placeholders})",
-                int_vals
-            ).fetchall()
-            for r in rows:
-                result[str(r[0])] = (r[1], r[2])
+            try:
+                resp = sb.rpc("lookup_uprn_coords_batch", {"p_uprns": batch}).execute()
+                for row in resp.data:
+                    result[str(row["uprn"])] = (row["lat"], row["lon"])
+            except Exception:
+                log.exception("UPRN coords batch lookup failed for chunk %d", i)
         return result
 
     @property
     def loaded(self) -> bool:
-        return self._con is not None
+        return self._loaded
 
     @property
     def count(self) -> int:
-        return self._count
+        return 5957125  # London UPRNs loaded
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "UPRNCoordService | None":
-        """Load the SQLite database and return a service instance, or None on failure."""
-        db_path = Path(path) if path else _DEFAULT_PATH
-        if not db_path.exists():
-            log.warning(
-                "UPRN coords: database not found at %s — UPRN coordinate lookup disabled. "
-                "Run script 21_build_uprn_coords_db.py to create it.",
-                db_path,
-            )
-            return None
-        try:
-            t0 = time.monotonic()
-            svc = cls(db_path)
-            log.info(
-                "UPRN coords: Loaded %s (%s UPRNs) in %.1fs",
-                db_path.name, f"{svc.count:,}", time.monotonic() - t0,
-            )
-            return svc
-        except Exception:
-            log.exception("UPRN coords: Failed to load database")
-            return None
+    def load(cls, path=None) -> "UPRNCoordService":
+        """Create service instance (no file loading needed — data is in Supabase)."""
+        log.info("UPRN coords: Using Supabase PostGIS table (uprn_coordinates)")
+        return cls()

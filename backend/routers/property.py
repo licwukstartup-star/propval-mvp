@@ -675,8 +675,8 @@ def _format_spine_sale(row: dict) -> dict:
 
 def _query_spine_sale_history_sync(uprn: str | None, postcode: str | None,
                                     saon: str | None, paon: str | None) -> list[dict]:
-    """Query spine transactions + unmatched_transactions for sale history.
-    Replaces local DuckDB + PPD cache + SPARQL fallbacks."""
+    """Query ppd_transactions for sale history.
+    All PPD records (matched + unmatched) are now in one table."""
     sb = _get_supabase()
     if sb is None:
         return []
@@ -707,7 +707,7 @@ def _query_spine_sale_history_sync(uprn: str | None, postcode: str | None,
     # 1. UPRN lookup (primary)
     if uprn:
         try:
-            resp = sb.table("transactions") \
+            resp = sb.table("ppd_transactions") \
                 .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
                 .eq("uprn", str(uprn)) \
                 .order("date_of_transfer", desc=True) \
@@ -725,58 +725,40 @@ def _query_spine_sale_history_sync(uprn: str | None, postcode: str | None,
     # 2. SAON + postcode (flats)
     if saon and postcode:
         pc = postcode.strip().upper()
-        for table in ("transactions", "unmatched_transactions"):
-            try:
-                # Query with first SAON variant (exact match)
-                resp = sb.table(table) \
-                    .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
-                    .eq("postcode", pc) \
-                    .order("date_of_transfer", desc=True) \
-                    .limit(100) \
-                    .execute()
-                rows = resp.data or []
-                if rows:
-                    filtered = _filter_by_saon(rows)
-                    results.extend([_format_spine_sale(r) for r in filtered])
-            except Exception as exc:
-                logging.warning("Spine sale history SAON error (%s): %s", table, exc)
+        try:
+            resp = sb.table("ppd_transactions") \
+                .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
+                .eq("postcode", pc) \
+                .order("date_of_transfer", desc=True) \
+                .limit(100) \
+                .execute()
+            rows = resp.data or []
+            if rows:
+                filtered = _filter_by_saon(rows)
+                results = [_format_spine_sale(r) for r in filtered]
+        except Exception as exc:
+            logging.warning("Spine sale history SAON error: %s", exc)
         if results:
-            # Deduplicate by date+price
-            seen: set[tuple] = set()
-            deduped = []
-            for r in results:
-                key = (r["date"], r["price"])
-                if key not in seen:
-                    seen.add(key)
-                    deduped.append(r)
-            return deduped
+            return results
 
     # 3. PAON + postcode (houses — no SAON)
     if paon and postcode and not saon:
         pc = postcode.strip().upper()
         paon_upper = paon.strip().upper()
-        for table in ("transactions", "unmatched_transactions"):
-            try:
-                resp = sb.table(table) \
-                    .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
-                    .eq("postcode", pc) \
-                    .eq("paon", paon_upper) \
-                    .order("date_of_transfer", desc=True) \
-                    .limit(50) \
-                    .execute()
-                rows = resp.data or []
-                results.extend([_format_spine_sale(r) for r in rows])
-            except Exception as exc:
-                logging.warning("Spine sale history PAON error (%s): %s", table, exc)
+        try:
+            resp = sb.table("ppd_transactions") \
+                .select("date_of_transfer, price, duration, old_new, ppd_type, saon, paon, street") \
+                .eq("postcode", pc) \
+                .eq("paon", paon_upper) \
+                .order("date_of_transfer", desc=True) \
+                .limit(50) \
+                .execute()
+            rows = resp.data or []
+            results = [_format_spine_sale(r) for r in rows]
+        except Exception as exc:
+            logging.warning("Spine sale history PAON error: %s", exc)
         if results:
-            seen2: set[tuple] = set()
-            deduped2 = []
-            for r in results:
-                key = (r["date"], r["price"])
-                if key not in seen2:
-                    seen2.add(key)
-                    deduped2.append(r)
-            return deduped2
+            return results
 
     return results
 
@@ -1429,22 +1411,32 @@ def _uprn_coords(request, uprn: str | None) -> dict:
 
 
 def _lookup_age_best(request, best: dict) -> int | None:
-    """Look up PropVal's best construction age estimate from Supabase spine."""
+    """Look up PropVal's best construction age estimate from construction_age table."""
+    lmk_key = best.get("lmk_key")
     uprn = best.get("uprn")
-    if not uprn:
-        return None
     try:
         sb = _get_supabase()
         if sb is None:
             return None
-        resp = sb.table("transactions") \
-            .select("age_best") \
-            .eq("uprn", str(uprn)) \
-            .not_.is_("age_best", "null") \
-            .limit(1) \
-            .execute()
-        if resp.data and resp.data[0].get("age_best"):
-            return int(resp.data[0]["age_best"])
+        # Try by lmk_key first (direct match)
+        if lmk_key:
+            resp = sb.table("construction_age") \
+                .select("age_best") \
+                .eq("lmk_key", str(lmk_key)) \
+                .limit(1) \
+                .execute()
+            if resp.data and resp.data[0].get("age_best"):
+                return int(resp.data[0]["age_best"])
+        # Fallback: query via VIEW by UPRN
+        if uprn:
+            resp = sb.table("transactions") \
+                .select("age_best") \
+                .eq("uprn", str(uprn)) \
+                .not_.is_("age_best", "null") \
+                .limit(1) \
+                .execute()
+            if resp.data and resp.data[0].get("age_best"):
+                return int(resp.data[0]["age_best"])
         return None
     except Exception as exc:
         logging.warning("age_best error: %s", exc)
@@ -2362,7 +2354,7 @@ async def search_property(request: Request, body: SearchRequest, _user: dict = D
                         inferred_building_name = lr_paon.title()
                         break
 
-        # Sale history from spine tables (transactions + unmatched_transactions)
+        # Sale history from ppd_transactions table
         sparql_saon = parts.get("saon")
         sparql_paon = parts.get("paon")
         sales: list[dict] = []
@@ -3298,7 +3290,7 @@ def _autocomplete_from_supabase_sync(pc: str) -> list[dict]:
         pass
     # Fallback to direct table query (if RPC not yet deployed)
     try:
-        resp = sb.table("epc_cache") \
+        resp = sb.table("epc_certificates") \
             .select("address1, address2, address3, address, postcode, uprn") \
             .eq("postcode", pc) \
             .limit(2000) \

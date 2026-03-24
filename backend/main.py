@@ -39,18 +39,10 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Download reference datasets once at startup before serving requests."""
-    import asyncio
-    try:
-        app.state.inspire = await asyncio.to_thread(InspireService.load)
-    except Exception as exc:
-        logging.warning("INSPIRE service failed to load — INSPIRE lookup will be unavailable: %s", exc)
-        app.state.inspire = None
-    try:
-        app.state.uprn_coords = await asyncio.to_thread(UPRNCoordService.load)
-    except Exception as exc:
-        logging.warning("UPRN coord service failed to load: %s", exc)
-        app.state.uprn_coords = None
+    """Initialise services at startup."""
+    # INSPIRE + UPRN coords now served from Supabase PostGIS — no file loading needed
+    app.state.inspire = InspireService.load()
+    app.state.uprn_coords = UPRNCoordService.load()
     # DuckDB local_db removed — all property data served from Supabase spine tables
     await news_router.start_background_refresh()
     await news_router.start_market_refresh()
