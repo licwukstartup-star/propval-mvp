@@ -144,3 +144,52 @@ CREATE INDEX IF NOT EXISTS idx_epc_postcode ON epc_certificates(postcode);
 CREATE INDEX IF NOT EXISTS idx_epc_outward ON epc_certificates(outward_code);
 CREATE INDEX IF NOT EXISTS idx_epc_uprn ON epc_certificates(uprn) WHERE uprn IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_epc_address ON epc_certificates(postcode, address1, address2);
+
+-- 10. Drop epc_addresses (867MB) — redundant with epc_certificates postcode index
+-- Autocomplete RPC updated to query epc_certificates directly
+DROP TABLE IF EXISTS epc_addresses;
+
+-- 11. Update autocomplete RPC to use epc_certificates (replaces epc_addresses)
+CREATE OR REPLACE FUNCTION autocomplete_by_postcode(pc TEXT)
+RETURNS TABLE (address1 TEXT, address2 TEXT, address3 TEXT, address TEXT, postcode TEXT, uprn TEXT)
+LANGUAGE sql STABLE
+SET statement_timeout = '5s'
+AS $$
+    SELECT DISTINCT ON (e.address1, e.address2, e.address3)
+        e.address1, e.address2, e.address3,
+        e.address, e.postcode, e.uprn
+    FROM epc_certificates e
+    WHERE e.postcode = pc
+    ORDER BY e.address1, e.address2, e.address3, e.lodgement_date DESC NULLS LAST
+    LIMIT 2000;
+$$;
+
+-- 12. INSPIRE polygon RPC functions
+CREATE OR REPLACE FUNCTION get_inspire_polygons(p_ids TEXT[])
+RETURNS TABLE (inspire_id TEXT, area_sqm NUMERIC, geojson TEXT)
+LANGUAGE sql STABLE AS $$
+    SELECT inspire_id, area_sqm, ST_AsGeoJSON(boundary)::TEXT AS geojson
+    FROM title_boundaries
+    WHERE inspire_id = ANY(p_ids);
+$$;
+
+CREATE OR REPLACE FUNCTION get_inspire_polygons_in_radius(
+    p_lon FLOAT, p_lat FLOAT, p_radius FLOAT, p_limit INT DEFAULT 8000
+)
+RETURNS TABLE (inspire_id TEXT, area_sqm NUMERIC, centroid_lat FLOAT, centroid_lon FLOAT, geojson TEXT)
+LANGUAGE sql STABLE
+SET statement_timeout = '15s'
+AS $$
+    SELECT
+        tb.inspire_id, tb.area_sqm,
+        ST_Y(tb.centroid)::FLOAT AS centroid_lat,
+        ST_X(tb.centroid)::FLOAT AS centroid_lon,
+        ST_AsGeoJSON(tb.boundary)::TEXT AS geojson
+    FROM title_boundaries tb
+    WHERE tb.centroid && ST_Expand(
+        ST_SetSRID(ST_MakePoint(p_lon, p_lat), 4326),
+        p_radius / 111000.0
+    )
+    ORDER BY tb.centroid <-> ST_SetSRID(ST_MakePoint(p_lon, p_lat), 4326)
+    LIMIT p_limit;
+$$;
