@@ -99,6 +99,7 @@ class UpdateCaseRequest(BaseModel):
     status: str | None = None
     comparables: list | None = None
     search_results: dict | None = None
+    property_data: dict | None = None      # allow updating snapshot (e.g. manual overrides for no-EPC)
     valuation_date: str | None = None
     valuation_basis: str | None = None
     hpi_correlation: float | None = None
@@ -237,6 +238,9 @@ async def update_case(
             )
     else:
         updates = {k: v for k, v in body.model_dump().items() if v is not None}
+        # Map property_data to the DB column property_snapshot
+        if "property_data" in updates:
+            updates["property_snapshot"] = updates.pop("property_data")
         if not updates:
             raise HTTPException(400, "Nothing to update")
 

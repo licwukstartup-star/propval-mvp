@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import { EpcBadge } from "./components/EpcBadge";
 import PropCard from "./components/PropCard";
 import HpiAutoFetch from "./components/HpiAutoFetch";
-import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard } from "@/components/ComparableSearch";
+import ComparableSearch, { type ComparableCandidate, type SearchResponse, CompCard, CompTableHeader, COMP_GRID, EPC_TEXT, IMD_COLOURS } from "@/components/ComparableSearch";
 import ManualComparableForm from "@/components/ManualComparableForm";
 import AdditionalComparable from "@/components/AdditionalComparable";
 
@@ -27,16 +27,18 @@ import { API_BASE, FULL_POSTCODE_RE } from "@/lib/constants";
 import { formatPrice, fmtDate, yearsMonths, fmtK, fmtPsf, fmtDateShort } from "@/lib/formatters";
 import { planningDecisionStyle, FLOOD_STYLE, GRADE_STYLE, ADOPTED_TIER_STYLE, CARD_SIZES_KEY, PROP_CARD_DEFAULTS } from "@/lib/styles";
 import { hpiKeyForComp, computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjustments";
+import { useSidebar } from "@/contexts/SidebarContext";
 
 const PropertyMap = dynamic(() => import("./components/PropertyMap"), { ssr: false });
 import type { CrimeCluster } from "./components/PropertyMap";
 const MiniMap = dynamic(() => import("./components/MiniMap"), { ssr: false });
 
-const DEFAULT_TAB_ORDER: TabKey[] = ["property", "map", "hpi", "comparables", "wider", "additional", "adopted", "semv", "report_typing", "agentic_report", "qa"];
-const COMP_CLUSTER_TABS: TabKey[] = ["comparables", "wider", "additional", "adopted"];
+
+
 
 export default function Home() {
   const { session, isAdmin } = useAuth();
+  const sidebar = useSidebar();
   const [address, setAddress] = useState("");
   const [manualMode, setManualMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -51,84 +53,20 @@ export default function Home() {
     return () => { clearInterval(iv); setSearchElapsed(prev => prev !== null ? performance.now() - searchStartRef.current : prev); };
   }, [loading]);
   const [result, setResult] = useState<PropertyResult | null>(null);
+  // Manual overrides for properties with no EPC record
+  const [manualFloorAreaSqft, setManualFloorAreaSqft] = useState<string>("");
+  const [manualPropertyType, setManualPropertyType] = useState<string>("");
   const [aiNarrative, setAiNarrative] = useState<{ location_summary: string | null; property_overview: string | null; market_context: string | null } | null>(null);
   const [enrichSlowDone, setEnrichSlowDone] = useState(false);
   const [enrichSlowError, setEnrichSlowError] = useState(false);
   const [reportContent, setReportContent] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>("property");
-  const [tabOrder, setTabOrder] = useState<TabKey[]>(DEFAULT_TAB_ORDER);
-  const dragTabRef = useRef<TabKey | null>(null);
-  const [compDropdownOpen, setCompDropdownOpen] = useState(false);
-  const compDropdownRef = useRef<HTMLDivElement>(null);
-  const compBtnRef = useRef<HTMLButtonElement>(null);
-  const [compDropdownPos, setCompDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-  const compCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const openCompDropdown = useCallback(() => {
-    if (compCloseTimer.current) { clearTimeout(compCloseTimer.current); compCloseTimer.current = null; }
-    if (compBtnRef.current) {
-      const r = compBtnRef.current.getBoundingClientRect();
-      setCompDropdownPos({ top: r.bottom + 4, left: r.left });
-    }
-    setCompDropdownOpen(true);
-  }, []);
-  const closeCompDropdown = useCallback(() => {
-    compCloseTimer.current = setTimeout(() => setCompDropdownOpen(false), 150);
-  }, []);
-  const tabScrollRef = useRef<HTMLDivElement>(null);
-  const leftFadeRef = useRef<HTMLDivElement>(null);
-  const rightFadeRef = useRef<HTMLDivElement>(null);
-  const tabScrollRaf = useRef<number | null>(null);
-  const tabScrollSpeed = useRef(0);
-  const stopTabScroll = useCallback(() => {
-    if (tabScrollRaf.current) { cancelAnimationFrame(tabScrollRaf.current); tabScrollRaf.current = null; }
-    tabScrollSpeed.current = 0;
-  }, []);
-  const startTabScroll = useCallback((direction: "left" | "right") => {
-    stopTabScroll();
-    const sign = direction === "left" ? -1 : 1;
-    const maxSpeed = 27;
-    const accel = 0.9;
-    const tick = () => {
-      tabScrollSpeed.current = Math.min(tabScrollSpeed.current + accel, maxSpeed);
-      tabScrollRef.current?.scrollBy({ left: sign * tabScrollSpeed.current });
-      tabScrollRaf.current = requestAnimationFrame(tick);
-    };
-    tabScrollRaf.current = requestAnimationFrame(tick);
-  }, [stopTabScroll]);
-
-  // Show/hide gradient fade hover zones based on scroll position
-  const updateFades = useCallback(() => {
-    const el = tabScrollRef.current;
-    if (!el) return;
-    const showLeft = el.scrollLeft > 8;
-    const showRight = el.scrollLeft < el.scrollWidth - el.clientWidth - 8;
-    if (leftFadeRef.current) {
-      leftFadeRef.current.style.opacity = showLeft ? "1" : "0";
-      leftFadeRef.current.style.pointerEvents = showLeft ? "auto" : "none";
-    }
-    if (rightFadeRef.current) {
-      rightFadeRef.current.style.opacity = showRight ? "1" : "0";
-      rightFadeRef.current.style.pointerEvents = showRight ? "auto" : "none";
-    }
-  }, []);
-
-  // Auto-scroll active tab into view
-  useEffect(() => {
-    const el = tabScrollRef.current;
-    if (!el) return;
-    const btn = el.querySelector(`[data-tab="${activeTab}"]`) as HTMLElement;
-    if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-  }, [activeTab]);
-
-  // Update fades on mount, resize, and tab order changes
-  useEffect(() => {
-    // Wait one frame for DOM layout to stabilise before measuring scroll overflow
-    const raf = requestAnimationFrame(() => updateFades());
-    window.addEventListener("resize", updateFades);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", updateFades); stopTabScroll(); };
-  }, [tabOrder, updateFades, stopTabScroll]);
-
+  const [activeTab, setActiveTabLocal] = useState<TabKey>("property");
+  const setActiveTab = useCallback((tab: TabKey) => { setActiveTabLocal(tab); sidebar.setActiveTab(tab); }, [sidebar]);
+  // Sync sidebar → local when sidebar nav is clicked
+  useEffect(() => { if (sidebar.activeTab !== activeTab) setActiveTabLocal(sidebar.activeTab); }, [sidebar.activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Sync hasResult flag to sidebar
+  useEffect(() => { sidebar.setHasResult(!!result); }, [result, sidebar]);
   const [adoptedSortPostcode, setAdoptedSortPostcode] = useState<AdoptedSortKey>("default");
   const [adoptedSortDirPostcode, setAdoptedSortDirPostcode] = useState<"asc" | "desc">("desc");
   const [buildingSearchIds, setBuildingSearchIds] = useState<string[]>([]);
@@ -137,6 +75,7 @@ export default function Home() {
   const [buildingSearchResult, setBuildingSearchResult] = useState<SearchResponse | null>(null);
   const [outwardSearchResult, setOutwardSearchResult] = useState<SearchResponse | null>(null);
   const [adoptedComparables, setAdoptedComparables] = useState<ComparableCandidate[]>([]);
+  useEffect(() => { sidebar.setAdoptedCount(adoptedComparables.length); }, [adoptedComparables.length, sidebar]);
   const [showManualForm, setShowManualForm] = useState(false);
   const [hpiCorrelation, setHpiCorrelation] = useState(100);
   const [sizeElasticity, setSizeElasticity] = useState(0); // β in percent (-50 to 50)
@@ -404,6 +343,8 @@ export default function Home() {
     setPendingExitAfterSave(false);
     setManualMode(false);
     setReportContent(null);
+    setManualFloorAreaSqft("");
+    setManualPropertyType("");
   }, []);
 
   // Keep UI state in a ref so fire-and-forget save always captures latest
@@ -641,9 +582,15 @@ export default function Home() {
       const method = currentCaseId ? "PATCH" : "POST";
       const url = currentCaseId ? `${API_BASE}/api/cases/${currentCaseId}` : `${API_BASE}/api/cases`;
       const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
+      // Merge manual overrides for no-EPC properties into property_data before saving
+      const mergedResult = {
+        ...result,
+        floor_area_m2: result.floor_area_m2 ?? (manualFloorAreaSqft ? parseFloat(manualFloorAreaSqft) / 10.764 : null),
+        property_type: result.property_type ?? (manualPropertyType || null),
+      };
       const payload = currentCaseId
-        ? { comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current }
-        : { address: result.address, postcode: result.postcode, uprn: result.uprn, case_type: saveCaseType, property_data: result, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
+        ? { comparables: adoptedComparables, search_results: searchResults, property_data: mergedResult, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current }
+        : { address: mergedResult.address, postcode: mergedResult.postcode, uprn: mergedResult.uprn, case_type: saveCaseType, property_data: mergedResult, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -677,12 +624,17 @@ export default function Home() {
     setSavingCase(true);
     try {
       const searchResults = { building: buildingSearchResult, outward: outwardSearchResult };
+      const mergedForSave = {
+        ...result,
+        floor_area_m2: result.floor_area_m2 ?? (manualFloorAreaSqft ? parseFloat(manualFloorAreaSqft) / 10.764 : null),
+        property_type: result.property_type ?? (manualPropertyType || null),
+      };
       const payload = {
         address: result.address,
         postcode: result.postcode,
         uprn: result.uprn,
         case_type: caseType,
-        property_data: result,
+        property_data: mergedForSave,
         comparables: adoptedComparables,
         search_results: searchResults,
         valuation_date: valuationDate || null,
@@ -720,7 +672,8 @@ export default function Home() {
     if (["issued", "archived"].includes(currentCaseStatus)) return;
     if (loadingCaseRef.current) return;  // block save during case switch
     const url = `${API_BASE}/api/cases/${currentCaseId}`;
-    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
+    const mergedSnap = { ...result, floor_area_m2: result.floor_area_m2 ?? (manualFloorAreaSqft ? parseFloat(manualFloorAreaSqft) / 10.764 : null), property_type: result.property_type ?? (manualPropertyType || null) };
+    const payload = { comparables: adoptedComparables, search_results: { building: buildingSearchResult, outward: outwardSearchResult }, property_data: mergedSnap, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
     try {
       fetch(url, {
         method: "PATCH",
@@ -793,6 +746,14 @@ export default function Home() {
       setAdoptedComparables([]);
       setResult(snapshot);
       setEnrichSlowDone(true);  // saved case already enriched
+      // Restore manual override fields for no-EPC properties
+      if (snapshot && !snapshot.epc_matched) {
+        if (snapshot.floor_area_m2) setManualFloorAreaSqft(String(Math.round(snapshot.floor_area_m2 * 10.764)));
+        if (snapshot.property_type) setManualPropertyType(snapshot.property_type);
+      } else {
+        setManualFloorAreaSqft("");
+        setManualPropertyType("");
+      }
       // Backfill lease details from local DB (single source of truth)
       if (snapshot?.uprn && !snapshot.lease_commencement) {
         fetch(`${API_BASE}/api/property/lease-details/${snapshot.uprn}`, {
@@ -1484,7 +1445,10 @@ export default function Home() {
       // Auto-set valuation date to today and prefetch comparables in background
       const todayStr = new Date().toISOString().slice(0, 10);
       setValuationDate(todayStr);
-      prefetchComparables(data, todayStr);
+      // Skip auto-prefetch when no EPC — user must supply property type + floor area first
+      if (data.epc_matched !== false) {
+        prefetchComparables(data, todayStr);
+      }
     } catch (err) {
       // If this search was cancelled by a newer search, silently ignore
       if (controller.signal.aborted && searchAbortRef.current !== controller) return;
@@ -1521,7 +1485,11 @@ export default function Home() {
     ? [
         ["Property type", result.property_type],
         ["Built form", result.built_form],
-        ["Floor area (GIA)", result.floor_area_m2 != null ? `${result.floor_area_m2} m\u00B2 / ${Math.round(result.floor_area_m2 * 10.764).toLocaleString("en-GB")} sq ft` : null],
+        ["Floor area (GIA)", result.floor_area_m2 != null
+          ? `${Number(result.floor_area_m2).toFixed(2)} m\u00B2 / ${Math.round(Number(result.floor_area_m2) * 10.764).toLocaleString("en-GB")} sq ft`
+          : manualFloorAreaSqft
+            ? `${(parseFloat(manualFloorAreaSqft) / 10.764).toFixed(2)} m\u00B2 / ${parseInt(manualFloorAreaSqft).toLocaleString("en-GB")} sq ft (manual)`
+            : null],
         ["Site area", result.inspire_area_sqm != null ? `${result.inspire_area_sqm.toLocaleString("en-GB", { maximumFractionDigits: 0 })} m\u00B2 / ${(result.inspire_area_sqm / 4047).toFixed(2)} acres` : null],
         ["Construction Era", result.construction_age_band],
         ["Building Age", result.construction_age_best != null ? `c.${result.construction_age_best}` : null],
@@ -1551,6 +1519,13 @@ export default function Home() {
         case "size":  av = a.floor_area_sqm ?? -1; bv = b.floor_area_sqm ?? -1; break;
         case "price": av = a.price; bv = b.price; break;
         case "psf":   av = a.floor_area_sqm ? a.price / (a.floor_area_sqm * 10.764) : -1; bv = b.floor_area_sqm ? b.price / (b.floor_area_sqm * 10.764) : -1; break;
+        case "postcode":
+          return dir === "asc" ? (a.postcode ?? "").localeCompare(b.postcode ?? "") : (b.postcode ?? "").localeCompare(a.postcode ?? "");
+        case "type":
+          return dir === "asc" ? (a.property_type ?? "").localeCompare(b.property_type ?? "") : (b.property_type ?? "").localeCompare(a.property_type ?? "");
+        case "rooms": av = a.bedrooms ?? -1; bv = b.bedrooms ?? -1; break;
+        case "epc":   av = a.epc_rating ? a.epc_rating.charCodeAt(0) : 999; bv = b.epc_rating ? b.epc_rating.charCodeAt(0) : 999; break;
+        case "age":   av = a.construction_age_best ?? -1; bv = b.construction_age_best ?? -1; break;
       }
       return dir === "asc" ? av - bv : bv - av;
     });
@@ -1577,7 +1552,8 @@ export default function Home() {
   const adoptedDateMin   = adoptedDatesSorted[0] ?? null;
   const adoptedDateMax   = adoptedDatesSorted[adoptedDatesSorted.length - 1] ?? null;
 
-  const subjectAreaM2    = result?.floor_area_m2 ?? null;
+  const manualAreaM2     = manualFloorAreaSqft ? parseFloat(manualFloorAreaSqft) / 10.764 : null;
+  const subjectAreaM2    = result?.floor_area_m2 ?? manualAreaM2;
   const subjectAreaSqft  = subjectAreaM2 != null ? subjectAreaM2 * 10.764 : null;
   const indicativeValLow = adoptedPsfMin != null && subjectAreaSqft != null ? adoptedPsfMin * subjectAreaSqft : null;
   const indicativeValHigh= adoptedPsfMax != null && subjectAreaSqft != null ? adoptedPsfMax * subjectAreaSqft : null;
@@ -1617,11 +1593,11 @@ export default function Home() {
   const sizeAdjIndMid  = sizeAdjPsfAvg != null && subjectAreaSqft != null ? Math.round(sizeAdjPsfAvg * subjectAreaSqft) : null;
 
   return (
-    <main className="min-h-screen bg-[var(--color-bg-base)] flex flex-col items-center px-4">
+    <main className="min-h-screen bg-[var(--color-bg-base)] flex flex-col px-4">
 
       {!result ? (
         /* ── Initial state: no result yet ─ centred search ────────────────── */
-        <div className="w-full max-w-xl py-16">
+        <div className="w-full max-w-xl mx-auto py-16">
           <div className="mb-1">
             <h1 className="text-3xl font-bold font-orbitron text-[var(--color-accent)] tracking-wider">PropVal</h1>
           </div>
@@ -1640,8 +1616,8 @@ export default function Home() {
                   // In postcode mode, block Enter unless a suggestion is selected (force pick from list)
                   if (!manualMode && e.key === "Enter" && suggestionIdx < 0) e.preventDefault();
                 }}
-                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 250)}
+                onFocus={() => { if (suggestions.length > 0 || suggestionsError) setShowSuggestions(true); }}
                 placeholder={manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG"}
                 disabled={loading}
                 className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] disabled:opacity-50"
@@ -1650,7 +1626,7 @@ export default function Home() {
                 <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                   {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                   {!suggestionsLoading && suggestionsError && (
-                    <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-error, #FF3B30)" }}>{suggestionsError} — try again or type the full address manually below</div>
+                    <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-error, #FF3B30)" }}>{suggestionsError}</div>
                   )}
                   {!suggestionsLoading && suggestions.map((s, i) => (
                     <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
@@ -1660,7 +1636,20 @@ export default function Home() {
                   ))}
                   {!suggestionsLoading && (
                     <div
-                      onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setManualMode(true);
+                        setShowSuggestions(false);
+                        setSuggestions([]);
+                        setSuggestionsError("");
+                        setAddress("");
+                        // Focus the input after React re-renders
+                        setTimeout(() => {
+                          const input = document.querySelector<HTMLInputElement>("input[placeholder*='e.g.']");
+                          input?.focus();
+                        }, 50);
+                      }}
                       style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-warning)", cursor: "pointer", borderTop: "1px solid var(--color-border)", background: "rgba(255,184,0,0.05)" }}
                     >
                       Address not listed? Click here to type full address manually
@@ -1752,7 +1741,7 @@ export default function Home() {
         </div>
       ) : (
         /* ── Result loaded: tabs pinned to top ─────────────────────────────── */
-        <div className="w-full max-w-6xl px-4 pt-6">
+        <div className="w-full px-4 pt-6">
           <style>{`
             @keyframes propCardJiggle {
               0%   { transform: rotate(-0.4deg) scale(0.99); }
@@ -1885,131 +1874,7 @@ export default function Home() {
             navbarSlot
           )}
 
-          {/* Tab bar — scrollable, drag to reorder */}
-          <div className="relative mb-4 no-print">
-            {/* Left hover-to-scroll zone — subtle translucent cyan hint */}
-            <div ref={leftFadeRef} className="pointer-events-none absolute left-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to right, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("left")} onMouseLeave={stopTabScroll} />
-
-            {/* Scrollable tab strip */}
-            <div ref={tabScrollRef} className="flex items-end overflow-x-auto border-b border-[var(--color-border)] scrollbar-hide scroll-smooth" onScroll={updateFades}>
-              {(() => {
-                const labels: Record<TabKey, string> = { property: "Subject Property Info", map: "Map", hpi: "HPI", comparables: "Direct Comparables", wider: "Wider Comparables", additional: "Additional Comparables", adopted: "Adopted Comparables", report_typing: "Report Typing", semv: "SEMV", agentic_report: "Agentic Report", qa: "QA" };
-                const compShortLabels: Record<string, string> = { comparables: "Direct", wider: "Wider", additional: "Additional", adopted: "Adopted" };
-                let compClusterRendered = false;
-                return tabOrder.map((tab) => {
-                  // ── Comparables cluster: render a single dropdown button in place of first comp tab ──
-                  if (COMP_CLUSTER_TABS.includes(tab)) {
-                    if (compClusterRendered) return null; // skip 2nd & 3rd
-                    compClusterRendered = true;
-                    const isCompActive = COMP_CLUSTER_TABS.includes(activeTab);
-                    const adoptedBadge = adoptedComparables.length > 0 ? adoptedComparables.length : null;
-                    return (
-                      <div key="comp-cluster" className="relative flex-shrink-0 mr-1 -mb-px" onMouseEnter={openCompDropdown} onMouseLeave={closeCompDropdown}>
-                        <button
-                          ref={compBtnRef}
-                          data-tab={isCompActive ? activeTab : "comparables"}
-                          onClick={() => { if (!isCompActive) { setActiveTab("comparables"); setCompDropdownOpen(false); } }}
-                          className={`flex items-center gap-1 whitespace-nowrap px-5 py-2.5 text-sm font-medium rounded-t-lg border transition-colors ${
-                            isCompActive
-                              ? "bg-[var(--color-bg-panel)] border-[var(--color-border)] text-[var(--color-accent)]"
-                              : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
-                          }`}
-                          style={isCompActive ? { borderBottomColor: "var(--color-bg-panel)" } : undefined}
-                        >
-                          Comparable
-                          {adoptedBadge !== null && (
-                            <span className="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--color-status-success)] text-[var(--color-btn-primary-text)]">
-                              {adoptedBadge}
-                            </span>
-                          )}
-                          <svg className={`w-3.5 h-3.5 ml-1 transition-transform ${compDropdownOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                        </button>
-                        {compDropdownOpen && ReactDOM.createPortal(
-                          <div
-                            ref={compDropdownRef}
-                            onMouseEnter={openCompDropdown}
-                            onMouseLeave={closeCompDropdown}
-                            className="fixed min-w-[200px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] shadow-lg shadow-black/40 py-1"
-                            style={{ top: compDropdownPos.top, left: compDropdownPos.left, zIndex: 9999 }}
-                          >
-                            {COMP_CLUSTER_TABS.map(ct => {
-                              const isActive = activeTab === ct;
-                              const badge = ct === "adopted" && adoptedComparables.length > 0 ? adoptedComparables.length : null;
-                              return (
-                                <button
-                                  key={ct}
-                                  onClick={() => { setActiveTab(ct); setCompDropdownOpen(false); }}
-                                  className={`w-full text-left px-4 py-2 text-sm transition-colors flex items-center justify-between ${
-                                    isActive ? "text-[var(--color-accent)] bg-[var(--color-btn-primary-bg)]/10" : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
-                                  }`}
-                                >
-                                  {labels[ct]}
-                                  {badge !== null && (
-                                    <span className="ml-2 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full text-xs font-semibold bg-[var(--color-status-success)] text-[var(--color-btn-primary-text)]">
-                                      {badge}
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>,
-                          document.body
-                        )}
-                      </div>
-                    );
-                  }
-                  // ── Regular tab button ──
-                  const active = activeTab === tab;
-                  return (
-                    <button
-                      key={tab}
-                      data-tab={tab}
-                      draggable
-                      onDragStart={(e) => {
-                        dragTabRef.current = tab;
-                        e.dataTransfer.effectAllowed = "move";
-                        if (e.currentTarget) {
-                          e.dataTransfer.setDragImage(e.currentTarget, e.currentTarget.offsetWidth / 2, e.currentTarget.offsetHeight / 2);
-                        }
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const from = dragTabRef.current;
-                        if (!from || from === tab) return;
-                        setTabOrder(prev => {
-                          const next = [...prev];
-                          const fromIdx = next.indexOf(from);
-                          const toIdx = next.indexOf(tab);
-                          if (fromIdx === -1 || toIdx === -1) return prev;
-                          next.splice(fromIdx, 1);
-                          next.splice(toIdx, 0, from);
-                          return next;
-                        });
-                        dragTabRef.current = null;
-                      }}
-                      onDragEnd={() => { dragTabRef.current = null; }}
-                      onClick={() => setActiveTab(tab)}
-                      className={`flex-shrink-0 whitespace-nowrap mr-1 px-5 py-2.5 text-sm font-medium rounded-t-lg border -mb-px transition-colors cursor-grab active:cursor-grabbing ${
-                        active
-                          ? "bg-[var(--color-bg-panel)] border-[var(--color-border)] text-[var(--color-accent)]"
-                          : "border-transparent text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
-                      }`}
-                      style={active ? { borderBottomColor: "var(--color-bg-panel)" } : undefined}
-                    >
-                      {labels[tab]}
-                    </button>
-                  );
-                });
-              })()}
-            </div>
-
-            {/* Right hover-to-scroll zone — subtle translucent cyan hint */}
-            <div ref={rightFadeRef} className="pointer-events-none absolute right-0 top-0 bottom-0 w-14 z-10 opacity-0 transition-opacity" style={{ background: "linear-gradient(to left, rgba(0,240,255,0.20) 0%, rgba(0,240,255,0.08) 40%, transparent 100%)" }} onMouseEnter={() => startTabScroll("right")} onMouseLeave={stopTabScroll} />
-          </div>
+          {/* Tab bar removed — navigation is now in the sidebar */}
 
           {/* ── Customise gear button — portalled into navbar (next to theme toggle) ── */}
           {navbarCustomiseSlot && activeTab === "property" && result && ReactDOM.createPortal(
@@ -2056,8 +1921,8 @@ export default function Home() {
                     handleSuggestionKeyDown(e);
                     if (!manualMode && e.key === "Enter" && suggestionIdx < 0) e.preventDefault();
                   }}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                  onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 250)}
+                  onFocus={() => { if (suggestions.length > 0 || suggestionsError) setShowSuggestions(true); }}
                   placeholder={currentCaseId ? "Close Case to search a new address" : (manualMode ? "e.g. 41 Gander Green Lane SM1 2EG" : "e.g. SM1 2EG")}
                   disabled={loading || !!currentCaseId}
                   className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)]/50 px-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] disabled:opacity-50"
@@ -2066,7 +1931,7 @@ export default function Home() {
                   <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50, background: "var(--color-bg-surface)", border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 320, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                     {suggestionsLoading && <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-text-secondary)" }}>Loading addresses…</div>}
                     {!suggestionsLoading && suggestionsError && (
-                      <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-error, #FF3B30)" }}>{suggestionsError} — try again or type the full address manually below</div>
+                      <div style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-error, #FF3B30)" }}>{suggestionsError}</div>
                     )}
                     {!suggestionsLoading && suggestions.map((s, i) => (
                       <div key={i} onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }} onMouseEnter={() => setSuggestionIdx(i)}
@@ -2076,7 +1941,19 @@ export default function Home() {
                     ))}
                     {!suggestionsLoading && (
                       <div
-                        onMouseDown={(e) => { e.preventDefault(); setManualMode(true); setShowSuggestions(false); }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setManualMode(true);
+                          setShowSuggestions(false);
+                          setSuggestions([]);
+                          setSuggestionsError("");
+                          setAddress("");
+                          setTimeout(() => {
+                            const input = document.querySelector<HTMLInputElement>("input[placeholder*='e.g.']");
+                            input?.focus();
+                          }, 50);
+                        }}
                         style={{ padding: "10px 14px", fontSize: 12, color: "var(--color-status-warning)", cursor: "pointer", borderTop: "1px solid var(--color-border)", background: "rgba(255,184,0,0.05)" }}
                       >
                         Address not listed? Click here to type full address manually
@@ -2139,19 +2016,70 @@ export default function Home() {
               </div>
             )}
 
-            {/* ── No-EPC notice ── */}
+            {/* ── No-EPC notice with manual input ── */}
             {!result.epc_matched && (
-              <div className="flex items-start gap-3 rounded-lg border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning)]/10 px-4 py-3 text-sm">
-                <span className="text-[var(--color-status-warning)] text-base leading-none mt-0.5">⚠</span>
-                <div>
-                  <span className="font-semibold text-[var(--color-status-warning)]">No EPC record found for this property.</span>
-                  <span className="text-[var(--color-text-secondary)] ml-1">Energy certificate data is unavailable. All planning, flood, and environmental data are still shown.</span>
+              <div className="rounded-lg border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning)]/10 px-4 py-3 text-sm">
+                <div className="flex items-start gap-3">
+                  <span className="text-[var(--color-status-warning)] text-base leading-none mt-0.5">⚠</span>
+                  <div>
+                    <span className="font-semibold text-[var(--color-status-warning)]">No EPC record found for this property.</span>
+                    <span className="text-[var(--color-text-secondary)] ml-1">Floor area and property details are needed for valuation. Please enter them below.</span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-end gap-4 mt-3 ml-7">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-[var(--color-text-secondary)]">Floor area (sq ft)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="e.g. 850"
+                      value={manualFloorAreaSqft}
+                      onChange={e => setManualFloorAreaSqft(e.target.value)}
+                      className="w-32 px-3 py-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-panel)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-[var(--color-text-secondary)]">Property type</label>
+                    <select
+                      value={manualPropertyType}
+                      onChange={e => {
+                        setManualPropertyType(e.target.value);
+                        if (e.target.value) setResult(prev => prev ? { ...prev, property_type: e.target.value } : prev);
+                      }}
+                      className="w-40 px-3 py-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-panel)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40"
+                    >
+                      <option value="">Select...</option>
+                      <option value="Flat">Flat</option>
+                      <option value="Maisonette">Maisonette</option>
+                      <option value="House">House</option>
+                      <option value="Bungalow">Bungalow</option>
+                    </select>
+                  </div>
+                  {manualFloorAreaSqft && (
+                    <span className="text-xs text-[var(--color-text-secondary)] pb-1.5">
+                      = {Math.round(parseFloat(manualFloorAreaSqft) / 10.764)} m²
+                    </span>
+                  )}
+                  <button
+                    disabled={!manualFloorAreaSqft || !manualPropertyType}
+                    onClick={() => {
+                      if (!result || !manualFloorAreaSqft || !manualPropertyType) return;
+                      const areaM2 = parseFloat(manualFloorAreaSqft) / 10.764;
+                      const updated = { ...result, floor_area_m2: areaM2, property_type: manualPropertyType };
+                      setResult(updated);
+                      if (valuationDate) prefetchComparables(updated, valuationDate);
+                    }}
+                    className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--color-accent)] text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
+                  >
+                    Apply &amp; Search Comparables
+                  </button>
                 </div>
               </div>
             )}
 
             {/* ── Resizable card grid ── */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gridAutoRows: "minmax(120px, auto)", gridAutoFlow: "dense", gap: 16 }}>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" style={{ gridAutoRows: "minmax(120px, auto)", gridAutoFlow: "dense" }}>
 
             {/* EPC card */}
             <PropCard id="epc" isCustomising={isCustomising} cardSizes={cardSizes} onSizeChange={handleCardSizeChange}>
@@ -3146,17 +3074,20 @@ export default function Home() {
               lat={result.lat}
               lon={result.lon}
               postcode={result.postcode}
-              floorArea={result.floor_area_m2}
+              floorArea={result.floor_area_m2 ?? manualAreaM2}
               rooms={result.num_rooms}
               ageBand={result.construction_age_band}
               epcRating={result.energy_rating}
-              propertyType={result.property_type}
+              propertyType={result.property_type ?? (manualPropertyType || null)}
               builtForm={result.built_form}
               tenure={result.tenure}
               buildingName={result.building_name}
               paonNumber={result.paon_number}
               saon={result.saon}
               streetName={result.street_name}
+              lastSoldPrice={result.sales?.[0]?.price ?? null}
+              lastSoldDate={result.sales?.[0]?.date ?? null}
+              subjectImdDecile={result.imd?.overall_decile ?? null}
             />
           </div>
 
@@ -3184,17 +3115,20 @@ export default function Home() {
               lat={result.lat}
               lon={result.lon}
               postcode={result.postcode}
-              floorArea={result.floor_area_m2}
+              floorArea={result.floor_area_m2 ?? manualAreaM2}
               rooms={result.num_rooms}
               ageBand={result.construction_age_band}
               epcRating={result.energy_rating}
-              propertyType={result.property_type}
+              propertyType={result.property_type ?? (manualPropertyType || null)}
               builtForm={result.built_form}
               tenure={result.tenure}
               buildingName={result.building_name}
               paonNumber={result.paon_number}
               saon={result.saon}
               streetName={result.street_name}
+              lastSoldPrice={result.sales?.[0]?.price ?? null}
+              lastSoldDate={result.sales?.[0]?.date ?? null}
+              subjectImdDecile={result.imd?.overall_decile ?? null}
             />
           </div>
 
@@ -3241,6 +3175,98 @@ export default function Home() {
                 </button>
               </div>
             </div>
+
+            {/* ── Subject property row ── */}
+            <div className="rounded-2xl border border-[#00E5FF]/40 overflow-hidden shadow-lg shadow-[#00E5FF]/10 mb-4">
+              <div className="px-4 py-2.5 border-b border-[#00E5FF]/30 bg-gradient-to-r from-[#00E5FF]/15 via-[#00E5FF]/8 to-transparent flex items-center gap-2">
+                <span>🏠</span>
+                <span className="font-orbitron font-bold text-xs text-[#00E5FF] tracking-wider drop-shadow-[0_0_6px_rgba(0,229,255,0.4)]">SUBJECT PROPERTY</span>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="bg-[var(--color-bg-panel)] min-w-[960px]">
+                  <CompTableHeader />
+                  <div className="grid items-center gap-x-3 px-4 py-2.5 border-t border-[var(--color-border)]/60 bg-[var(--color-btn-primary-bg)]/5"
+                    style={{ gridTemplateColumns: COMP_GRID }}>
+                    {/* Arrow (empty) */}
+                    <span />
+                    {/* Address */}
+                    <span className="text-xs font-medium text-[var(--color-accent)] truncate" title={[result.saon, result.building_name, result.street_name].filter(Boolean).join(", ")}>
+                      {[result.saon, result.building_name, result.street_name].filter(Boolean).join(", ") || "—"}
+                    </span>
+                    {/* Postcode */}
+                    <span className="text-xs text-[var(--color-text-secondary)] text-right">{result.postcode}</span>
+                    {/* Sold Price */}
+                    <span className="text-xs font-bold text-[var(--color-accent)] text-right">
+                      {result.sales?.[0]?.price != null ? formatPrice(result.sales[0].price) : <span className="text-[var(--color-text-secondary)]/40 font-normal">—</span>}
+                    </span>
+                    {/* Size ft² */}
+                    <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                      {subjectAreaM2 != null ? Math.round(subjectAreaM2 * 10.7639).toLocaleString("en-GB") : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                    </span>
+                    {/* £/sqft */}
+                    <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                      {result.sales?.[0]?.price != null && subjectAreaM2 != null ? `£${Math.round(result.sales[0].price / (subjectAreaM2 * 10.7639)).toLocaleString("en-GB")}` : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                    </span>
+                    {/* Date */}
+                    <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                      {result.sales?.[0]?.date ? fmtDate(result.sales[0].date) : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                    </span>
+                    {/* Type */}
+                    <span className="text-xs text-[var(--color-text-secondary)] capitalize truncate text-right" title={[result.property_type, result.built_form].filter(Boolean).join(" / ") || undefined}>
+                      {(() => {
+                        const pt = (result.property_type ?? "").toLowerCase();
+                        const pType = pt.includes("flat") || pt.includes("maisonette") ? "Flat" : pt.includes("house") || pt.includes("bungalow") ? "House" : result.property_type;
+                        const bf = (result.built_form ?? "").toLowerCase();
+                        const sType = bf.includes("semi") ? "Semi-Detached" : bf.includes("end") && (bf.includes("terrace") || bf.includes("terr")) ? "End-Terrace" : bf.includes("terrace") || bf.includes("terr") || bf.includes("mid") ? "Terraced" : bf.includes("detached") ? "Detached" : null;
+                        if (!pType) return <span className="text-[var(--color-text-secondary)]/40">—</span>;
+                        return <>{pType}{sType ? <span className="text-[var(--color-text-secondary)]/50"> ({sType})</span> : ""}</>;
+                      })()}
+                    </span>
+                    {/* H. Rm */}
+                    <span className="text-xs text-[var(--color-text-secondary)] text-right">{result.num_rooms ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}</span>
+                    {/* EPC */}
+                    <span className={`text-xs font-semibold text-right ${result.energy_rating ? (EPC_TEXT[result.energy_rating] ?? "text-[var(--color-text-secondary)]") : ""}`}>
+                      {result.energy_rating ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                    </span>
+                    {/* IMD */}
+                    <span className="flex items-center justify-end">
+                      {result.imd?.overall_decile != null ? (
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold text-white"
+                              style={{ backgroundColor: IMD_COLOURS[result.imd.overall_decile] ?? "#94A3B8" }}
+                              title={`IMD Decile ${result.imd.overall_decile} (1=most deprived, 10=least)`}>
+                          {result.imd.overall_decile}
+                        </span>
+                      ) : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                    </span>
+                    {/* Era */}
+                    <span className="text-xs text-cyan-400 font-medium text-right">
+                      {(() => {
+                        const ab = result.construction_age_band;
+                        if (!ab) return <span className="text-[var(--color-text-secondary)]/40">—</span>;
+                        const yearMap: Record<string, number> = {
+                          "before 1900": 1890, "1900-1929": 1915, "1930-1949": 1940,
+                          "1950-1966": 1958, "1967-1975": 1971, "1976-1982": 1979,
+                          "1983-1990": 1987, "1991-1995": 1993, "1996-2002": 1999,
+                          "2003-2006": 2005, "2007-2011": 2009, "2012-2021": 2016,
+                          "2007 onwards": 2010,
+                        };
+                        let band = ab.trim();
+                        if (band.includes(": ")) band = band.split(": ").slice(1).join(": ");
+                        const bl = band.toLowerCase();
+                        for (const [key, yr] of Object.entries(yearMap)) {
+                          if (key.includes(bl) || bl.includes(key)) return `c.${yr}`;
+                        }
+                        if (/^\d{4}$/.test(band.trim())) return `c.${band.trim()}`;
+                        return <span className="text-[var(--color-text-secondary)]/40">—</span>;
+                      })()}
+                    </span>
+                    {/* Checkbox (empty) */}
+                    <span />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {adoptedComparables.length === 0 ? (
               <div className="text-center py-16 text-[var(--color-text-secondary)]/70 space-y-3">
                 <p className="text-4xl">📋</p>
@@ -3270,25 +3296,6 @@ export default function Home() {
                         <span className="text-xs font-orbitron font-bold tracking-widest text-[var(--color-accent)] uppercase">
                           All Adopted ({adoptedComparables.length})
                         </span>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs text-[var(--color-text-secondary)]/70 mr-1">Sort:</span>
-                          {([["default", "Tier"], ["date", "Date"], ["price", "Price"], ["size", "Size"], ["psf", "£/sqft"]] as [AdoptedSortKey, string][]).map(([key, label]) => {
-                            const active = adoptedSortPostcode === key;
-                            return (
-                              <button key={key}
-                                onClick={() => {
-                                  if (active && key !== "default") setAdoptedSortDirPostcode(d => d === "desc" ? "asc" : "desc");
-                                  else { setAdoptedSortPostcode(key); setAdoptedSortDirPostcode("desc"); }
-                                }}
-                                className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                                  active ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30" : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
-                                }`}
-                              >
-                                {label}{active && key !== "default" && <span className="ml-1">{adoptedSortDirPostcode === "asc" ? "↑" : "↓"}</span>}
-                              </button>
-                            );
-                          })}
-                        </div>
                       </div>
                       {adoptedSortPostcode === "default" ? (
                         Object.entries(adoptedByTier)
@@ -3306,7 +3313,12 @@ export default function Home() {
                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.pill}`}>{comps.length} adopted</span>
                                   </div>
                                 </div>
-                                <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
+                                <div className="overflow-x-auto">
+                                <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)] min-w-[960px]">
+                                  <CompTableHeader sortBy={adoptedSortPostcode} sortDir={adoptedSortDirPostcode} onSort={(key) => {
+                                    if (adoptedSortPostcode === key && key !== "default") setAdoptedSortDirPostcode(d => d === "desc" ? "asc" : "desc");
+                                    else { setAdoptedSortPostcode(key as AdoptedSortKey); setAdoptedSortDirPostcode("desc"); }
+                                  }} />
                                   {comps.map((comp, idx) => {
                                     const globalIdx = adoptedComparables.indexOf(comp);
                                     return (
@@ -3315,6 +3327,7 @@ export default function Home() {
                                         onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
                                     );
                                   })}
+                                </div>
                                 </div>
                               </div>
                             );
@@ -3328,7 +3341,12 @@ export default function Home() {
                             </span>
                             <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)]">{sorted.length} adopted</span>
                           </div>
-                          <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
+                          <div className="overflow-x-auto">
+                          <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)] min-w-[960px]">
+                            <CompTableHeader sortBy={adoptedSortPostcode} sortDir={adoptedSortDirPostcode} onSort={(key) => {
+                              if (adoptedSortPostcode === (key as string)) setAdoptedSortDirPostcode(d => d === "desc" ? "asc" : "desc");
+                              else { setAdoptedSortPostcode(key as AdoptedSortKey); setAdoptedSortDirPostcode("desc"); }
+                            }} />
                             {sorted.map((comp, idx) => {
                               const globalIdx = adoptedComparables.indexOf(comp);
                               return (
@@ -3337,6 +3355,7 @@ export default function Home() {
                                   onReject={() => {}} sizeElasticity={sizeElasticity} subjectSqft={subjectAreaSqft} timeAdjFactor={adjFactors[globalIdx] ?? 1} />
                               );
                             })}
+                          </div>
                           </div>
                         </div>
                       )}
@@ -3427,12 +3446,11 @@ export default function Home() {
           <div style={{
             display: activeTab === "map" ? undefined : "none",
             position: "relative",
-            /* Break out of the max-w-6xl px-4 parent container */
-            marginLeft: "calc(-50vw + 50%)",
-            marginRight: "calc(-50vw + 50%)",
-            width: "100vw",
-            /* Fill from tabs to bottom of viewport */
-            height: "calc(100vh - 140px)",
+            marginLeft: -32,
+            marginRight: -32,
+            marginBottom: -32,
+            width: "calc(100% + 64px)",
+            height: "calc(100vh - 73px)",
           }}>
             {result.lat != null && result.lon != null ? (
               <PropertyMap
@@ -3441,6 +3459,7 @@ export default function Home() {
                 subjectAddress={result.address}
                 subjectEpc={result.energy_rating}
                 subjectFloodRisk={result.rivers_sea_risk}
+                subjectPostcode={result.postcode ?? ""}
                 adoptedComparables={adoptedComparables}
                 compCoords={compCoords}
                 onRemoveComparable={(comp) => setAdoptedComparables(prev =>
@@ -3479,7 +3498,7 @@ export default function Home() {
             active={activeTab === "hpi"}
             hpi={result.hpi}
             postcode={result.postcode}
-            propertyType={result.property_type}
+            propertyType={result.property_type ?? (manualPropertyType || null)}
             builtForm={result.built_form}
             token={session?.access_token}
             onHpi={(hpi) => setResult(prev => prev ? { ...prev, hpi } : prev)}

@@ -34,6 +34,9 @@ interface Props {
   paonNumber:         string | null;
   saon:               string | null;
   streetName:         string | null;
+  lastSoldPrice?:     number | null;
+  lastSoldDate?:      string | null;
+  subjectImdDecile?:  number | null;
 }
 
 export interface ComparableCandidate {
@@ -70,6 +73,7 @@ export interface ComparableCandidate {
   coord_source:         string | null;
   lat:                  number | null;
   lon:                  number | null;
+  imd_decile?:          number | null;
   // Option E: UPRN Timeline snapshot fields (populated after API persist)
   snapshot_id?:         string;
   case_comp_id?:        string;
@@ -147,14 +151,16 @@ function deriveEraFromAgeBand(ageBand: string | null): "period" | "modern" | nul
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
-function fmtPrice(p: number): string {
+export function fmtPrice(p: number): string {
   return "£" + p.toLocaleString("en-GB");
 }
 
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "numeric", month: "short", year: "numeric",
-  });
+export function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = d.toLocaleDateString("en-GB", { month: "short" });
+  const yr = String(d.getFullYear()).slice(-2);
+  return `${day} ${mon} ${yr}`;
 }
 
 function fmtMonthsAgo(n: number | null): string {
@@ -186,6 +192,7 @@ export default function ComparableSearch({
   valuationDate, onValuationDateChange,
   uprn, lat, lon, postcode, floorArea, rooms, ageBand, epcRating,
   propertyType, builtForm, tenure, buildingName, paonNumber, saon, streetName,
+  lastSoldPrice = null, lastSoldDate = null, subjectImdDecile = null,
 }: Props) {
   const { session } = useAuth();
   const isBuilding = mode === "building";
@@ -194,7 +201,7 @@ export default function ComparableSearch({
   const [error,               setError]               = useState<string | null>(null);
   const [result,              setResult]              = useState<SearchResponse | null>(initialResult);
   const [rejected,            setRejected]            = useState<Set<string>>(new Set());
-  const [sortBy,              setSortBy]              = useState<"default" | "date" | "size" | "price" | "psf">("default");
+  const [sortBy,              setSortBy]              = useState<SortKey>("default");
   const [sortDir,             setSortDir]             = useState<"asc" | "desc">("desc");
   const [filtersOpen,         setFiltersOpen]         = useState(false);
   const [filterTenure,        setFilterTenure]        = useState<"all" | "freehold" | "leasehold">("all");
@@ -210,7 +217,18 @@ export default function ComparableSearch({
   const [filterMinAge,        setFilterMinAge]        = useState<string>("");
   const [filterMaxAge,        setFilterMaxAge]        = useState<string>("");
   const [filterEpcRating,     setFilterEpcRating]     = useState<Set<string>>(new Set());
+  const [filterPostcode,      setFilterPostcode]      = useState<Set<string>>(new Set());
+  const [filterAddress,       setFilterAddress]       = useState<string>("");
+  const [filterMinPsf,        setFilterMinPsf]        = useState<string>("");
+  const [filterMaxPsf,        setFilterMaxPsf]        = useState<string>("");
+  const [filterMinDate,       setFilterMinDate]       = useState<string>("");
+  const [filterMaxDate,       setFilterMaxDate]       = useState<string>("");
+  const [filterMinImd,        setFilterMinImd]        = useState<string>("");
+  const [filterMaxImd,        setFilterMaxImd]        = useState<string>("");
+  const [ageMin,              setAgeMin]              = useState(-50);   // e.g. -50 = allow 50 yrs older
+  const [ageMax,              setAgeMax]              = useState(30);    // e.g. +30 = allow 30 yrs newer
   const [outwardEnabled,      setOutwardEnabled]      = useState(false); // outward mode only
+  const [radiusMiles,         setRadiusMiles]         = useState<number | null>(null); // max radius in miles (null = no limit)
   const [buildingMonths,      setBuildingMonths]      = useState(36);    // Tier 1 time window (same building / same street)
   const [neighbouringMonths,  setNeighbouringMonths]  = useState(12);    // outward mode only
 
@@ -279,8 +297,11 @@ export default function ComparableSearch({
       max_tier:                isBuilding ? 2 : (outwardEnabled ? 4 : 3),
       building_months:         buildingMonths,
       neighbouring_months:     neighbouringMonths,
+      age_min:                 ageMin,
+      age_max:                 ageMax,
       exclude_transaction_ids: isBuilding ? [] : excludeIds,
       exclude_address_keys:    isBuilding ? [] : excludeAddressKeys,
+      max_distance_m:          radiusMiles != null ? Math.round(radiusMiles * 1609.34) : undefined,
     };
 
     try {
@@ -366,6 +387,30 @@ export default function ComparableSearch({
           av = a.floor_area_sqm ? a.price / (a.floor_area_sqm * 10.764) : -1;
           bv = b.floor_area_sqm ? b.price / (b.floor_area_sqm * 10.764) : -1;
           break;
+        case "postcode":
+          return sortDir === "asc"
+            ? (a.postcode ?? "").localeCompare(b.postcode ?? "")
+            : (b.postcode ?? "").localeCompare(a.postcode ?? "");
+        case "type":
+          return sortDir === "asc"
+            ? (a.property_type ?? "").localeCompare(b.property_type ?? "")
+            : (b.property_type ?? "").localeCompare(a.property_type ?? "");
+        case "rooms":
+          av = a.bedrooms ?? -1;
+          bv = b.bedrooms ?? -1;
+          break;
+        case "epc":
+          av = a.epc_rating ? a.epc_rating.charCodeAt(0) : 999;
+          bv = b.epc_rating ? b.epc_rating.charCodeAt(0) : 999;
+          break;
+        case "imd":
+          av = a.imd_decile ?? 0;
+          bv = b.imd_decile ?? 0;
+          break;
+        case "age":
+          av = a.construction_age_best ?? -1;
+          bv = b.construction_age_best ?? -1;
+          break;
       }
       return sortDir === "asc" ? av - bv : bv - av;
     });
@@ -403,6 +448,21 @@ export default function ComparableSearch({
       const maxAge = filterMaxAge ? Number(filterMaxAge) : null;
       if (minAge != null && (c.construction_age_best == null || c.construction_age_best < minAge)) return false;
       if (maxAge != null && (c.construction_age_best == null || c.construction_age_best > maxAge)) return false;
+      if (filterPostcode.size > 0 && !filterPostcode.has(c.postcode)) return false;
+      if (filterAddress && !c.address.toLowerCase().includes(filterAddress.toLowerCase())) return false;
+      if (filterMinPsf || filterMaxPsf) {
+        const psf = c.floor_area_sqm ? c.price / (c.floor_area_sqm * 10.7639) : null;
+        const minPsf = filterMinPsf ? Number(filterMinPsf) : null;
+        const maxPsf = filterMaxPsf ? Number(filterMaxPsf) : null;
+        if (minPsf != null && (psf == null || psf < minPsf)) return false;
+        if (maxPsf != null && (psf == null || psf > maxPsf)) return false;
+      }
+      if (filterMinDate && c.transaction_date < filterMinDate) return false;
+      if (filterMaxDate && c.transaction_date > filterMaxDate) return false;
+      const minImd = filterMinImd ? Number(filterMinImd) : null;
+      const maxImd = filterMaxImd ? Number(filterMaxImd) : null;
+      if (minImd != null && (c.imd_decile == null || c.imd_decile < minImd)) return false;
+      if (maxImd != null && (c.imd_decile == null || c.imd_decile > maxImd)) return false;
       return true;
     });
   }
@@ -421,6 +481,14 @@ export default function ComparableSearch({
     filterMinAge !== "",
     filterMaxAge !== "",
     filterEpcRating.size > 0,
+    filterPostcode.size > 0,
+    filterAddress !== "",
+    filterMinPsf !== "",
+    filterMaxPsf !== "",
+    filterMinDate !== "",
+    filterMaxDate !== "",
+    filterMinImd !== "",
+    filterMaxImd !== "",
   ].filter(Boolean).length;
 
   function clearAllFilters() {
@@ -428,6 +496,9 @@ export default function ComparableSearch({
     setFilterNewBuild("all"); setFilterMinPrice(""); setFilterMaxPrice("");
     setFilterMinArea(""); setFilterMaxArea(""); setFilterMinRooms(""); setFilterMaxRooms("");
     setFilterMinAge(""); setFilterMaxAge(""); setFilterEpcRating(new Set());
+    setFilterPostcode(new Set()); setFilterAddress("");
+    setFilterMinPsf(""); setFilterMaxPsf(""); setFilterMinDate(""); setFilterMaxDate("");
+    setFilterMinImd(""); setFilterMaxImd("");
   }
 
   const byTier: Record<number, ComparableCandidate[]> = {};
@@ -468,179 +539,159 @@ export default function ComparableSearch({
       )}
 
       {/* ── Controls ── */}
-      <div className={`rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-5 shadow-lg shadow-black/30 space-y-4 ${locked ? "opacity-50 pointer-events-none select-none" : ""}`}>
-        <h3 className="font-semibold text-[var(--color-text-primary)] text-sm">
-          {isBuilding ? "Same Building Sales" : "Additional Sales"}
-        </h3>
-
-        {/* Subject summary */}
-        <div className="rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border)] px-4 py-3 text-xs text-[var(--color-text-secondary)]">
-          <span className="font-medium text-[var(--color-text-primary)]">Subject: </span>{subjectSummary || "—"}
-          {isBuilding && buildingName && (
-            <span className="ml-2 text-[var(--color-text-secondary)]">· {buildingName}</span>
-          )}
-          {!isBuilding && streetName && (
-            <span className="ml-2 text-[var(--color-text-secondary)]">· {streetName}</span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-4 items-end">
-          {/* Target count — outward mode only */}
-          {!isBuilding && (
-            <div>
-              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">Target comparables</label>
-              <div className="flex gap-1">
-                {[5, 8, 10, 15, 20].map(n => (
-                  <button
-                    key={n}
-                    onClick={() => setTargetCount(n)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                      targetCount === n
-                        ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]"
-                        : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]"
-                    }`}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Valuation date — compulsory, shared across both tabs */}
-          <div>
-            <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-              Valuation date <span className="text-[var(--color-accent-pink)]">*</span>
+      <div className={`rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-4 py-3 shadow-md shadow-black/20 space-y-2.5 ${locked ? "opacity-50 pointer-events-none select-none" : ""}`}>
+        {/* Single compact row: date + sliders + button */}
+        <div className="flex items-end gap-3 flex-wrap">
+          {/* Valuation date */}
+          <div className="shrink-0">
+            <label className="block text-[10px] font-medium text-[var(--color-text-secondary)]/70 mb-0.5">
+              Val. date <span className="text-[var(--color-accent-pink)]">*</span>
             </label>
             <input
               type="date"
               value={valuationDate}
               onChange={e => onValuationDateChange(e.target.value)}
-              className={`border rounded-lg px-3 py-1.5 text-xs text-[var(--color-text-primary)] bg-[var(--color-bg-surface)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] ${
+              className={`border rounded-lg px-2 py-1 text-xs text-[var(--color-text-primary)] bg-[var(--color-bg-surface)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] ${
                 !valuationDate ? "border-[#FF2D78]/60" : "border-[var(--color-border)]"
               }`}
             />
           </div>
 
           {/* Time window slider */}
-          {isBuilding ? (
-            <div className="min-w-[200px]">
-              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                Time window
-                <span className="ml-1.5 font-semibold text-[var(--color-text-primary)]">{buildingMonths} months</span>
-              </label>
-              <input
-                type="range"
-                min={12} max={36} step={6}
-                value={buildingMonths}
+          <div className="flex-1 min-w-[140px] max-w-[200px]">
+            <label className="block text-[10px] font-medium text-[var(--color-text-secondary)]/70 mb-0.5">
+              Time <span className="font-semibold text-[var(--color-text-primary)]">{isBuilding ? buildingMonths : neighbouringMonths}mo</span>
+            </label>
+            {isBuilding ? (
+              <input type="range" min={12} max={36} step={6} value={buildingMonths}
                 onChange={e => setBuildingMonths(Number(e.target.value))}
-                list="building-months-ticks"
-                className="w-full accent-[var(--color-accent)]"
-              />
-              <datalist id="building-months-ticks">
-                {[12, 18, 24, 30, 36].map(v => <option key={v} value={v} />)}
-              </datalist>
-              <div className="flex justify-between text-xs text-[var(--color-text-secondary)]/70 mt-0.5">
-                {[12, 18, 24, 30, 36].map(v => <span key={v}>{v}</span>)}
+                className="w-full h-1.5 accent-[var(--color-accent)]" />
+            ) : (
+              <input type="range" min={6} max={24} step={6} value={neighbouringMonths}
+                onChange={e => setNeighbouringMonths(Number(e.target.value))}
+                className="w-full h-1.5 accent-[var(--color-accent)]" />
+            )}
+            <div className="flex justify-between text-[9px] text-[var(--color-text-secondary)]/50 -mt-0.5">
+              {(isBuilding ? [12, 24, 36] : [6, 12, 24]).map(v => <span key={v}>{v}</span>)}
+            </div>
+          </div>
+
+          {/* Building age — dual range */}
+          <div className="flex-1 min-w-[160px] max-w-[240px]">
+            <label className="block text-[10px] font-medium text-[var(--color-text-secondary)]/70 mb-0.5">
+              Age <span className="font-semibold text-[var(--color-text-primary)]">{ageMin}/{ageMax > 0 ? "+" : ""}{ageMax}yr</span>
+            </label>
+            <div className="relative h-4">
+              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-1 rounded bg-[var(--color-border)]" />
+              <div className="absolute top-1/2 -translate-y-1/2 h-1 rounded bg-[var(--color-accent)]"
+                style={{ left: `${((ageMin + 150) / 300) * 100}%`, right: `${((150 - ageMax) / 300) * 100}%` }} />
+              <input type="range" min={-150} max={150} step={10} value={ageMin}
+                onChange={e => { const v = Number(e.target.value); if (v <= ageMax) setAgeMin(v); }}
+                className="absolute inset-0 w-full appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--color-accent)] [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[var(--color-bg-panel)] [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-[var(--color-accent)] [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[var(--color-bg-panel)]" />
+              <input type="range" min={-150} max={150} step={10} value={ageMax}
+                onChange={e => { const v = Number(e.target.value); if (v >= ageMin) setAgeMax(v); }}
+                className="absolute inset-0 w-full appearance-none bg-transparent pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[var(--color-accent)] [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[var(--color-bg-panel)] [&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-[var(--color-accent)] [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[var(--color-bg-panel)]" />
+            </div>
+            <div className="flex justify-between text-[9px] text-[var(--color-text-secondary)]/50 -mt-0.5">
+              <span>-150</span><span>0</span><span>+150</span>
+            </div>
+          </div>
+
+          {/* Target count — outward only */}
+          {!isBuilding && (
+            <div className="shrink-0">
+              <label className="block text-[10px] font-medium text-[var(--color-text-secondary)]/70 mb-0.5">Target</label>
+              <div className="flex gap-0.5">
+                {[5, 8, 10, 15, 20].map(n => (
+                  <button key={n} onClick={() => setTargetCount(n)}
+                    className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                      targetCount === n
+                        ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]"
+                        : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]"
+                    }`}
+                  >{n}</button>
+                ))}
               </div>
             </div>
-          ) : (
-            <div className="min-w-[200px]">
-              <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">
-                Time window
-                <span className="ml-1.5 font-semibold text-[var(--color-text-primary)]">{neighbouringMonths} months</span>
-              </label>
-              <input
-                type="range"
-                min={6} max={24} step={6}
-                value={neighbouringMonths}
-                onChange={e => setNeighbouringMonths(Number(e.target.value))}
-                list="neighbouring-months-ticks"
-                className="w-full accent-[var(--color-accent)]"
-              />
-              <datalist id="neighbouring-months-ticks">
-                {[6, 12, 18, 24].map(v => <option key={v} value={v} />)}
-              </datalist>
-              <div className="flex justify-between text-xs text-[var(--color-text-secondary)]/70 mt-0.5">
-                {[6, 12, 18, 24].map(v => <span key={v}>{v}</span>)}
+          )}
+
+          {/* Radius filter — outward only */}
+          {!isBuilding && (
+            <div className="shrink-0">
+              <label className="block text-[10px] font-medium text-[var(--color-text-secondary)]/70 mb-0.5">Radius</label>
+              <div className="flex gap-0.5">
+                {([null, 0.5, 1, 1.5, 2, 3] as (number | null)[]).map(r => (
+                  <button key={String(r)} onClick={() => setRadiusMiles(r)}
+                    className={`px-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
+                      radiusMiles === r
+                        ? "bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]"
+                        : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]"
+                    }`}
+                  >{r == null ? "All" : `${r}mi`}</button>
+                ))}
               </div>
+            </div>
+          )}
+
+          {/* Adjacent toggle — outward only */}
+          {!isBuilding && (
+            <div className="flex items-center gap-1.5 shrink-0 pb-0.5">
+              <button onClick={() => setOutwardEnabled(v => !v)}
+                className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${outwardEnabled ? "bg-[var(--color-btn-primary-bg)]" : "bg-[var(--color-border)]"}`}
+                role="switch" aria-checked={outwardEnabled}>
+                <span className={`inline-block h-3 w-3 rounded-full bg-[var(--color-text-primary)] shadow transform transition-transform duration-200 ${outwardEnabled ? "translate-x-3" : "translate-x-0"}`} />
+              </button>
+              <span className="text-[10px] text-[var(--color-text-secondary)]">Adj. areas</span>
             </div>
           )}
 
           {/* Search button */}
-          <button
-            onClick={runSearch}
-            disabled={loading || !postcode || !valuationDate}
-            className="px-5 py-2 rounded-xl text-sm font-bold bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)]
-                       hover:bg-[#00D4E0] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          <button onClick={runSearch} disabled={loading || !postcode || !valuationDate}
+            className="shrink-0 px-4 py-1.5 rounded-lg text-xs font-bold bg-[var(--color-btn-primary-bg)] text-[var(--color-btn-primary-text)] hover:bg-[#00D4E0] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={!valuationDate ? "Set valuation date first" : undefined}
           >
             {loading ? "Searching…" : "Find comparables"}
           </button>
-
-          {/* Outward mode only: adjacent areas toggle */}
-          {!isBuilding && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setOutwardEnabled(v => !v)}
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent
-                            transition-colors duration-200 focus:outline-none
-                            ${outwardEnabled ? "bg-[var(--color-btn-primary-bg)]" : "bg-[var(--color-border)]"}`}
-                role="switch"
-                aria-checked={outwardEnabled}
-              >
-                <span className={`inline-block h-4 w-4 rounded-full bg-[var(--color-text-primary)] shadow transform transition-transform duration-200
-                                 ${outwardEnabled ? "translate-x-4" : "translate-x-0"}`} />
-              </button>
-              <div>
-                <span className="text-xs text-[var(--color-text-secondary)]">Include adjacent areas</span>
-                <span className="ml-1 text-xs text-[var(--color-text-secondary)]/70">(Tier 4)</span>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Exclusion notice for outward mode */}
+        {/* Exclusion notice — outward mode */}
         {!isBuilding && (excludeIds.length > 0 || excludeAddressKeys.length > 0) && (
-          <div className="flex items-center gap-2 rounded-lg bg-[var(--color-btn-primary-bg)]/10 border border-[var(--color-accent)]/30 px-3 py-2 text-xs text-[var(--color-accent)]">
-            <span>ℹ</span>
-            <span>
-              Properties already found in Same Building Sales will be excluded
-              {excludeAddressKeys.length > 0 && (
-                <span> (<span className="font-semibold">{excludeAddressKeys.length} unit{excludeAddressKeys.length !== 1 ? "s" : ""}</span> by address)</span>
-              )}
-              {excludeIds.length > 0 && (
-                <span> + <span className="font-semibold">{excludeIds.length} transaction{excludeIds.length !== 1 ? "s" : ""}</span> by ID</span>
-              )}
-              .
-            </span>
-          </div>
+          <p className="text-[10px] text-[var(--color-accent)]/80">
+            ℹ Same Building results excluded ({excludeAddressKeys.length} address{excludeAddressKeys.length !== 1 ? "es" : ""}{excludeIds.length > 0 ? ` + ${excludeIds.length} ID${excludeIds.length !== 1 ? "s" : ""}` : ""})
+          </p>
         )}
 
-        {/* Hard deck info */}
-        <div className="text-xs text-[var(--color-text-secondary)]/70 space-y-0.5">
-          <p>
-            <span className="text-[var(--color-text-secondary)]">Hard deck:</span>{" "}
-            <span className="text-[var(--color-text-secondary)] font-medium">{normTenure}</span>
-            {" · "}
-            <span className="text-[var(--color-text-secondary)] font-medium">{propType}</span>
-            {subType && <span className="text-[var(--color-text-secondary)]"> ({subType})</span>}
-            {era && <span className="text-[var(--color-text-secondary)] font-medium"> · {era}</span>}
-            {normRooms != null && <span className="text-[var(--color-text-secondary)] font-medium"> · {normRooms} hab. rooms</span>}
-          </p>
-          <p>
-            {isBuilding
-              ? <>Tier 1 (same building, {buildingMonths} mo) + Tier 2 (same postcode). Tenure never relaxed. Building era (flats) never relaxed.</>
-              : <>Tier 3 (same outward code){outwardEnabled ? " + Tier 4 (adjacent areas)" : ""} — {neighbouringMonths} month window. Expands: type ±1 → habitable rooms ±1. Tenure never relaxed.</>
-            }
-          </p>
-        </div>
+        {/* Hard deck — single compact line */}
+        <p className="text-[10px] text-[var(--color-text-secondary)]/50">
+          Hard deck: {normTenure} · {propType}{subType ? ` (${subType})` : ""}{era ? ` · ${era}` : ""}{normRooms != null ? ` · ${normRooms} hab. rooms` : ""}
+          {" · "}
+          {isBuilding
+            ? `T1 (building, ${buildingMonths}mo) + T2 (postcode)`
+            : `T3 (outward)${outwardEnabled ? " + T4 (adjacent)" : ""} — ${neighbouringMonths}mo`
+          }
+        </p>
       </div>
 
       {/* ── Error ── */}
       {error && (
         <div className="rounded-xl bg-[#FF3131]/10 border border-[#FF3131]/40 px-4 py-3 text-sm text-[#FF3131]">
           {error}
+        </div>
+      )}
+
+      {/* ── No coverage notice ── */}
+      {result && result.search_metadata.total_candidates_scanned === 0 && result.comparables.length === 0 && (
+        <div className="rounded-xl border border-[var(--color-status-warning)]/40 bg-[var(--color-status-warning)]/10 px-5 py-4 text-sm">
+          <div className="flex items-start gap-3">
+            <span className="text-[var(--color-status-warning)] text-base leading-none mt-0.5">⚠</span>
+            <div>
+              <p className="font-semibold text-[var(--color-status-warning)]">No comparable data available for this area</p>
+              <p className="text-[var(--color-text-secondary)] mt-1">
+                This postcode is outside our current data coverage. Comparable evidence is available for London boroughs only during the pilot phase.
+                You can still add comparables manually using the <strong>Additional</strong> tab.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -686,45 +737,6 @@ export default function ComparableSearch({
               {/* Toolbar row */}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  {/* Sort buttons */}
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-[var(--color-text-secondary)]/70 mr-1">Sort:</span>
-                    {([
-                      ["default", "Tier"],
-                      ["date",    "Date"],
-                      ["price",   "Price"],
-                      ["size",    "Size"],
-                      ["psf",     "£/sqft"],
-                    ] as [typeof sortBy, string][]).map(([key, label]) => {
-                      const active = sortBy === key;
-                      return (
-                        <button
-                          key={key}
-                          onClick={() => {
-                            if (active && key !== "default") {
-                              setSortDir(d => d === "desc" ? "asc" : "desc");
-                            } else {
-                              setSortBy(key);
-                              setSortDir(key === "date" ? "desc" : key === "default" ? "desc" : "desc");
-                            }
-                          }}
-                          className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors ${
-                            active
-                              ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
-                              : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]"
-                          }`}
-                        >
-                          {label}
-                          {active && key !== "default" && (
-                            <span className="ml-1">{sortDir === "asc" ? "↑" : "↓"}</span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Divider */}
-                  <div className="h-5 w-px bg-[var(--color-border)]" />
 
                   {/* Filter toggle */}
                   <button
@@ -746,208 +758,227 @@ export default function ComparableSearch({
                   </button>
                 </div>
 
-                {/* Adopt All / Unadopt All */}
+                {/* Adopt All / Unadopt All — applies to filtered results */}
                 {onAdoptAll && (() => {
-                  const nonRejected = result.comparables.filter(c => !rejected.has(c.transaction_id ?? c.address));
-                  const unadopted = nonRejected.filter(c => !adoptedIds.has(c.transaction_id ?? c.address));
-                  const adopted = nonRejected.filter(c => adoptedIds.has(c.transaction_id ?? c.address));
+                  const filtered = filterComps(result.comparables).filter(c => !rejected.has(c.transaction_id ?? c.address));
+                  const unadopted = filtered.filter(c => !adoptedIds.has(c.transaction_id ?? c.address));
+                  const adopted = filtered.filter(c => adoptedIds.has(c.transaction_id ?? c.address));
                   const allAdopted = unadopted.length === 0 && adopted.length > 0;
+                  const hasFilters = activeFilterCount > 0;
+                  const label = hasFilters ? "Adopt Filtered" : "Adopt All";
+                  const unadoptLabel = hasFilters ? "Unadopt Filtered" : "Unadopt All";
                   return allAdopted ? (
                     <button
                       onClick={() => onUnadoptAll?.(adopted)}
                       className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors bg-[#FF3131]/15 text-[#FF3131] border border-[#FF3131]/30 hover:bg-[#FF3131]/25"
                     >
-                      Unadopt All ({adopted.length})
+                      {unadoptLabel} ({adopted.length})
                     </button>
                   ) : (
                     <button
                       onClick={() => onAdoptAll(unadopted)}
-                      disabled={nonRejected.length === 0}
+                      disabled={filtered.length === 0}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-colors ${
-                        nonRejected.length === 0
+                        filtered.length === 0
                           ? "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)]/50 cursor-not-allowed border border-[var(--color-border)]/50"
                           : "bg-[#39FF14]/15 text-[var(--color-status-success)] border border-[#39FF14]/30 hover:bg-[#39FF14]/25"
                       }`}
                     >
-                      Adopt All ({unadopted.length})
+                      {label} ({unadopted.length})
                     </button>
                   );
                 })()}
               </div>
 
               {/* ── Filter panel (collapsible) ── */}
-              {filtersOpen && (
-                <div className="mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-base)] p-4 space-y-4">
-                  {/* Row 1: Toggle filters */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    {/* Tenure */}
-                    <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Tenure</label>
-                      <div className="flex gap-1">
-                        {(["all", "freehold", "leasehold"] as const).map(v => (
-                          <button key={v} onClick={() => setFilterTenure(v)}
-                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
-                              filterTenure === v
-                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
-                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
-                            }`}
-                          >{v}</button>
-                        ))}
-                      </div>
-                    </div>
+              {filtersOpen && (() => {
+                const comps = result ? result.comparables : [];
+                const uniq = (vals: (number | null | undefined)[]) => [...new Set(vals.filter((v): v is number => v != null))].sort((a, b) => a - b);
+                const prices = uniq(comps.map(c => c.price));
+                const areas = uniq(comps.map(c => c.floor_area_sqm));
+                const rooms = uniq(comps.map(c => c.bedrooms));
+                const years = uniq(comps.map(c => c.construction_age_best));
+                const postcodes = [...new Set(comps.map(c => c.postcode).filter(Boolean))].sort();
+                const psfs = comps.filter(c => c.floor_area_sqm && c.floor_area_sqm > 0).map(c => Math.round(c.price / (c.floor_area_sqm! * 10.7639)));
+                const psfValues = [...new Set(psfs)].sort((a, b) => a - b);
+                const fmtP = (v: number) => v >= 1_000_000 ? `£${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 2)}m` : `£${(v / 1_000).toFixed(0)}k`;
+                const lbl = "block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]/70 mb-1.5";
+                const sel = "w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] cursor-pointer";
+                const inp = "w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-lg px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]";
+                const tog = (active: boolean) => `px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors capitalize ${active ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30" : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"}`;
+                const ratingColor: Record<string, string> = { A: "#39FF14", B: "#4ADE80", C: "#FBBF24", D: "#F97316", E: "#EA580C", F: "#FF3131", G: "#FF3131" };
 
-                    {/* Property type */}
+                return (
+                <div className="mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-base)] p-4 space-y-3">
+
+                  {/* Section 1: Property characteristics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Type</label>
+                      <label className={lbl}>Type</label>
                       <div className="flex gap-1">
                         {(["all", "flat", "house"] as const).map(v => (
-                          <button key={v} onClick={() => setFilterType(v)}
-                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
-                              filterType === v
-                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
-                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
-                            }`}
-                          >{v}</button>
+                          <button key={v} onClick={() => setFilterType(v)} className={tog(filterType === v)}>{v}</button>
                         ))}
                       </div>
                     </div>
-
-                    {/* EPC verified */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">EPC Verified</label>
+                      <label className={lbl}>Tenure</label>
                       <div className="flex gap-1">
-                        {(["all", "yes", "no"] as const).map(v => (
-                          <button key={v} onClick={() => setFilterEpcVerified(v)}
-                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
-                              filterEpcVerified === v
-                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
-                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
-                            }`}
-                          >{v}</button>
+                        {(["all", "freehold", "leasehold"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterTenure(v)} className={tog(filterTenure === v)}>{v}</button>
                         ))}
                       </div>
                     </div>
-
-                    {/* New build */}
                     <div>
-                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">New Build</label>
+                      <label className={lbl}>New Build</label>
                       <div className="flex gap-1">
                         {(["all", "yes", "no"] as const).map(v => (
-                          <button key={v} onClick={() => setFilterNewBuild(v)}
-                            className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors capitalize ${
-                              filterNewBuild === v
-                                ? "bg-[var(--color-btn-primary-bg)]/15 text-[var(--color-accent)] border-[var(--color-accent)]/30"
-                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
-                            }`}
-                          >{v}</button>
+                          <button key={v} onClick={() => setFilterNewBuild(v)} className={tog(filterNewBuild === v)}>{v}</button>
                         ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>EPC Verified</label>
+                      <div className="flex gap-1">
+                        {(["all", "yes", "no"] as const).map(v => (
+                          <button key={v} onClick={() => setFilterEpcVerified(v)} className={tog(filterEpcVerified === v)}>{v}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>EPC Rating</label>
+                      <div className="flex gap-0.5">
+                        {["A", "B", "C", "D", "E", "F", "G"].map(r => {
+                          const on = filterEpcRating.has(r);
+                          return (
+                            <button key={r} onClick={() => setFilterEpcRating(prev => { const n = new Set(prev); if (n.has(r)) n.delete(r); else n.add(r); return n; })}
+                              className={`w-7 h-7 text-[10px] font-bold rounded-md border transition-colors ${on ? "" : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"}`}
+                              style={on ? { backgroundColor: `${ratingColor[r]}20`, color: ratingColor[r], borderColor: `${ratingColor[r]}80` } : undefined}
+                            >{r}</button>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
 
-                  {/* Row 2: Range filters — all dropdowns from available values */}
-                  {(() => {
-                    const comps = result ? result.comparables : [];
-                    const uniq = (vals: (number | null | undefined)[]) => [...new Set(vals.filter((v): v is number => v != null))].sort((a, b) => a - b);
-                    const prices = uniq(comps.map(c => c.price));
-                    const areas = uniq(comps.map(c => c.floor_area_sqm));
-                    const rooms = uniq(comps.map(c => c.bedrooms));
-                    const years = uniq(comps.map(c => c.construction_age_best));
-                    const selCls = "w-full bg-[var(--color-bg-surface)] border border-[var(--color-border)] rounded-md px-2 py-1 text-xs text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)] cursor-pointer";
-                    const fmtPrice = (v: number) => v >= 1_000_000 ? `£${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 2)}m` : `£${(v / 1_000).toFixed(0)}k`;
-                    return (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        {/* Price range */}
-                        <div>
-                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Price Range (£)</label>
-                          <div className="flex items-center gap-1.5">
-                            <select value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)} className={selCls}>
-                              <option value="">Min</option>
-                              {prices.map(p => <option key={p} value={String(p)}>{fmtPrice(p)}</option>)}
-                            </select>
-                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                            <select value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)} className={selCls}>
-                              <option value="">Max</option>
-                              {prices.map(p => <option key={p} value={String(p)}>{fmtPrice(p)}</option>)}
-                            </select>
-                          </div>
-                        </div>
+                  <div className="border-t border-[var(--color-border)]/40" />
 
-                        {/* Floor area range */}
-                        <div>
-                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Floor Area (m²)</label>
-                          <div className="flex items-center gap-1.5">
-                            <select value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)} className={selCls}>
-                              <option value="">Min</option>
-                              {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
-                            </select>
-                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                            <select value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)} className={selCls}>
-                              <option value="">Max</option>
-                              {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* Rooms range */}
-                        <div>
-                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Hab. Rooms</label>
-                          <div className="flex items-center gap-1.5">
-                            <select value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} className={selCls}>
-                              <option value="">Min</option>
-                              {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
-                            </select>
-                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                            <select value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} className={selCls}>
-                              <option value="">Max</option>
-                              {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
-                            </select>
-                          </div>
-                        </div>
-
-                        {/* Build year range */}
-                        <div>
-                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">Build Year</label>
-                          <div className="flex items-center gap-1.5">
-                            <select value={filterMinAge} onChange={e => setFilterMinAge(e.target.value)} className={selCls}>
-                              <option value="">Min</option>
-                              {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
-                            </select>
-                            <span className="text-[var(--color-text-muted)] text-xs">–</span>
-                            <select value={filterMaxAge} onChange={e => setFilterMaxAge(e.target.value)} className={selCls}>
-                              <option value="">Max</option>
-                              {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
-                            </select>
-                          </div>
-                        </div>
+                  {/* Section 2: Price & size ranges */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className={lbl}>Sold Price</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinPrice} onChange={e => setFilterMinPrice(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {prices.map(p => <option key={p} value={String(p)}>{fmtP(p)}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxPrice} onChange={e => setFilterMaxPrice(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {prices.map(p => <option key={p} value={String(p)}>{fmtP(p)}</option>)}
+                        </select>
                       </div>
-                    );
-                  })()}
+                    </div>
+                    <div>
+                      <label className={lbl}>£/sqft</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinPsf} onChange={e => setFilterMinPsf(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {psfValues.map(v => <option key={v} value={String(v)}>£{v.toLocaleString("en-GB")}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxPsf} onChange={e => setFilterMaxPsf(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {psfValues.map(v => <option key={v} value={String(v)}>£{v.toLocaleString("en-GB")}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>Floor Area (m²)</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinArea} onChange={e => setFilterMinArea(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxArea} onChange={e => setFilterMaxArea(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {areas.map(a => <option key={a} value={String(a)}>{a}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>Hab. Rooms</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinRooms} onChange={e => setFilterMinRooms(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxRooms} onChange={e => setFilterMaxRooms(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {rooms.map(r => <option key={r} value={String(r)}>{r}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
 
-                  {/* Row 3: EPC rating multi-select */}
-                  <div>
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)] mb-1.5">EPC Rating</label>
-                    <div className="flex gap-1">
-                      {["A", "B", "C", "D", "E", "F", "G"].map(r => {
-                        const sel = filterEpcRating.has(r);
-                        const ratingColor: Record<string, string> = {
-                          A: "#39FF14", B: "#4ADE80", C: "#FBBF24", D: "#F97316", E: "#EA580C", F: "#FF3131", G: "#FF3131",
-                        };
-                        return (
-                          <button key={r} onClick={() => setFilterEpcRating(prev => {
-                            const next = new Set(prev);
-                            if (next.has(r)) next.delete(r); else next.add(r);
-                            return next;
-                          })}
-                            className={`w-8 h-7 text-xs font-bold rounded-md border transition-colors ${
-                              sel
-                                ? `border-[${ratingColor[r]}]/50 text-[${ratingColor[r]}]`
-                                : "bg-[var(--color-bg-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-primary)]"
-                            }`}
-                            style={sel ? { backgroundColor: `${ratingColor[r]}20`, color: ratingColor[r], borderColor: `${ratingColor[r]}80` } : undefined}
-                          >{r}</button>
-                        );
-                      })}
+                  <div className="border-t border-[var(--color-border)]/40" />
+
+                  {/* Section 3: Time & location */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label className={lbl}>Sale Date</label>
+                      <div className="flex items-center gap-1">
+                        <input type="date" value={filterMinDate} onChange={e => setFilterMinDate(e.target.value)} className={inp} />
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <input type="date" value={filterMaxDate} onChange={e => setFilterMaxDate(e.target.value)} className={inp} />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>Build Year</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinAge} onChange={e => setFilterMinAge(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxAge} onChange={e => setFilterMaxAge(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {years.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>IMD Decile</label>
+                      <div className="flex items-center gap-1">
+                        <select value={filterMinImd} onChange={e => setFilterMinImd(e.target.value)} className={sel}>
+                          <option value="">Min</option>
+                          {[1,2,3,4,5,6,7,8,9,10].map(d => <option key={d} value={String(d)}>{d}</option>)}
+                        </select>
+                        <span className="text-[var(--color-text-muted)] text-[10px]">–</span>
+                        <select value={filterMaxImd} onChange={e => setFilterMaxImd(e.target.value)} className={sel}>
+                          <option value="">Max</option>
+                          {[1,2,3,4,5,6,7,8,9,10].map(d => <option key={d} value={String(d)}>{d}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>Postcode</label>
+                      <div className="flex flex-wrap gap-1">
+                        {postcodes.map(pc => {
+                          const on = filterPostcode.has(pc);
+                          return (
+                            <button key={pc} onClick={() => setFilterPostcode(prev => { const n = new Set(prev); if (n.has(pc)) n.delete(pc); else n.add(pc); return n; })}
+                              className={tog(on)}
+                            >{pc}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <label className={lbl}>Address</label>
+                      <input type="text" value={filterAddress} onChange={e => setFilterAddress(e.target.value)} placeholder="Search..." className={inp} />
                     </div>
                   </div>
 
@@ -1009,6 +1040,36 @@ export default function ComparableSearch({
                             <button onClick={() => setFilterEpcRating(new Set())} className="hover:text-white">×</button>
                           </span>
                         )}
+                        {filterPostcode.size > 0 && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            {[...filterPostcode].join(", ")}
+                            <button onClick={() => setFilterPostcode(new Set())} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {filterAddress && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            &quot;{filterAddress}&quot;
+                            <button onClick={() => setFilterAddress("")} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinPsf || filterMaxPsf) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            £{filterMinPsf || "0"}–£{filterMaxPsf || "∞"}/sqft
+                            <button onClick={() => { setFilterMinPsf(""); setFilterMaxPsf(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinDate || filterMaxDate) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            {filterMinDate || "…"} to {filterMaxDate || "…"}
+                            <button onClick={() => { setFilterMinDate(""); setFilterMaxDate(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
+                        {(filterMinImd || filterMaxImd) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#FF2D78]/10 text-[var(--color-accent-pink)] border border-[#FF2D78]/20">
+                            IMD {filterMinImd || "1"}–{filterMaxImd || "10"}
+                            <button onClick={() => { setFilterMinImd(""); setFilterMaxImd(""); }} className="hover:text-white">×</button>
+                          </span>
+                        )}
                       </div>
                       <button onClick={clearAllFilters}
                         className="text-[10px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-accent-pink)] transition-colors shrink-0 ml-2"
@@ -1018,7 +1079,8 @@ export default function ComparableSearch({
                     </div>
                   )}
                 </div>
-              )}
+                );
+              })()}
 
               {/* Active filter pills (shown when panel is collapsed) */}
               {!filtersOpen && activeFilterCount > 0 && (
@@ -1051,6 +1113,72 @@ export default function ComparableSearch({
             </div>
           )}
 
+          {/* ── Subject property row ── */}
+          <div className="rounded-2xl border border-[#00E5FF]/40 overflow-hidden shadow-lg shadow-[#00E5FF]/10">
+            <div className="px-4 py-2.5 border-b border-[#00E5FF]/30 bg-gradient-to-r from-[#00E5FF]/15 via-[#00E5FF]/8 to-transparent flex items-center gap-2">
+              <span>🏠</span>
+              <span className="font-orbitron font-bold text-xs text-[#00E5FF] tracking-wider drop-shadow-[0_0_6px_rgba(0,229,255,0.4)]">SUBJECT PROPERTY</span>
+            </div>
+            <div className="overflow-x-auto">
+              <div className="bg-[var(--color-bg-panel)] min-w-[960px]">
+                <CompTableHeader />
+                <div className="grid items-center gap-x-3 px-4 py-2.5 border-t border-[var(--color-border)]/60 bg-[var(--color-btn-primary-bg)]/5"
+                  style={{ gridTemplateColumns: COMP_GRID }}>
+                  {/* Arrow (empty) */}
+                  <span />
+                  {/* Address */}
+                  <span className="text-xs font-medium text-[var(--color-accent)] truncate" title={[saon, buildingName, streetName].filter(Boolean).join(", ")}>
+                    {[saon, buildingName, streetName].filter(Boolean).join(", ") || "—"}
+                  </span>
+                  {/* Postcode */}
+                  <span className="text-xs text-[var(--color-text-secondary)] text-right">{postcode}</span>
+                  {/* Sold Price */}
+                  <span className="text-xs font-bold text-[var(--color-accent)] text-right">
+                    {lastSoldPrice != null ? fmtPrice(lastSoldPrice) : <span className="text-[var(--color-text-secondary)]/40 font-normal">—</span>}
+                  </span>
+                  {/* Size ft² */}
+                  <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                    {floorArea != null ? Math.round(floorArea * 10.7639).toLocaleString("en-GB") : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* £/sqft */}
+                  <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                    {lastSoldPrice != null && floorArea != null ? `£${Math.round(lastSoldPrice / (floorArea * 10.7639)).toLocaleString("en-GB")}` : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* Date */}
+                  <span className="text-xs text-[var(--color-text-secondary)] text-right">
+                    {lastSoldDate ? fmtDate(lastSoldDate) : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* Type */}
+                  <span className="text-xs text-[var(--color-text-secondary)] capitalize truncate text-right" title={propType && subType ? `${propType} (${subType})` : propType ?? undefined}>
+                    {propType ? <>{propType}{subType ? <span className="text-[var(--color-text-secondary)]/50"> ({subType})</span> : ""}</> : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* H. Rm */}
+                  <span className="text-xs text-[var(--color-text-secondary)] text-right">{normRooms ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}</span>
+                  {/* EPC */}
+                  <span className={`text-xs font-semibold text-right ${epcRating ? (EPC_TEXT[epcRating] ?? "text-[var(--color-text-secondary)]") : ""}`}>
+                    {epcRating ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* IMD */}
+                  <span className="flex items-center justify-end">
+                    {subjectImdDecile != null ? (
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold text-white"
+                            style={{ backgroundColor: IMD_COLOURS[subjectImdDecile] ?? "#94A3B8" }}
+                            title={`IMD Decile ${subjectImdDecile} (1=most deprived, 10=least)`}>
+                        {subjectImdDecile}
+                      </span>
+                    ) : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* Era */}
+                  <span className="text-xs text-cyan-400 font-medium text-right">
+                    {buildYear != null ? `c.${buildYear}` : <span className="text-[var(--color-text-secondary)]/40">—</span>}
+                  </span>
+                  {/* Checkbox (empty) */}
+                  <span />
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Tier groups */}
           {Object.entries(byTier)
             .sort(([a], [b]) => Number(a) - Number(b))
@@ -1082,8 +1210,17 @@ export default function ComparableSearch({
                     )}
                   </div>
 
-                  {/* Comparable cards */}
-                  <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)]">
+                  {/* Comparable table */}
+                  <div className="overflow-x-auto">
+                  <div className="divide-y divide-[var(--color-border)]/60 bg-[var(--color-bg-panel)] min-w-[960px]">
+                    <CompTableHeader sortBy={sortBy} sortDir={sortDir} onSort={(key: SortKey) => {
+                      if (sortBy === key && key !== "default") {
+                        setSortDir(d => d === "desc" ? "asc" : "desc");
+                      } else {
+                        setSortBy(key);
+                        setSortDir("desc");
+                      }
+                    }} />
                     {active.map((comp, idx) => (
                       <CompCard
                         key={comp.transaction_id ?? idx}
@@ -1111,6 +1248,7 @@ export default function ComparableSearch({
                         }}
                       />
                     ))}
+                  </div>
                   </div>
                 </div>
               );
@@ -1148,11 +1286,61 @@ const EPC_BADGE: Record<string, string> = {
   G: "bg-[#DC2626]/20 text-[#FF3131]",
 };
 
+export const EPC_TEXT: Record<string, string> = {
+  A: "text-[var(--color-status-success)]",
+  B: "text-[#4ADE80]",
+  C: "text-[#FBBF24]",
+  D: "text-[#F97316]",
+  E: "text-[#EA580C]",
+  F: "text-[#FF3131]",
+  G: "text-[#FF3131]",
+};
+
+export const IMD_COLOURS: Record<number, string> = {
+  1: "#DC2626", 2: "#EA580C", 3: "#F97316", 4: "#FBBF24", 5: "#FDE047",
+  6: "#BEF264", 7: "#86EFAC", 8: "#4ADE80", 9: "#22C55E", 10: "#16A34A",
+};
+
 function DetailField({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="bg-[var(--color-bg-surface)] px-4 py-2.5">
+    <div className="bg-[var(--color-bg-base)] px-4 py-2.5">
       <dt className="text-[10px] uppercase tracking-wider text-[var(--color-text-secondary)]/60 mb-0.5">{label}</dt>
       <dd className="text-sm text-[var(--color-text-primary)]">{value ?? <span className="text-[var(--color-text-secondary)]/40">—</span>}</dd>
+    </div>
+  );
+}
+
+/* ── Grid template for comp table ──────────────────────────────────────────── */
+export const COMP_GRID = "24px 1.5fr 76px 92px 64px 72px 86px 96px 48px 40px 36px 58px 32px";
+
+type SortKey = "default" | "date" | "size" | "price" | "psf" | "postcode" | "type" | "rooms" | "epc" | "imd" | "age";
+
+export function CompTableHeader({ sortBy, sortDir, onSort }: {
+  sortBy?: SortKey;
+  sortDir?: "asc" | "desc";
+  onSort?: (key: SortKey) => void;
+}) {
+  const hdr = "text-[10px] uppercase tracking-wider text-[var(--color-text-secondary)]/60 font-medium truncate";
+  const s = "cursor-pointer hover:text-[var(--color-text-primary)] transition-colors select-none";
+  const arrow = (key: string) => sortBy === key ? (sortDir === "asc" ? " ↑" : " ↓") : "";
+  const a = (key: string) => sortBy === key ? "text-[var(--color-accent)]" : "";
+  const click = (key: SortKey) => onSort ? () => onSort(key) : undefined;
+
+  return (
+    <div className="grid items-center gap-x-3 px-4 py-2.5 border-b border-[var(--color-border)]/40" style={{ gridTemplateColumns: COMP_GRID }}>
+      <span />
+      <span className={hdr}>Address</span>
+      <span className={`${hdr} text-right ${s} ${a("postcode")}`} onClick={click("postcode")}>Postcode{arrow("postcode")}</span>
+      <span className={`${hdr} text-right ${s} ${a("price")}`} onClick={click("price")}>Sold Price{arrow("price")}</span>
+      <span className={`${hdr} text-right ${s} ${a("size")}`} onClick={click("size")}>Ft&sup2;{arrow("size")}</span>
+      <span className={`${hdr} text-right ${s} ${a("psf")}`} onClick={click("psf")}>&pound;/sqft{arrow("psf")}</span>
+      <span className={`${hdr} text-right ${s} ${a("date")}`} onClick={click("date")}>Date{arrow("date")}</span>
+      <span className={`${hdr} text-right ${s} ${a("type")}`} onClick={click("type")}>Type{arrow("type")}</span>
+      <span className={`${hdr} text-right ${s} ${a("rooms")}`} onClick={click("rooms")}>H. Rm{arrow("rooms")}</span>
+      <span className={`${hdr} text-right ${s} ${a("epc")}`} onClick={click("epc")}>EPC{arrow("epc")}</span>
+      <span className={`${hdr} text-right ${s} ${a("imd")}`} onClick={click("imd")}>IMD{arrow("imd")}</span>
+      <span className={`text-[10px] tracking-wider text-[var(--color-text-secondary)]/60 font-medium truncate text-right ${s} ${a("age")}`} onClick={click("age")}><span className="lowercase">c</span><span className="uppercase">. age</span>{arrow("age")}</span>
+      <span />
     </div>
   );
 }
@@ -1174,13 +1362,8 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
     return { label: r, cls: "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]" };
   });
 
-  // (1) Price per sq ft  (1 m² = 10.7639 ft²)
   const exactSqft = comp.floor_area_sqm != null ? comp.floor_area_sqm * 10.7639 : null;
   const pricePsf = exactSqft != null ? Math.round(comp.price / exactSqft) : null;
-
-  // (2) Building age — removed (build_year is an estimate from EPC age band midpoint, not reliable)
-
-  // (4) Size in ft²
   const areaSqft = exactSqft != null ? Math.round(exactSqft) : null;
 
   // ── Size adjustment ────────────────────────────────────────────────────────
@@ -1208,143 +1391,135 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
     sizeAdjPct = ((finalPsf - timeAdjPsf) / timeAdjPsf) * 100;
   }
 
+  // ── Indicator dots for relaxations / cat B / new build ─────────────────────
+  const dots: { color: string; title: string }[] = [];
+  if (comp.spec_relaxations.length > 0) dots.push({ color: "bg-[#FFB800]", title: comp.spec_relaxations.map(r => r === "type" ? "type relaxed" : r === "bedrooms" ? "rooms relaxed" : r).join(", ") });
+  if (comp.transaction_category === "B") dots.push({ color: "bg-[#FAFF00]", title: "Cat B (non-standard)" });
+  if (comp.new_build) dots.push({ color: "bg-[#818CF8]", title: "New build" });
+
+  const cleanAddress = comp.postcode ? comp.address.replace(new RegExp(`\\s*${comp.postcode.replace(/\s+/g, '\\s*')}\\s*`, 'i'), '').trim() : comp.address;
+
+  const dash = <span className="text-[var(--color-text-secondary)]/40">—</span>;
+
   return (
     <div className={`flex flex-col transition-colors ${isAdopted ? "bg-[#39FF14]/8" : "hover:bg-[var(--color-bg-surface)]"}`}>
-      {/* Clickable summary row */}
-      <div className="px-4 py-3 flex flex-col gap-1.5 cursor-pointer" onClick={() => setExpanded(e => !e)}>
-      {/* Row 1: address + price + adopt button */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 flex items-center gap-2">
-          <svg className={`w-3 h-3 shrink-0 text-[var(--color-text-secondary)] transition-transform ${expanded ? "rotate-90" : ""}`} fill="currentColor" viewBox="0 0 20 20"><path d="M6 4l8 6-8 6V4z"/></svg>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--color-text-primary)] truncate">{comp.address}</p>
-            <p className="text-xs text-[var(--color-text-secondary)]/70">{comp.postcode}</p>
-          </div>
+      {/* ── Summary grid row ─────────────────────────────────────────────── */}
+      <div
+        className="grid items-center gap-x-3 px-4 py-2.5 cursor-pointer"
+        style={{ gridTemplateColumns: COMP_GRID }}
+        onClick={() => setExpanded(e => !e)}
+      >
+        {/* Expand arrow */}
+        <svg className={`w-3 h-3 text-[var(--color-text-secondary)]/50 transition-transform ${expanded ? "rotate-90" : ""}`} fill="currentColor" viewBox="0 0 20 20"><path d="M6 4l8 6-8 6V4z"/></svg>
+
+        {/* Address + dots */}
+        <div className="min-w-0 flex items-center gap-1.5">
+          {dots.length > 0 && (
+            <span className="flex gap-0.5 shrink-0">
+              {dots.map((d, i) => (
+                <span key={i} className={`w-1.5 h-1.5 rounded-full ${d.color}`} title={d.title} />
+              ))}
+            </span>
+          )}
+          <span className="text-xs font-medium text-[var(--color-text-primary)] truncate" title={cleanAddress}>{cleanAddress}</span>
         </div>
-        <div className="flex items-start gap-2 shrink-0">
-          <div className="text-right">
-            <p className="text-sm font-bold text-[var(--color-accent)]">
-              {fmtPrice(comp.price)}
-              {pricePsf != null && (
-                <span className="ml-1.5 text-xs font-normal text-[var(--color-text-secondary)]">
-                  £{pricePsf.toLocaleString("en-GB")}/sq ft
-                </span>
-              )}
-            </p>
-            <p className="text-xs text-[var(--color-text-secondary)]/70">{fmtDate(comp.transaction_date)}</p>
-          </div>
+
+        {/* Postcode */}
+        <span className="text-xs text-[var(--color-text-secondary)] text-right">{comp.postcode}</span>
+
+        {/* Price */}
+        <span className="text-xs font-bold text-[var(--color-accent)] text-right">{fmtPrice(comp.price)}</span>
+
+        {/* Size ft² */}
+        <span className="text-xs text-[var(--color-text-secondary)] text-right">
+          {areaSqft != null ? areaSqft.toLocaleString("en-GB") : dash}
+        </span>
+
+        {/* £/sqft */}
+        <span className="text-xs text-[var(--color-text-secondary)] text-right">
+          {pricePsf != null ? `£${pricePsf.toLocaleString("en-GB")}` : dash}
+        </span>
+
+        {/* Date */}
+        <span className="text-xs text-[var(--color-text-secondary)] text-right">{fmtDate(comp.transaction_date)}</span>
+
+        {/* Type */}
+        <span className="text-xs text-[var(--color-text-secondary)] capitalize truncate text-right" title={comp.property_type && comp.house_sub_type ? `${comp.property_type} (${comp.house_sub_type})` : comp.property_type ?? undefined}>
+          {comp.property_type ? (
+            <>{comp.property_type}{comp.house_sub_type ? <span className="text-[var(--color-text-secondary)]/50"> ({comp.house_sub_type})</span> : ""}</>
+          ) : dash}
+        </span>
+
+        {/* H. Rm */}
+        <span className="text-xs text-[var(--color-text-secondary)] text-right">{comp.bedrooms ?? dash}</span>
+
+        {/* EPC */}
+        <span className={`text-xs font-semibold text-right ${comp.epc_rating ? (EPC_TEXT[comp.epc_rating] ?? "text-[var(--color-text-secondary)]") : ""}`}>
+          {comp.epc_rating ?? dash}
+        </span>
+
+        {/* IMD */}
+        <span className="flex items-center justify-end">
+          {comp.imd_decile != null ? (
+            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold text-white"
+                  style={{ backgroundColor: IMD_COLOURS[comp.imd_decile] ?? "#94A3B8" }}
+                  title={`IMD Decile ${comp.imd_decile} (1=most deprived, 10=least)`}>
+              {comp.imd_decile}
+            </span>
+          ) : dash}
+        </span>
+
+        {/* Era */}
+        <span className="text-xs text-cyan-400 font-medium text-right">
+          {comp.construction_age_best != null ? `c.${comp.construction_age_best}` : dash}
+        </span>
+
+        {/* Checkbox */}
+        <div className="flex items-center justify-center" onClick={e => e.stopPropagation()}>
           {onAdopt && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onAdopt(); }}
-              title={isAdopted ? "Remove from Adopted Comparables" : "Add to Adopted Comparables"}
-              className={`mt-0.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
-                isAdopted
-                  ? "bg-[#39FF14]/15 text-[var(--color-status-success)] border-[#39FF14]/40 hover:bg-[#39FF14]/25"
-                  : "bg-transparent text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-[#39FF14]/60 hover:text-[var(--color-status-success)]"
-              }`}
-            >
-              {isAdopted ? "✓ Adopted" : "Adopt"}
-            </button>
+            <input
+              type="checkbox"
+              checked={isAdopted}
+              onChange={() => onAdopt()}
+              title={isAdopted ? "Remove from Adopted" : "Adopt"}
+              className="w-3.5 h-3.5 rounded border-[var(--color-border)] accent-[#39FF14] cursor-pointer"
+            />
           )}
         </div>
       </div>
 
-      {/* Row 2: attributes — reads like a sentence: "Freehold Period House (Semi-Detached)" */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
-        {comp.tenure && (
-          <span className="capitalize">{comp.tenure}</span>
-        )}
-        {comp.tenure === "leasehold" && comp.lease_remaining && (
-          <span className={`font-medium ${
-            comp.lease_remaining === "Expired" ? "text-[#FF3131]" : "text-[#CBD5E1]"
-          }`}>
-            {comp.lease_remaining} remaining
-          </span>
-        )}
-        {comp.construction_age_best != null && (
-          <span className="text-cyan-400 font-medium">c.{comp.construction_age_best}</span>
-        )}
-        {comp.property_type && (
-          <span className="capitalize">
-            {comp.property_type}{comp.house_sub_type ? ` (${comp.house_sub_type})` : ""}
-          </span>
-        )}
-        {comp.bedrooms != null && (
-          <span>{comp.bedrooms} hab. rooms</span>
-        )}
-        {comp.floor_area_sqm != null && (
-          <span>
-            {comp.floor_area_sqm} m²
-            {areaSqft != null && (
-              <span className="text-[var(--color-text-secondary)]/70"> / {areaSqft.toLocaleString("en-GB")} ft²</span>
-            )}
-          </span>
-        )}
-        {comp.new_build && (
-          <span className="bg-[#7B2FBE]/20 text-[#818CF8] px-1.5 py-0.5 rounded-full font-medium">
-            New build
-          </span>
-        )}
-        {(comp as Record<string, unknown>).uprn != null && (
-          <span className="text-[var(--color-text-muted)] font-mono text-[10px]">UPRN {String((comp as Record<string, unknown>).uprn)}</span>
-        )}
-      </div>
-
-      {/* Row 3: badges */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {comp.epc_rating && (
-          <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-            EPC_BADGE[comp.epc_rating] ?? "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"
-          }`}>
-            EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
-          </span>
-        )}
-        {relaxBadges.map((b, i) => (
-          <span key={i} className={`text-xs px-2 py-0.5 rounded-full font-medium ${b.cls}`}>
-            ⚠ {b.label}
-          </span>
-        ))}
-        {comp.transaction_category === "B" && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-[#FAFF00]/10 text-[#FAFF00] font-medium">
-            Cat B (non-standard)
-          </span>
-        )}
-      </div>
-
-      {/* Row 4: size adjustment (only when β > 0) */}
-      {sizeElasticity > 0 && (
-        exactSqft != null && subjectSqft != null && subjectSqft > 0 ? (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs pt-1 border-t border-[var(--color-border)]/40">
-            <span className="text-[var(--color-text-secondary)]">Size Adj:</span>
-            <span className={`font-semibold ${sizeAdjPct >= 0 ? "text-[var(--color-status-success)]" : "text-[var(--color-accent-pink)]"}`}>
-              {sizeAdjPct >= 0 ? "+" : ""}{sizeAdjPct.toFixed(1)}%
-            </span>
-            <span className="text-[var(--color-text-muted)]">|</span>
-            <span className="text-[var(--color-text-secondary)]">
-              Comp: {areaSqft?.toLocaleString("en-GB")} ft² → Subject: {Math.round(subjectSqft).toLocaleString("en-GB")} ft²
-            </span>
-            <span className="text-[var(--color-text-muted)]">|</span>
-            <span className="text-[var(--color-text-secondary)]">
-              Adj PSF: <span className="font-medium text-[var(--color-text-primary)]">
-                {sizeAdjPsf != null ? `£${sizeAdjPsf.toLocaleString("en-GB")}` : "—"}
-              </span>
-            </span>
-            {sizeCapped && (
-              <span className="text-[#F59E0B] font-semibold">⚠ Capped</span>
-            )}
-          </div>
-        ) : (
-          <div className="text-xs text-[var(--color-text-muted)] pt-1 border-t border-[var(--color-border)]/40">
-            Floor areas required for size adjustment
-          </div>
-        )
-      )}
-
-      </div>{/* end clickable summary */}
-
       {/* ── Expanded detail panel ─────────────────────────────────────────── */}
-      {expanded && (
-        <div className="border-t border-[var(--color-border)]/60">
+      <div className={`overflow-hidden transition-all duration-[365ms] ease-[cubic-bezier(0.2,0.0,0.2,1)] ${expanded ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0"}`}>
+        <div className="ml-6 border-t border-[var(--color-border)]/60 border-l-2 border-l-[var(--color-accent)]/30 bg-[var(--color-bg-base)] cursor-pointer" onClick={() => setExpanded(false)}>
+          {/* Badges row */}
+          <div className="px-4 py-2 flex flex-wrap items-center gap-1.5 border-b border-[var(--color-border)]/40">
+            {comp.epc_rating && (
+              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${EPC_BADGE[comp.epc_rating] ?? "bg-[var(--color-border)]/50 text-[var(--color-text-secondary)]"}`}>
+                EPC {comp.epc_rating}{comp.epc_score != null ? ` (${comp.epc_score})` : ""}
+              </span>
+            )}
+            {relaxBadges.map((b, i) => (
+              <span key={i} className={`text-xs px-2 py-0.5 rounded-full font-medium ${b.cls}`}>
+                ⚠ {b.label}
+              </span>
+            ))}
+            {comp.transaction_category === "B" && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-[#FAFF00]/10 text-[#FAFF00] font-medium">
+                Cat B (non-standard)
+              </span>
+            )}
+            {comp.new_build && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-[#7B2FBE]/20 text-[#818CF8] font-medium">
+                New build
+              </span>
+            )}
+            {comp.tenure === "leasehold" && comp.lease_remaining && (
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${comp.lease_remaining === "Expired" ? "bg-[#FF3131]/10 text-[#FF3131]" : "bg-[#CBD5E1]/10 text-[#CBD5E1]"}`}>
+                {comp.lease_remaining} remaining
+              </span>
+            )}
+          </div>
+
           {/* Transaction details */}
           <div className="px-4 py-2 border-b border-[var(--color-border)]/40">
             <h3 className="font-orbitron text-[var(--color-accent)] text-[10px] tracking-[2px] uppercase">Transaction</h3>
@@ -1418,11 +1593,50 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
                 {comp.epc_matched ? "Yes" : "No"}
               </span>
             } />
-            <DetailField label="UPRN" value={(comp as Record<string, unknown>).uprn != null ? String((comp as Record<string, unknown>).uprn) : null} />
+            <DetailField label="IMD Decile" value={
+              comp.imd_decile != null ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: IMD_COLOURS[comp.imd_decile] ?? "#94A3B8" }} />
+                  <span>{comp.imd_decile} / 10</span>
+                  <span className="text-[var(--color-text-secondary)]/60 text-[10px]">
+                    {comp.imd_decile <= 3 ? "(deprived)" : comp.imd_decile >= 8 ? "(affluent)" : ""}
+                  </span>
+                </span>
+              ) : null
+            } />
           </div>
 
+          {/* Size adjustment (moved from summary into expanded) */}
+          {sizeElasticity > 0 && (
+            exactSqft != null && subjectSqft != null && subjectSqft > 0 ? (
+              <div className="px-4 py-2.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs border-t border-[var(--color-border)]/40">
+                <span className="text-[var(--color-text-secondary)]">Size Adj:</span>
+                <span className={`font-semibold ${sizeAdjPct >= 0 ? "text-[var(--color-status-success)]" : "text-[var(--color-accent-pink)]"}`}>
+                  {sizeAdjPct >= 0 ? "+" : ""}{sizeAdjPct.toFixed(1)}%
+                </span>
+                <span className="text-[var(--color-text-muted)]">|</span>
+                <span className="text-[var(--color-text-secondary)]">
+                  Comp: {areaSqft?.toLocaleString("en-GB")} ft² → Subject: {Math.round(subjectSqft).toLocaleString("en-GB")} ft²
+                </span>
+                <span className="text-[var(--color-text-muted)]">|</span>
+                <span className="text-[var(--color-text-secondary)]">
+                  Adj PSF: <span className="font-medium text-[var(--color-text-primary)]">
+                    {sizeAdjPsf != null ? `£${sizeAdjPsf.toLocaleString("en-GB")}` : "—"}
+                  </span>
+                </span>
+                {sizeCapped && (
+                  <span className="text-[#F59E0B] font-semibold">⚠ Capped</span>
+                )}
+              </div>
+            ) : (
+              <div className="px-4 py-2.5 text-xs text-[var(--color-text-muted)] border-t border-[var(--color-border)]/40">
+                Floor areas required for size adjustment
+              </div>
+            )
+          )}
+
           {/* Adopt / Reject buttons at bottom of expanded panel */}
-          <div className="px-4 py-3 flex items-center gap-2 border-t border-[var(--color-border)]/40 bg-[var(--color-bg-surface)]/50">
+          <div className="px-4 py-3 flex items-center gap-2 border-t border-[var(--color-border)]/40 bg-[var(--color-bg-base)]">
             {onAdopt && (
               <button
                 onClick={(e) => { e.stopPropagation(); onAdopt(); }}
@@ -1443,7 +1657,7 @@ export function CompCard({ comp, valuationYear, isAdopted, onAdopt, onReject, si
             </button>
           </div>
         </div>
-      )}
+      </div>
 
     </div>
   );

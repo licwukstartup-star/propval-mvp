@@ -1057,8 +1057,16 @@ async def _fetch_epc_rows(postcode: str, email: str, api_key: str) -> list[dict]
     if resp.status_code == 401:
         raise HTTPException(status_code=502, detail="EPC API authentication failed.")
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"EPC API returned {resp.status_code}.")
-    return resp.json().get("rows", [])
+        # Non-residential postcodes or postcodes with no domestic EPC data
+        # return non-200 (e.g. 404) — gracefully return empty list
+        logging.warning("EPC API returned %d for %s — treating as no domestic records", resp.status_code, postcode)
+        return []
+    try:
+        return resp.json().get("rows", [])
+    except Exception:
+        # Empty or non-JSON body (e.g. postcode with no domestic properties)
+        logging.warning("EPC API returned unparseable response for %s", postcode)
+        return []
 
 
 def _sparql_escape(s: str) -> str:
@@ -2801,8 +2809,8 @@ async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user
 # ---------------------------------------------------------------------------
 
 _IMD_URL = (
-    "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/"
-    "IMD_2019_1/FeatureServer/0/query"
+    "https://services-eu1.arcgis.com/EbKcOS6EXZroSyoi/arcgis/rest/services/"
+    "Indices_of_Multiple_Deprivation_(IMD)_2019/FeatureServer/0/query"
 )
 
 
@@ -2819,9 +2827,9 @@ async def _fetch_imd(lsoa_code: str | None) -> dict | None:
         resp = await client.get(
             _IMD_URL,
             params={
-                "where": f"lsoa_code_2011='{lsoa_code}'",
+                "where": f"lsoa11cd='{lsoa_code}'",
                 "outFields": (
-                    "IMDRank0,IMDDecil0,"
+                    "IMDRank0,IMDDec0,"
                     "IncRank,IncDec,"
                     "EmpRank,EmpDec,"
                     "EduRank,EduDec,"
@@ -2830,8 +2838,8 @@ async def _fetch_imd(lsoa_code: str | None) -> dict | None:
                     "BHSRank,BHSDec,"
                     "EnvRank,EnvDec,"
                     "IDCRank,IDCDec,"
-                    "IDAMRank,IDAMDec,"
-                    "IDYORank,IDYODec"
+                    "IDORank,IDODec,"
+                    "CYPRank,CYPDec"
                 ),
                 "returnGeometry": "false",
                 "f": "json",
@@ -2846,7 +2854,7 @@ async def _fetch_imd(lsoa_code: str | None) -> dict | None:
         a = features[0]["attributes"]
         return {
             "overall_rank": a.get("IMDRank0"),
-            "overall_decile": a.get("IMDDecil0"),
+            "overall_decile": a.get("IMDDec0"),
             "income_rank": a.get("IncRank"),
             "income_decile": a.get("IncDec"),
             "employment_rank": a.get("EmpRank"),
@@ -2863,10 +2871,10 @@ async def _fetch_imd(lsoa_code: str | None) -> dict | None:
             "environment_decile": a.get("EnvDec"),
             "idaci_rank": a.get("IDCRank"),
             "idaci_decile": a.get("IDCDec"),
-            "idaopi_rank": a.get("IDAMRank"),
-            "idaopi_decile": a.get("IDAMDec"),
-            "cyp_rank": a.get("IDYORank"),
-            "cyp_decile": a.get("IDYODec"),
+            "idaopi_rank": a.get("IDORank"),
+            "idaopi_decile": a.get("IDODec"),
+            "cyp_rank": a.get("CYPRank"),
+            "cyp_decile": a.get("CYPDec"),
         }
     except Exception as exc:
         logging.warning("IMD fetch failed for LSOA %s: %s", lsoa_code, exc)
@@ -3301,6 +3309,47 @@ def _autocomplete_from_supabase_sync(pc: str) -> list[dict]:
         return []
 
 
+def _autocomplete_ppd_supplement_sync(pc: str) -> list[dict]:
+    """Query ppd_transactions in Supabase for addresses at a postcode.
+
+    Returns addresses in the same format as the EPC autocomplete, so they can
+    be merged into the dropdown. This catches properties that have Land Registry
+    transaction records but no EPC certificate (e.g. new-builds sold off-plan).
+    """
+    sb = _get_supabase()
+    if sb is None:
+        return []
+    try:
+        resp = sb.table("ppd_transactions") \
+            .select("saon, paon, street, postcode, uprn") \
+            .eq("postcode", pc) \
+            .limit(2000) \
+            .execute()
+        if not resp.data:
+            return []
+        seen: set[str] = set()
+        results: list[dict] = []
+        for row in resp.data:
+            parts = []
+            if row.get("saon"):
+                parts.append(row["saon"])
+            if row.get("paon"):
+                parts.append(row["paon"])
+            if row.get("street"):
+                parts.append(row["street"])
+            if row.get("postcode"):
+                parts.append(row["postcode"])
+            addr = " ".join(parts)
+            dedup_key = re.sub(r"(\d),\s+", r"\1 ", addr).upper()
+            if dedup_key and dedup_key not in seen:
+                seen.add(dedup_key)
+                results.append({"address": addr, "uprn": row.get("uprn") or ""})
+        return results
+    except Exception as exc:
+        logging.warning("PPD autocomplete supplement query failed for %s: %s", pc, exc)
+        return []
+
+
 @router.get("/autocomplete")
 async def autocomplete_addresses(postcode: str, request: Request, _user: dict = Depends(get_current_user)):
     """Return address list for a postcode. Queries local Supabase cache first, falls back to EPC API."""
@@ -3336,10 +3385,8 @@ async def autocomplete_addresses(postcode: str, request: Request, _user: dict = 
                 except Exception as exc:
                     logging.warning("EPC autocomplete API failed for %s: %s", pc, exc)
 
-            if not rows:
-                return {"addresses": [], "error": "EPC API temporarily unavailable — try again or type the full address manually below"}
-
-        _autocomplete_cache[pc] = rows
+        if rows:
+            _autocomplete_cache[pc] = rows
 
     seen: set[str] = set()
     addresses: list[dict] = []
@@ -3356,8 +3403,26 @@ async def autocomplete_addresses(postcode: str, request: Request, _user: dict = 
             seen.add(dedup_key)
             addresses.append({"address": addr, "uprn": row.get("uprn") or ""})
 
+    # 4. Supplement with PPD transaction addresses not already in the EPC list
+    try:
+        ppd_addresses = await asyncio.wait_for(
+            asyncio.to_thread(_autocomplete_ppd_supplement_sync, pc),
+            timeout=5.0
+        )
+        for ppd_item in ppd_addresses:
+            dedup_key = re.sub(r"(\d),\s+", r"\1 ", ppd_item["address"]).upper()
+            if dedup_key and dedup_key not in seen:
+                seen.add(dedup_key)
+                addresses.append(ppd_item)
+    except asyncio.TimeoutError:
+        logging.warning("PPD autocomplete supplement timeout for %s", pc)
+    except Exception as exc:
+        logging.warning("PPD autocomplete supplement failed for %s: %s", pc, exc)
+
     def _natural_key(item: dict) -> list:
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", item["address"])]
 
     addresses.sort(key=_natural_key)
+    if not addresses:
+        return {"addresses": [], "error": "No addresses found for this postcode — try again or type the full address manually below"}
     return {"addresses": addresses}

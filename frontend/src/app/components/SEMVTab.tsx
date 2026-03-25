@@ -194,8 +194,10 @@ interface SimulationResult {
   simMVs: number[];
   mean: number;
   stdDev: number;
+  p1: number;
   p5: number;
   p95: number;
+  p99: number;
   percentile: number;
   sigma: number;
   mode: number;
@@ -252,7 +254,7 @@ function runMonteCarlo(
     });
 
   if (compsWithData.length < 3) {
-    return { simMVs: [], mean: 0, stdDev: 0, p5: 0, p95: 0, percentile: 0, sigma: 0, mode: 0, compsUsed: compsWithData.length };
+    return { simMVs: [], mean: 0, stdDev: 0, p1: 0, p5: 0, p95: 0, p99: 0, percentile: 0, sigma: 0, mode: 0, compsUsed: compsWithData.length };
   }
 
   const n = compsWithData.length;
@@ -414,8 +416,10 @@ function runMonteCarlo(
   let varSum = 0;
   for (let i = 0; i < N_SIMS; i++) { const d = sorted[i] - mean; varSum += d * d; }
   const stdDev = Math.sqrt(varSum / N_SIMS);
+  const p1 = sorted[Math.floor(N_SIMS * 0.01)];
   const p5 = sorted[Math.floor(N_SIMS * 0.05)];
   const p95 = sorted[Math.floor(N_SIMS * 0.95)];
+  const p99 = sorted[Math.floor(N_SIMS * 0.99)];
 
   // Percentile of adopted MV (binary search on sorted array)
   let lo = 0, hi = N_SIMS;
@@ -448,7 +452,7 @@ function runMonteCarlo(
   }
   const mode = Math.round((sorted[0] + (modeIdx + 0.5) * modeBinWidth) / 1000) * 1000;
 
-  return { simMVs: Array.from(sorted), mean, stdDev, p5, p95, percentile, sigma, mode, compsUsed: n };
+  return { simMVs: Array.from(sorted), mean, stdDev, p1, p5, p95, p99, percentile, sigma, mode, compsUsed: n };
 }
 
 // ── PDF Chart (SVG) ──────────────────────────────────────────────────────────
@@ -457,8 +461,8 @@ function PdfChart({
   mean,
   mode,
   adoptedMV,
-  p5,
-  p95,
+  p1,
+  p99,
   stdDev,
   onAdoptedMVChange,
 }: {
@@ -466,8 +470,8 @@ function PdfChart({
   mean: number;
   mode: number;
   adoptedMV: number;
-  p5: number;
-  p95: number;
+  p1: number;
+  p99: number;
   stdDev: number;
   onAdoptedMVChange?: (mv: number) => void;
 }) {
@@ -614,17 +618,17 @@ function PdfChart({
   const lastPt = points[points.length - 1];
   path += ` L ${lastPt.x},${yScale(0)}`;
 
-  // P5-P95 shaded region
-  const p5x = xScale(p5);
-  const p95x = xScale(p95);
-  const shadePoints = points.filter((p) => p.x >= p5x && p.x <= p95x);
+  // P1-P99 shaded region (98% CI)
+  const p1x = xScale(p1);
+  const p99x = xScale(p99);
+  const shadePoints = points.filter((p) => p.x >= p1x && p.x <= p99x);
   let shadePath = "";
   if (shadePoints.length > 1) {
-    shadePath = `M ${p5x},${yScale(0)} L ${shadePoints[0].x},${shadePoints[0].y}`;
+    shadePath = `M ${p1x},${yScale(0)} L ${shadePoints[0].x},${shadePoints[0].y}`;
     for (let i = 1; i < shadePoints.length; i++) {
       shadePath += ` L ${shadePoints[i].x},${shadePoints[i].y}`;
     }
-    shadePath += ` L ${p95x},${yScale(0)} Z`;
+    shadePath += ` L ${p99x},${yScale(0)} Z`;
   }
 
   const meanX = xScale(mean);
@@ -664,7 +668,7 @@ function PdfChart({
       onPointerMove={handlePointer}
       onPointerLeave={() => setHover(null)}
     >
-      {/* P5-P95 shaded area */}
+      {/* P1-P99 shaded area (98% CI) */}
       {shadePath && (
         <path d={shadePath} fill="var(--color-accent)" opacity={0.1} />
       )}
@@ -675,13 +679,15 @@ function PdfChart({
       {/* Filled area under curve */}
       <path d={path + " Z"} fill="var(--color-accent)" opacity={0.05} />
 
-      {/* ±1σ and ±2σ bands */}
+      {/* ±0.25σ, ±0.5σ and ±1σ bands */}
       {[
-        { n: 1, color: "var(--color-accent-purple)", opacity: 0.08 },
-        { n: 2, color: "var(--color-accent-purple)", opacity: 0.04 },
-      ].map(({ n, color, opacity: fillOp }) => {
+        { n: 0.25, color: "var(--color-accent-purple)", opacity: 0.12 },
+        { n: 0.5, color: "var(--color-accent-purple)", opacity: 0.08 },
+        { n: 1, color: "var(--color-accent-purple)", opacity: 0.04 },
+      ].map(({ n, color, opacity: fillOp }, idx) => {
         const lo = xScale(Math.max(minV, mean - n * stdDev));
         const hi = xScale(Math.min(maxV, mean + n * stdDev));
+        const labelY = PAD_T + plotH + 26 + idx * 11;
         return (
           <g key={n}>
             <rect x={lo} y={PAD_T} width={hi - lo} height={plotH} fill={color} opacity={fillOp} />
@@ -692,10 +698,10 @@ function PdfChart({
             <line x1={hi} y1={PAD_T} x2={hi} y2={PAD_T + plotH}
               stroke={color} strokeWidth={1} strokeDasharray="4,3" opacity={0.5} />
             {/* Labels at bottom */}
-            <text x={lo} y={PAD_T + plotH + 36} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
+            <text x={lo} y={labelY} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
               -{n}σ {fmtFull(mean - n * stdDev)}
             </text>
-            <text x={hi} y={PAD_T + plotH + 36} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
+            <text x={hi} y={labelY} fill={color} fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
               +{n}σ {fmtFull(mean + n * stdDev)}
             </text>
           </g>
@@ -1159,7 +1165,7 @@ export default function SEMVTab({
   const seedMV = hasMV ? adoptedMV! : (adoptedStats.indMid ?? null);
   const hasSeedMV = seedMV != null && seedMV > 0;
 
-  const ready = hasLayer1 && hasAdopted && hasSeedMV && hasSize && compsWithSize.length >= 3;
+  const ready = hasLayer1 && hasAdopted && hasSeedMV && hasSize && compsWithSize.length >= 2;
 
   // Run simulation on selected Layer 1 (max 20 best comps)
   const sim = useMemo(() => {
@@ -1208,7 +1214,7 @@ export default function SEMVTab({
     if (!hasAdopted) missing.push("adopted comparables");
     if (!hasSeedMV) missing.push("adopted comparables with floor area (for indicative MV)");
     if (!hasSize) missing.push("subject property floor area");
-    if (hasLayer1 && compsWithSize.length < 3) missing.push("at least 3 comparables with floor area data");
+    if (hasLayer1 && compsWithSize.length < 2) missing.push("at least 2 comparables with floor area data (comps without size are skipped automatically)");
 
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
@@ -1232,7 +1238,7 @@ export default function SEMVTab({
     );
   }
 
-  const { simMVs, mean, stdDev, p5, p95, mode } = sim!;
+  const { simMVs, mean, stdDev, p1, p99, mode } = sim!;
   // Recalculate percentile and sigma against the effective MV (which may be mode, not seed)
   const percentile = useMemo(() => {
     if (!simMVs.length) return 0;
@@ -1346,9 +1352,10 @@ export default function SEMVTab({
             { label: "Mode (Peak)", value: subjectSizeSqft ? `${fmtGBP(mode)} / £${Math.round(mode / subjectSizeSqft).toLocaleString()} psf` : fmtGBP(mode), color: "var(--color-status-success)" },
             { label: "Sim Mean", value: subjectSizeSqft ? `${fmtGBP(mean)} / £${Math.round(mean / subjectSizeSqft).toLocaleString()} psf` : fmtGBP(mean), color: "var(--color-accent)" },
             { label: "Std Dev (1σ)", value: fmtGBP(stdDev), color: "var(--color-text-primary)" },
+            { label: "0.25σ Range", value: `${fmtGBP(mean - 0.25 * stdDev)} – ${fmtGBP(mean + 0.25 * stdDev)}`, color: "var(--color-text-primary)" },
+            { label: "0.5σ Range", value: `${fmtGBP(mean - 0.5 * stdDev)} – ${fmtGBP(mean + 0.5 * stdDev)}`, color: "var(--color-text-primary)" },
             { label: "1σ Range (68%)", value: `${fmtGBP(mean - stdDev)} – ${fmtGBP(mean + stdDev)}`, color: "var(--color-text-primary)" },
-            { label: "2σ Range (95%)", value: `${fmtGBP(mean - 2 * stdDev)} – ${fmtGBP(mean + 2 * stdDev)}`, color: "var(--color-text-primary)" },
-            { label: "90% CI (P5–P95)", value: `${fmtGBP(p5)} – ${fmtGBP(p95)}`, color: "var(--color-accent)" },
+            { label: "98% CI (P1–P99)", value: `${fmtGBP(p1)} – ${fmtGBP(p99)}`, color: "var(--color-accent)" },
           ].map((s, i) => (
             <div key={i} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] px-3 py-1.5 flex items-center justify-between">
               <span className="text-[9px] text-[var(--color-text-secondary)] uppercase tracking-wide">{s.label}</span>
@@ -1360,7 +1367,7 @@ export default function SEMVTab({
         {/* Right: PDF chart */}
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] p-3">
           <p className="text-[9px] tracking-[0.12em] text-[var(--color-text-secondary)] uppercase mb-1">Probability Density Function</p>
-          <PdfChart simMVs={simMVs} mean={mean} mode={mode} adoptedMV={effectiveMV!} p5={p5} p95={p95} stdDev={stdDev} onAdoptedMVChange={onAdoptedMVChange} />
+          <PdfChart simMVs={simMVs} mean={mean} mode={mode} adoptedMV={effectiveMV!} p1={p1} p99={p99} stdDev={stdDev} onAdoptedMVChange={onAdoptedMVChange} />
         </div>
       </div>
 
