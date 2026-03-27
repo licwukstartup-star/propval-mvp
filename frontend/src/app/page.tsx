@@ -1414,7 +1414,7 @@ export default function Home() {
       fetch(`${API_BASE}/api/property/enrich-slow`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon, uprn: data.uprn, lsoa_code: data.lsoa_code }),
+        body: JSON.stringify({ postcode: data.postcode, address: data.address, lat: data.lat, lon: data.lon, uprn: data.uprn, lsoa_code: data.lsoa_code, region: data.region, house_sub_type: data.built_form, epc_lodgement_date: data.inspection_date }),
         signal: slowController.signal,
       }).then(r => r.ok ? r.json() : null).then(slow => {
         if (slow) setResult(prev => prev ? {
@@ -1426,6 +1426,7 @@ export default function Home() {
           broadband: slow.broadband ?? prev.broadband,
           mobile: slow.mobile ?? prev.mobile,
           imd: slow.imd ?? prev.imd,
+          planning_extensions: slow.planning_extensions ?? prev.planning_extensions,
         } : prev);
       }).catch(() => { setEnrichSlowError(true); }).finally(() => setEnrichSlowDone(true));
       // Backfill HPI if initial search returned null (timeout)
@@ -3436,6 +3437,7 @@ export default function Home() {
                 subjectTenure={result?.tenure ?? null}
                 boroughSlug={result?.admin_district ? result.admin_district.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "") : null}
                 accessToken={session?.access_token ?? null}
+                planningExtensions={result?.planning_extensions ?? null}
                 savedAutoSelectResult={semvAutoSelectResult}
                 onAutoSelectResult={setSemvAutoSelectResult}
                 hpiCorrelation={hpiCorrelation}

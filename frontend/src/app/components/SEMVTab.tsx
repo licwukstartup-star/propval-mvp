@@ -92,6 +92,7 @@ interface SEMVTabProps {
   subjectTenure: string | null;
   boroughSlug: string | null;
   accessToken: string | null;
+  planningExtensions: { has_extension: boolean; extensions: { reference: string; description: string; decision_date: string; extension_types: string[]; estimated_sqm: number }[]; total_additional_sqm: number } | null;
   savedAutoSelectResult: AutoSelectResult | null;
   onAutoSelectResult: (result: AutoSelectResult | null) => void;
   hpiCorrelation: number;
@@ -1119,6 +1120,7 @@ export default function SEMVTab({
   subjectTenure,
   boroughSlug,
   accessToken,
+  planningExtensions,
   savedAutoSelectResult,
   onAutoSelectResult,
   hpiCorrelation,
@@ -1729,6 +1731,31 @@ export default function SEMVTab({
             <span className="text-xs text-[var(--color-accent)] animate-pulse">Running 50K iterations…</span>
           )}
         </div>
+
+        {/* Planning extension warning */}
+        {planningExtensions?.has_extension && (
+          <div className="px-4 py-2.5 border-b border-[#F59E0B]/30 bg-[#F59E0B]/5">
+            <div className="flex items-start gap-2">
+              <span className="text-[#F59E0B] text-sm mt-0.5">&#9888;</span>
+              <div className="text-xs">
+                <p className="font-semibold text-[#F59E0B] mb-1">
+                  Planning Extension Detected — EPC floor area may be outdated
+                </p>
+                {planningExtensions.extensions.map((ext, i) => (
+                  <p key={i} className="text-[var(--color-text-secondary)]">
+                    <span className="font-medium">{ext.reference}</span> ({ext.decision_date}) — {ext.description.slice(0, 120)}
+                    {ext.description.length > 120 ? "…" : ""}
+                    <span className="ml-1 text-[#F59E0B] font-semibold">+{ext.estimated_sqm}sqm est.</span>
+                  </p>
+                ))}
+                <p className="mt-1 text-[var(--color-text-primary)] font-medium">
+                  EPC: {subjectAreaM2 ? `${subjectAreaM2}sqm` : "?"} → Adjusted estimate: {subjectAreaM2 ? `${Math.round(subjectAreaM2 + planningExtensions.total_additional_sqm)}sqm` : "?"} (+{planningExtensions.total_additional_sqm}sqm)
+                  <span className="ml-2 text-[var(--color-text-muted)] font-normal">Verify with measured GIA on inspection</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {autoSelectError && (
           <div className="px-4 py-2 text-xs text-[var(--color-status-danger)] bg-[var(--color-status-danger)]/5">

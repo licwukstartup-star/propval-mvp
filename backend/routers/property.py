@@ -1999,6 +1999,172 @@ async def _fetch_nearby_planning(lat: float | None, lon: float | None, region: s
         return empty
 
 
+# ---------------------------------------------------------------------------
+# Planning extension detection — infer floor area change from granted apps
+# ---------------------------------------------------------------------------
+
+_EXTENSION_PATTERNS: list[tuple[str, str]] = [
+    (r"two.storey.*rear.*extension", "two_storey_rear"),
+    (r"two.storey.*side.*extension", "two_storey_side"),
+    (r"single.storey.*rear.*extension", "single_storey_rear"),
+    (r"single.storey.*side.*extension", "single_storey_side"),
+    (r"rear.*extension", "single_storey_rear"),
+    (r"side.*extension", "single_storey_side"),
+    (r"loft.*conver|dormer", "loft_conversion"),
+    (r"garage.*conver", "garage_conversion"),
+]
+
+# Midpoint sqm estimates by (extension_type, house_sub_type)
+_SIZE_ESTIMATES: dict[tuple[str, str], int] = {
+    ("single_storey_rear", "terraced"):      16,
+    ("single_storey_rear", "end-terrace"):   18,
+    ("single_storey_rear", "semi-detached"): 23,
+    ("single_storey_rear", "detached"):      28,
+    ("two_storey_rear", "terraced"):         32,
+    ("two_storey_rear", "end-terrace"):      36,
+    ("two_storey_rear", "semi-detached"):    46,
+    ("two_storey_rear", "detached"):         57,
+    ("single_storey_side", "terraced"):      12,
+    ("single_storey_side", "end-terrace"):   12,
+    ("single_storey_side", "semi-detached"): 14,
+    ("single_storey_side", "detached"):      17,
+    ("two_storey_side", "terraced"):         23,
+    ("two_storey_side", "end-terrace"):      23,
+    ("two_storey_side", "semi-detached"):    28,
+    ("two_storey_side", "detached"):         34,
+    ("loft_conversion", "terraced"):         20,
+    ("loft_conversion", "end-terrace"):      22,
+    ("loft_conversion", "semi-detached"):    28,
+    ("loft_conversion", "detached"):         38,
+    ("garage_conversion", "terraced"):       15,
+    ("garage_conversion", "end-terrace"):    15,
+    ("garage_conversion", "semi-detached"):  15,
+    ("garage_conversion", "detached"):       18,
+}
+
+
+def _parse_extension_types(description: str) -> list[str]:
+    """Extract extension types from a planning application description."""
+    desc_lower = description.lower()
+    found: list[str] = []
+    for pattern, ext_type in _EXTENSION_PATTERNS:
+        if re.search(pattern, desc_lower) and ext_type not in found:
+            found.append(ext_type)
+    return found
+
+
+def _estimate_extension_sqm(ext_types: list[str], house_sub_type: str | None) -> float:
+    """Estimate total additional sqm from extension types and house sub-type."""
+    sub = (house_sub_type or "semi-detached").lower().strip()
+    total = 0.0
+    for ext in ext_types:
+        sqm = _SIZE_ESTIMATES.get((ext, sub))
+        if sqm is None:
+            # Fallback to semi-detached estimate
+            sqm = _SIZE_ESTIMATES.get((ext, "semi-detached"), 20)
+        total += sqm
+    return total
+
+
+async def _fetch_subject_planning_extensions(
+    lat: float | None,
+    lon: float | None,
+    region: str | None,
+    address: str | None,
+    epc_lodgement_date: str | None,
+    house_sub_type: str | None,
+) -> dict:
+    """Detect granted planning extensions for the subject property.
+
+    Uses the GLA PLD API (London only) to find planning applications
+    at the subject's coordinates, then parses descriptions for extension
+    keywords and estimates the additional floor area.
+
+    Returns dict with extension info or empty dict if none found.
+    """
+    empty: dict = {"has_extension": False, "extensions": []}
+    if lat is None or lon is None:
+        return empty
+    # Skip if explicitly non-London (PLD API is London-only)
+    # But if region is None/empty, try anyway — it'll just return no results
+    if region and region.lower() not in ("london", ""):
+        return empty
+
+    try:
+        import html as _html_mod
+        client = _get_http_client()
+        body = {
+            "query": {
+                "bool": {
+                    "must": [{"match_all": {}}],
+                    "filter": [
+                        {"geo_distance": {"distance": "50m", "centroid": {"lat": lat, "lon": lon}}}
+                    ],
+                }
+            },
+            "_source": [
+                "lpa_app_no", "decision", "decision_date", "description",
+                "application_type", "application_type_full", "site_name",
+                "status", "valid_date", "street_name", "postcode",
+            ],
+            "size": 50,
+            "sort": [{"decision_date": {"order": "desc"}}],
+        }
+        resp = await client.post(
+            f"{PLD_API_URL}/applications/_search",
+            json=body,
+            headers={"X-API-AllowRequest": PLD_API_KEY},
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            return empty
+
+        hits = resp.json().get("hits", {}).get("hits", [])
+
+        extensions = []
+        total_additional_sqm = 0.0
+
+        for hit in hits:
+            src = hit.get("_source", {})
+            decision = (src.get("decision") or "").lower()
+            if "grant" not in decision and "approv" not in decision:
+                continue
+
+            desc = _html_mod.unescape(src.get("description") or "").strip()
+            ext_types = _parse_extension_types(desc)
+            if not ext_types:
+                continue
+
+            # Check if this extension was granted after the EPC date
+            dec_date = src.get("decision_date") or ""
+            if epc_lodgement_date and dec_date and dec_date < epc_lodgement_date:
+                continue  # Extension pre-dates EPC — already reflected in floor area
+
+            est_sqm = _estimate_extension_sqm(ext_types, house_sub_type)
+            total_additional_sqm += est_sqm
+
+            extensions.append({
+                "reference": src.get("lpa_app_no", ""),
+                "description": desc[:300],
+                "decision_date": dec_date,
+                "extension_types": ext_types,
+                "estimated_sqm": est_sqm,
+            })
+
+        if not extensions:
+            return empty
+
+        return {
+            "has_extension": True,
+            "extensions": extensions,
+            "total_additional_sqm": total_additional_sqm,
+        }
+
+    except Exception:
+        logging.exception("_fetch_subject_planning_extensions failed")
+        return empty
+
+
 async def _fetch_coal_mining_risk(lat: float | None, lon: float | None) -> dict:
     """Return coal mining risk at the property using the Coal Authority WMS.
 
@@ -3002,6 +3168,9 @@ class SlowEnrichRequest(BaseModel):
     lon: float | None = None
     uprn: str | None = None
     lsoa_code: str | None = None
+    region: str | None = None
+    house_sub_type: str | None = None    # terraced | semi-detached | detached
+    epc_lodgement_date: str | None = None  # ISO date — extensions after this are flagged
 
 @router.post("/enrich-slow")
 @limiter.limit("20/minute")
@@ -3015,15 +3184,19 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
         bb_coro = _fetch_ofcom_broadband(body.postcode, body.uprn)
         mob_coro = _fetch_ofcom_mobile(body.postcode, body.uprn)
         imd_coro = _fetch_imd(body.lsoa_code)
+        plan_coro = _fetch_subject_planning_extensions(
+            body.lat, body.lon, body.region, body.address,
+            body.epc_lodgement_date, body.house_sub_type,
+        ) if has_coords else asyncio.sleep(0)
 
         try:
-            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r = await asyncio.wait_for(
-                asyncio.gather(ct_coro, pf_coro, fl_coro, bb_coro, mob_coro, imd_coro, return_exceptions=True),
+            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r, plan_r = await asyncio.wait_for(
+                asyncio.gather(ct_coro, pf_coro, fl_coro, bb_coro, mob_coro, imd_coro, plan_coro, return_exceptions=True),
                 timeout=30.0,
             )
         except asyncio.TimeoutError:
             logging.error("⏱ enrich-slow TIMEOUT (>30s)")
-            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r = None, None, None, None, None, None
+            ct_r, pf_r, fl_r, bb_r, mob_r, imd_r, plan_r = None, None, None, None, None, None, None
 
         ct = ct_r if isinstance(ct_r, str) else None
         pf = pf_r if isinstance(pf_r, str) else None
@@ -3031,6 +3204,8 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
         broadband = bb_r if isinstance(bb_r, dict) else None
         mobile = mob_r if isinstance(mob_r, dict) else None
         imd = imd_r if isinstance(imd_r, dict) else None
+        planning_extensions = plan_r if isinstance(plan_r, dict) else {"has_extension": False, "extensions": []}
+        logging.warning("⏱ enrich-slow planning_extensions: %s (type=%s)", planning_extensions.get("has_extension") if isinstance(planning_extensions, dict) else plan_r, type(plan_r).__name__)
         logging.warning("⏱ enrich-slow: ct=%s pf=%s flood=%s bb=%s mob=%s imd=%s in %.0fms",
                         ct, pf, flood.get("rivers_sea_risk"),
                         "ok" if broadband else "none", "ok" if mobile else "none",
@@ -3067,6 +3242,7 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
             "broadband": broadband,
             "mobile": mobile,
             "imd": imd,
+            "planning_extensions": planning_extensions,
         }
     except Exception as exc:
         logging.exception("enrich-slow unexpected error: %s", exc)
@@ -3078,6 +3254,7 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
             "broadband": None,
             "mobile": None,
             "imd": None,
+            "planning_extensions": {"has_extension": False, "extensions": []},
         }
 
 
