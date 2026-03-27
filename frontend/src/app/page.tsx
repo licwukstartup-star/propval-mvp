@@ -80,6 +80,7 @@ export default function Home() {
   const [hpiCorrelation, setHpiCorrelation] = useState(100);
   const [sizeElasticity, setSizeElasticity] = useState(0); // β in percent (-50 to 50)
   const [epcBeta, setEpcBeta] = useState(50); // 0–100%, centre of EPC adjustment noise
+  const [semvAutoSelectResult, setSemvAutoSelectResult] = useState<any>(null); // MC auto-select cached result
   const [floorPremium, setFloorPremium] = useState(50); // 0–100%, centre of floor premium noise
   const [valuationDate, setValuationDate] = useState("");
   const [cardSizes, setCardSizes] = useState<Record<string, CardSizeKey>>({ ...PROP_CARD_DEFAULTS });
@@ -330,6 +331,7 @@ export default function Home() {
     setValuationDate("");
     setHpiCorrelation(100);
     setSizeElasticity(0);
+    setSemvAutoSelectResult(null);
     setMapMounted(false);
     setMapLandUseCache(null);
     setMapImdCache(null);
@@ -360,6 +362,7 @@ export default function Home() {
       crime: mapShowCrime, income: mapShowIncome, education: mapShowEducation, heritage: mapShowHeritage, titleBoundary: mapShowTitleBoundary,
     },
     mapTileLayer,
+    semv_auto_select: semvAutoSelectResult,
   };
 
   // ---------------------------------------------------------------------------
@@ -892,6 +895,7 @@ export default function Home() {
           setMapShowTitleBoundary(true);  // always show — no UI toggle exists yet
         }
         if (ui.mapTileLayer) setMapTileLayer(ui.mapTileLayer);
+        if (ui.semv_auto_select) setSemvAutoSelectResult(ui.semv_auto_select);
       } else {
         setActiveTab("property");
       }
@@ -3432,6 +3436,8 @@ export default function Home() {
                 subjectTenure={result?.tenure ?? null}
                 boroughSlug={result?.admin_district ? result.admin_district.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "") : null}
                 accessToken={session?.access_token ?? null}
+                savedAutoSelectResult={semvAutoSelectResult}
+                onAutoSelectResult={setSemvAutoSelectResult}
                 hpiCorrelation={hpiCorrelation}
                 onHpiCorrelationChange={setHpiCorrelation}
                 compSizeElasticity={sizeElasticity}

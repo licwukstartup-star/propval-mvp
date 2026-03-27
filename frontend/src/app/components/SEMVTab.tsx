@@ -54,9 +54,14 @@ interface AutoSelectResult {
   valuation: {
     median: number;
     mean: number;
+    mode: number;
     p5: number;
+    p10: number;
+    p15: number;
     p25: number;
     p75: number;
+    p85: number;
+    p90: number;
     p95: number;
     std: number;
     iterations_valid: number;
@@ -87,6 +92,8 @@ interface SEMVTabProps {
   subjectTenure: string | null;
   boroughSlug: string | null;
   accessToken: string | null;
+  savedAutoSelectResult: AutoSelectResult | null;
+  onAutoSelectResult: (result: AutoSelectResult | null) => void;
   hpiCorrelation: number;
   onHpiCorrelationChange: (v: number) => void;
   compSizeElasticity: number;
@@ -1112,6 +1119,8 @@ export default function SEMVTab({
   subjectTenure,
   boroughSlug,
   accessToken,
+  savedAutoSelectResult,
+  onAutoSelectResult,
   hpiCorrelation,
   onHpiCorrelationChange,
   compSizeElasticity,
@@ -1122,10 +1131,16 @@ export default function SEMVTab({
   onFloorPremiumChange,
   onAdoptedMVChange,
 }: SEMVTabProps) {
-  // ── Auto-select state ──
-  const [autoSelectResult, setAutoSelectResult] = useState<AutoSelectResult | null>(null);
+  // ── Auto-select state — initialise from saved case data ──
+  const [autoSelectResult, setAutoSelectResultLocal] = useState<AutoSelectResult | null>(savedAutoSelectResult);
   const [autoSelectLoading, setAutoSelectLoading] = useState(false);
   const [autoSelectError, setAutoSelectError] = useState<string | null>(null);
+
+  // Wrap setter to also notify parent for persistence
+  const setAutoSelectResult = useCallback((r: AutoSelectResult | null) => {
+    setAutoSelectResultLocal(r);
+    onAutoSelectResult(r);
+  }, [onAutoSelectResult]);
 
   // ── Similarity scores for the comp pool ──
   const subjectForScoring = useMemo(() => ({
@@ -1197,8 +1212,8 @@ export default function SEMVTab({
           borough_slug: boroughSlug,
           property_type: subjectPropertyType,
           hpi_factor: 1.0,  // TODO: compute from HPI trend
-          iterations: 50000,
-          top_n: 5,
+          iterations: 10000,
+          top_n: 10,
         }),
       });
       if (!res.ok) {
@@ -1216,17 +1231,17 @@ export default function SEMVTab({
       subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken]);
 
   // ── Auto-trigger: run MC as soon as we have a valid SEMV pool ──
-  const autoSelectRanRef = useRef(false);
+  const autoSelectRanRef = useRef(!!savedAutoSelectResult?.histogram);
   const prevPoolSize = useRef(0);
-  useMemo(() => {
-    // Reset when pool changes significantly (new search) or token becomes available
-    if (semvPool.length !== prevPoolSize.current) {
-      autoSelectRanRef.current = false;
-      prevPoolSize.current = semvPool.length;
-      setAutoSelectError(null);
-      setAutoSelectResult(null);
-    }
-  }, [semvPool.length]);
+  // Reset when pool changes significantly (new search)
+  const poolLen = semvPool.length;
+  if (poolLen !== prevPoolSize.current) {
+    autoSelectRanRef.current = false;
+    prevPoolSize.current = poolLen;
+    setAutoSelectError(null);
+    // Only reset local state during render — notify parent via effect
+    setAutoSelectResultLocal(null);
+  }
 
   // Fire auto-select once when pool is ready
   if (
@@ -1731,14 +1746,18 @@ export default function SEMVTab({
           <div className="divide-y divide-[var(--color-border)]">
             {/* Valuation Distribution Summary */}
             <div className="px-4 py-3">
-              <div className="grid grid-cols-4 gap-3 text-center">
+              <div className="grid grid-cols-5 gap-3 text-center">
                 <div>
                   <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">P5</div>
                   <div className="text-sm font-bold text-[var(--color-text-primary)]">{fmtK(autoSelectResult.valuation.p5)}</div>
                 </div>
                 <div>
                   <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">Median</div>
-                  <div className="text-sm font-bold text-[var(--color-accent)]">{fmtK(autoSelectResult.valuation.median)}</div>
+                  <div className="text-sm font-bold text-[var(--color-text-primary)]">{fmtK(autoSelectResult.valuation.median)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--color-accent)] uppercase tracking-wide mb-0.5 font-semibold">Mode</div>
+                  <div className="text-base font-bold text-[var(--color-accent)]">{fmtK(autoSelectResult.valuation.mode ?? autoSelectResult.valuation.median)}</div>
                 </div>
                 <div>
                   <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">Mean</div>
@@ -1802,7 +1821,7 @@ export default function SEMVTab({
                 shadePath += ` L ${p95x},${yScale(0)} Z`;
               }
 
-              const medianX = xScale(val.median);
+              const modeX = xScale(val.mode ?? val.median);
               const meanX = xScale(val.mean);
 
               // X-axis ticks
@@ -1826,11 +1845,11 @@ export default function SEMVTab({
                     <path d={path} fill="var(--color-accent)" opacity={0.06} />
                     <path d={path.replace(/ Z$/, "")} fill="none" stroke="var(--color-accent)" strokeWidth={2} opacity={0.8} />
 
-                    {/* Median line */}
-                    <line x1={medianX} y1={PAD_T} x2={medianX} y2={PAD_T + plotH}
+                    {/* Mode line */}
+                    <line x1={modeX} y1={PAD_T} x2={modeX} y2={PAD_T + plotH}
                       stroke="var(--color-accent)" strokeWidth={2} />
-                    <text x={medianX + 5} y={PAD_T + 14} fill="var(--color-accent)" fontSize={10} fontFamily="Inter, sans-serif" fontWeight="bold">
-                      Median {fmt(val.median)}
+                    <text x={modeX + 5} y={PAD_T + 14} fill="var(--color-accent)" fontSize={10} fontFamily="Inter, sans-serif" fontWeight="bold">
+                      Mode {fmt(val.mode ?? val.median)}
                     </text>
 
                     {/* Mean dashed line */}
@@ -1851,6 +1870,31 @@ export default function SEMVTab({
                     <text x={p95x} y={PAD_T + plotH + 14} fill="var(--color-text-muted)" fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif">
                       P95 {fmt(val.p95)}
                     </text>
+
+                    {/* P10 / P90 and P15 / P85 lines */}
+                    {[
+                      { p: 10, low: val.p10, high: val.p90, label: "P10", labelHi: "P90", opacity: 0.35, dash: "4,4" },
+                      { p: 15, low: val.p15, high: val.p85, label: "P15", labelHi: "P85", opacity: 0.25, dash: "2,3" },
+                    ].map(({ p, low, high, label, labelHi, opacity: op, dash }) => {
+                      if (low == null || high == null) return null;
+                      const lx = xScale(low);
+                      const hx = xScale(high);
+                      const labelY = p === 10 ? PAD_T + 12 : PAD_T + 24;
+                      return (
+                        <g key={p}>
+                          <line x1={lx} y1={PAD_T} x2={lx} y2={PAD_T + plotH}
+                            stroke="var(--color-accent)" strokeWidth={1} strokeDasharray={dash} opacity={op} />
+                          <text x={lx} y={labelY} fill="var(--color-accent)" fontSize={8} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
+                            {label} {fmt(low)}
+                          </text>
+                          <line x1={hx} y1={PAD_T} x2={hx} y2={PAD_T + plotH}
+                            stroke="var(--color-accent)" strokeWidth={1} strokeDasharray={dash} opacity={op} />
+                          <text x={hx} y={labelY} fill="var(--color-accent)" fontSize={8} textAnchor="middle" fontFamily="Inter, sans-serif" opacity={0.7}>
+                            {labelHi} {fmt(high)}
+                          </text>
+                        </g>
+                      );
+                    })}
 
                     {/* X-axis ticks */}
                     {ticks.map(t => (
@@ -1873,7 +1917,7 @@ export default function SEMVTab({
             {/* Adjustment Grid — Best 5 */}
             <div className="px-4 py-3">
               <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide font-medium mb-2">
-                Best 5 Comparables — Adjustment Grid
+                Best 10 Comparables — Adjustment Grid
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs border-collapse">
@@ -1897,6 +1941,14 @@ export default function SEMVTab({
                       ))}
                     </tr>
                     <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Postcode</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-secondary)] text-center text-[10px]">
+                          {(c as any).postcode ?? "—"}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
                       <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Transaction price</td>
                       {autoSelectResult.best_5.map((c, i) => (
                         <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center font-medium">
@@ -1905,15 +1957,15 @@ export default function SEMVTab({
                       ))}
                     </tr>
                     <tr className="border-b border-[var(--color-border)]/50">
-                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Floor area (sqm)</td>
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Floor area (sqft)</td>
                       {autoSelectResult.best_5.map((c, i) => (
-                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">{c.floor_area_sqm}</td>
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">{Math.round(c.floor_area_sqm * 10.764)}</td>
                       ))}
                     </tr>
                     <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
                       <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Raw PSF</td>
                       {autoSelectResult.best_5.map((c, i) => (
-                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">£{c.raw_psf.toFixed(0)}/sqm</td>
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">£{Math.round(c.raw_psf / 10.764)}/sqft</td>
                       ))}
                     </tr>
                     {/* Adjustment rows */}
@@ -1953,7 +2005,7 @@ export default function SEMVTab({
                       <td className="px-2 py-1.5 text-[var(--color-text-primary)] font-semibold">Adjusted PSF</td>
                       {autoSelectResult.best_5.map((c, i) => (
                         <td key={i} className="px-2 py-1.5 text-center font-bold text-[var(--color-accent)]">
-                          £{c.adjusted_psf.toFixed(0)}/sqm
+                          £{Math.round(c.adjusted_psf / 10.764)}/sqft
                         </td>
                       ))}
                     </tr>

@@ -1681,8 +1681,8 @@ class AutoSelectRequest(BaseModel):
     borough_slug:   str                      # e.g. "sutton"
     property_type:  str                      # "flat" | "house"
     hpi_factor:     float         = 1.0      # HPI time adjustment factor
-    iterations:     int           = 50_000
-    top_n:          int           = 5
+    iterations:     int           = 10_000
+    top_n:          int           = 10
     seed:           int | None    = None     # optional for reproducibility
 
 

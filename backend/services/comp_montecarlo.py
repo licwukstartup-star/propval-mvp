@@ -30,6 +30,7 @@ class CompAdjustment:
     """Adjustment breakdown for a single comparable."""
     transaction_id: str | None
     address:        str
+    postcode:       str
     price:          int
     floor_area_sqm: float
     raw_psf:        float
@@ -48,6 +49,7 @@ class CompAdjustment:
         return {
             "transaction_id": self.transaction_id,
             "address": self.address,
+            "postcode": self.postcode,
             "price": self.price,
             "floor_area_sqm": self.floor_area_sqm,
             "raw_psf": round(self.raw_psf, 2),
@@ -207,7 +209,7 @@ def run_simulation(
     property_type: str,
     hpi_factor: float = 1.0,
     iterations: int = 50_000,
-    top_n: int = 5,
+    top_n: int = 10,
     weights: dict[str, float] | None = None,
     params_dir: str | None = None,
     seed: int | None = None,
@@ -300,12 +302,25 @@ def run_simulation(
         raise ValueError("All MC iterations produced zero MV — check input data")
 
     # ── Valuation distribution ──
+    # Mode: peak of the density — use histogram binning to find densest region
+    mode_bins = 100
+    mode_counts, mode_edges = np.histogram(mv_valid, bins=mode_bins)
+    mode_idx = int(np.argmax(mode_counts))
+    mode_val = float((mode_edges[mode_idx] + mode_edges[mode_idx + 1]) / 2.0)
+    # Round to nearest £1,000
+    mode_val = round(mode_val / 1000) * 1000
+
     valuation = {
         "median": float(np.median(mv_valid)),
         "mean":   float(np.mean(mv_valid)),
+        "mode":   mode_val,
         "p5":     float(np.percentile(mv_valid, 5)),
+        "p10":    float(np.percentile(mv_valid, 10)),
+        "p15":    float(np.percentile(mv_valid, 15)),
         "p25":    float(np.percentile(mv_valid, 25)),
         "p75":    float(np.percentile(mv_valid, 75)),
+        "p85":    float(np.percentile(mv_valid, 85)),
+        "p90":    float(np.percentile(mv_valid, 90)),
         "p95":    float(np.percentile(mv_valid, 95)),
         "std":    float(np.std(mv_valid)),
         "iterations_valid": int(len(mv_valid)),
@@ -350,6 +365,7 @@ def run_simulation(
         best_5.append(CompAdjustment(
             transaction_id=_safe(comp, "transaction_id"),
             address=_safe(comp, "address", ""),
+            postcode=_safe(comp, "postcode", ""),
             price=_safe(comp, "price", 0),
             floor_area_sqm=comp_sqm,
             raw_psf=raw_psf,
