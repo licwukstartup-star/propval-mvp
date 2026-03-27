@@ -251,6 +251,7 @@ export default function Home() {
   const [showCaseTypePopup, setShowCaseTypePopup] = useState(false);
   const [saveCaseType, setSaveCaseType] = useState<"research" | "full_valuation">("research");
   const [currentCaseStatus, setCurrentCaseStatus] = useState<string>("in_progress");
+  const [activePanelSlug, setActivePanelSlug] = useState<string | null>(null);
   const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [navbarSlot, setNavbarSlot] = useState<HTMLElement | null>(null);
   const [navbarCustomiseSlot, setNavbarCustomiseSlot] = useState<HTMLElement | null>(null);
@@ -325,6 +326,7 @@ export default function Home() {
     setCurrentCaseId(null);
     setSaveCaseType("research");
     setCurrentCaseStatus("in_progress");
+    setActivePanelSlug(null);
     setValuationDate("");
     setHpiCorrelation(100);
     setSizeElasticity(0);
@@ -393,6 +395,8 @@ export default function Home() {
       epc_matched:    !!(snap.epc_rating),
       epc_rating:     (snap.epc_rating as string) ?? null,
       epc_score:      (snap.epc_score as number) ?? null,
+      imd_decile:     (snap.imd_decile as number) ?? null,
+      construction_age_best: (snap.construction_age_best as number) ?? null,
       months_ago:     null,
       lease_remaining: null,
       snapshot_id:    snap.id as string,
@@ -430,6 +434,8 @@ export default function Home() {
       transaction_category: comp.transaction_category ?? undefined,
       epc_rating: comp.epc_rating ?? undefined,
       epc_score: comp.epc_score ?? undefined,
+      imd_decile: comp.imd_decile ?? undefined,
+      construction_age_best: comp.construction_age_best ?? undefined,
       geographic_tier: comp.geographic_tier,
       tier_label: comp.tier_label,
       spec_relaxations: comp.spec_relaxations?.length ? comp.spec_relaxations : undefined,
@@ -589,8 +595,8 @@ export default function Home() {
         property_type: result.property_type ?? (manualPropertyType || null),
       };
       const payload = currentCaseId
-        ? { comparables: adoptedComparables, search_results: searchResults, property_data: mergedResult, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current }
-        : { address: mergedResult.address, postcode: mergedResult.postcode, uprn: mergedResult.uprn, case_type: saveCaseType, property_data: mergedResult, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current };
+        ? { comparables: adoptedComparables, search_results: searchResults, property_data: mergedResult, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current, panel_slug: activePanelSlug || "" }
+        : { address: mergedResult.address, postcode: mergedResult.postcode, uprn: mergedResult.uprn, case_type: saveCaseType, property_data: mergedResult, comparables: adoptedComparables, search_results: searchResults, valuation_date: valuationDate || null, hpi_correlation: hpiCorrelation, size_elasticity: sizeElasticity, epc_beta: epcBeta, floor_premium: floorPremium, ai_narrative: aiNarrative, report_content: reportContent, ui_state: uiStateRef.current, panel_slug: activePanelSlug || undefined };
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
@@ -694,20 +700,28 @@ export default function Home() {
   currentCaseIdRef.current = currentCaseId;
   pendingExitRef.current = pendingExitAfterSave;
 
+  // Auto-save on DATA changes (short debounce — these affect the valuation)
   useEffect(() => {
     if (!currentCaseId || ["issued", "archived"].includes(currentCaseStatus)) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    // Block auto-save while a case is being loaded (prevents cross-case contamination)
     if (loadingCaseRef.current) return;
-    // Skip auto-save for 5s after loading a case (avoids race with stale state)
     if (Date.now() - loadedAtRef.current < 5000) return;
     autoSaveTimerRef.current = setTimeout(() => {
       saveCaseRef.current(true);
     }, 5000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, epcBeta, floorPremium, currentCaseId, currentCaseStatus,
-      activeTab, cardSizes, mapShowFlood, mapShowRings, mapShowLandUse, mapShowDeprivation,
+  }, [adoptedComparables, valuationDate, hpiCorrelation, sizeElasticity, epcBeta, floorPremium, currentCaseId, currentCaseStatus]);
+
+  // Auto-save on UI-STATE changes (longer debounce — map toggles, card sizes, etc.)
+  useEffect(() => {
+    if (!currentCaseId || ["issued", "archived"].includes(currentCaseStatus)) return;
+    if (loadingCaseRef.current) return;
+    if (Date.now() - loadedAtRef.current < 5000) return;
+    const t = setTimeout(() => { saveCaseRef.current(true); }, 15000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, cardSizes, mapShowFlood, mapShowRings, mapShowLandUse, mapShowDeprivation,
       mapShowRoadNoise, mapShowRailNoise, mapShowCrime, mapShowIncome, mapShowEducation, mapShowHeritage, mapShowTitleBoundary, mapTileLayer]);
 
   async function loadCase(c: SavedCaseSummary) {
@@ -754,6 +768,7 @@ export default function Home() {
         setManualFloorAreaSqft("");
         setManualPropertyType("");
       }
+      // Fire all backfills + comps load in PARALLEL (none depend on each other)
       // Backfill lease details from local DB (single source of truth)
       if (snapshot?.uprn && !snapshot.lease_commencement) {
         fetch(`${API_BASE}/api/property/lease-details/${snapshot.uprn}`, {
@@ -762,17 +777,6 @@ export default function Home() {
           if (lease?.lease_commencement) setResult(prev => prev ? { ...prev, ...lease } : prev);
         }).catch(() => {});
       }
-      // Try loading comps from case-comps API (Option E), fall back to JSON blob
-      const apiComps = await loadCompsFromAPI(data.id);
-      setAdoptedComparables(apiComps ?? data.comparables ?? []);
-      // Restore saved AI narrative if available (no auto-generation)
-      if (data.ai_narrative && (data.ai_narrative.location_summary || data.ai_narrative.property_overview || data.ai_narrative.market_context)) {
-        setAiNarrative(data.ai_narrative);
-      } else {
-        setAiNarrative(null);
-      }
-      // Restore saved report content
-      setReportContent(data.report_content ?? null);
       // Backfill coordinates from all sources (OS Open UPRN, INSPIRE) for restored cases
       if (snapshot?.lat && snapshot?.lon) {
         fetch(`${API_BASE}/api/property/inspire-lookup`, {
@@ -827,6 +831,17 @@ export default function Home() {
           .then(d => { if (d?.hpi) setResult(prev => prev ? { ...prev, hpi: d.hpi } : prev); })
           .catch(() => {});
       }
+      // Load comps in parallel with backfills (awaited so we can set state before continuing)
+      const apiComps = await loadCompsFromAPI(data.id);
+      setAdoptedComparables(apiComps ?? data.comparables ?? []);
+      // Restore saved AI narrative if available (no auto-generation)
+      if (data.ai_narrative && (data.ai_narrative.location_summary || data.ai_narrative.property_overview || data.ai_narrative.market_context)) {
+        setAiNarrative(data.ai_narrative);
+      } else {
+        setAiNarrative(null);
+      }
+      // Restore saved report content
+      setReportContent(data.report_content ?? null);
       // Restore cached search results
       const sr = data.search_results ?? {};
       setBuildingSearchResult(sr.building ?? null);
@@ -855,6 +870,7 @@ export default function Home() {
       // currentCaseId already set at top of loadCase to prevent auto-save race
       setSaveCaseType(data.case_type ?? "research");
       setCurrentCaseStatus(data.status === "draft" ? "in_progress" : (data.status ?? "in_progress"));
+      setActivePanelSlug(data.instruction_source || null);
       setAddress(data.address);
 
       // Restore UI state (tab, map layers, card sizes)
@@ -3408,6 +3424,14 @@ export default function Home() {
                 subjectEpcScore={result?.energy_score ?? null}
                 subjectSaon={result?.saon ?? null}
                 subjectAreaM2={subjectAreaM2 ?? null}
+                subjectBedrooms={result?.num_rooms != null ? Number(result.num_rooms) : null}
+                subjectBuildYear={result?.construction_age_best ?? null}
+                subjectImdDecile={result?.imd?.overall_decile ?? null}
+                subjectAddress={result?.address ?? null}
+                subjectPostcode={result?.postcode ?? null}
+                subjectTenure={result?.tenure ?? null}
+                boroughSlug={result?.admin_district ? result.admin_district.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "") : null}
+                accessToken={session?.access_token ?? null}
                 hpiCorrelation={hpiCorrelation}
                 onHpiCorrelationChange={setHpiCorrelation}
                 compSizeElasticity={sizeElasticity}
@@ -3437,7 +3461,7 @@ export default function Home() {
 
           {/* ── QA tab — AI quality assurance for report copies ── */}
           <div className="pb-8" style={{ display: activeTab === "qa" ? undefined : "none" }}>
-            <QATab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} visible={activeTab === "qa"} />
+            <QATab caseId={currentCaseId} session={session} result={result} adoptedComparables={adoptedComparables} visible={activeTab === "qa"} panelSlug={activePanelSlug} />
           </div>
 
 
@@ -3508,7 +3532,7 @@ export default function Home() {
           </div>
           {/* ── Tab: Report Typing ─────────────────────────────────────────────── */}
           <div className="pb-8" style={{ display: activeTab === "report_typing" ? undefined : "none" }}>
-            <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} caseId={currentCaseId} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} />
+            <ReportTyping result={result} adoptedComparables={adoptedComparables} session={session} caseId={currentCaseId} reportContent={reportContent} onReportContentChange={(c) => setReportContent(prev => ({ ...prev, ...c }))} onSave={() => saveCase(false)} valuationDate={valuationDate} activePanelSlug={activePanelSlug} onPanelChange={setActivePanelSlug} />
           </div>
 
         </div>

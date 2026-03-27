@@ -37,7 +37,7 @@ from . import ppd_cache
 from fastapi import Request
 from pydantic import BaseModel, Field, model_validator
 from .rate_limit import limiter
-from .property import _get_http_client
+from .property import _get_http_client, _fetch_imd, POSTCODES_IO_URL
 
 router = APIRouter(prefix="/api/comparables", tags=["comparables"])
 
@@ -50,10 +50,12 @@ EPC_CONCURRENT       = 10     # max parallel EPC calls
 EPC_CALL_TIMEOUT     = 4.0    # EPC API is fast; short timeout avoids blocking
 TOTAL_TIMEOUT        = 75.0   # total orchestrator timeout (must be < 90s middleware hard cap)
 MAX_ADJACENT_CODES   = 2      # keep tier 4 fast
+MAX_COMPS_BUILDING   = 20     # hard cap: Direct (same building/street) — max_tier ≤ 2
+MAX_COMPS_WIDER      = 30     # hard cap: Wider (outward + adjacent) — max_tier ≥ 3
 
-FLAT_TIER_LABELS     = {1: "Same building", 2: "Same development",
+FLAT_TIER_LABELS     = {1: "Same building/street", 2: "Same development/street",
                          3: "Same outward code", 4: "Adjacent area"}
-HOUSE_TIER_LABELS    = {1: "Same postcode",  2: "Same street",
+HOUSE_TIER_LABELS    = {1: "Same building/street",  2: "Same development/street",
                          3: "Same outward code", 4: "Adjacent area"}
 
 # ---------------------------------------------------------------------------
@@ -105,8 +107,11 @@ class ComparableSearchRequest(BaseModel):
     max_tier:                 int       = 4    # cap search at this tier (1-4)
     building_months:          int       = 36   # Tier 1 time window (flat: same building, house: same street)
     neighbouring_months:      int       = 12   # Tiers 3-4 time window, 6–24 months
+    age_min:                  int       = -50  # min year diff (negative = older allowed)
+    age_max:                  int       = 30   # max year diff (positive = newer allowed)
     exclude_transaction_ids:  list[str] = []   # skip these exact transaction URIs
     exclude_address_keys:     list[str] = []   # skip any transaction at these saon|postcode addresses
+    max_distance_m:           float | None = None  # optional radius cap in metres
 
 
 class ComparableCandidate(BaseModel):
@@ -144,6 +149,7 @@ class ComparableCandidate(BaseModel):
     coord_source:        str | None = None    # 'os_open_uprn' | 'inspire' | 'postcode' | None
     lat:                 float | None = None  # WGS84 latitude (building-level when UPRN resolved)
     lon:                 float | None = None  # WGS84 longitude
+    imd_decile:          int | None = None    # IMD 2019 overall decile (1=most deprived, 10=least)
 
 
 class SearchMetadata(BaseModel):
@@ -358,6 +364,9 @@ def _passes_hard_deck(
     beds:      int | None,
     subject:   SubjectPropertyInput,
     relaxations: list[str],
+    age_min: int = -50,
+    age_max: int = 30,
+    comp_build_year: int | None = None,
 ) -> bool:
     # Filter 1: Tenure — never relaxed
     if tenure != subject.tenure:
@@ -373,9 +382,12 @@ def _passes_hard_deck(
         if dist > max_dist:
             return False
 
-    # Filter 3: Building era — flats only, never relaxed
-    if subject.property_type == "flat" and subject.building_era and era:
-        if era != subject.building_era:
+    # Filter 3: Building age — asymmetric range (all property types)
+    # diff = comp_year - subject_year: negative = comp is older, positive = comp is newer
+    # If either build year is missing, pass through (don't block)
+    if subject.build_year is not None and comp_build_year is not None:
+        diff = comp_build_year - subject.build_year
+        if diff < age_min or diff > age_max:
             return False
 
     # Filter 4: Bedrooms — flats only.
@@ -789,8 +801,7 @@ def _enrich(saon: str, paon: str, street: str, postcode: str,
 def _make_candidate(raw: dict, tier: int, tier_label: str,
                     time_window: int, relaxations: list[str],
                     val_date: date) -> ComparableCandidate:
-    addr = " ".join(filter(None, [raw["saon"], raw["paon"], raw["street"],
-                                   raw["postcode"]])).title()
+    addr = " ".join(filter(None, [raw["saon"], raw["paon"], raw["street"]])).title()
 
     # Build year from EPC enrichment (preferred), then spine age_best
     build_year: int | None = raw.get("build_year")
@@ -864,6 +875,7 @@ async def _process_rows(
     tier:        int,
     months:      int,
     *,
+    age_min: int = -50, age_max: int = 30,
     # Optional geographic filter callables (return True to keep)
     geo_filter = None,
     # Address keys to skip (cross-tab exclusion): "SAON|POSTCODE" (uppercased)
@@ -934,6 +946,7 @@ async def _process_rows(
             raw.get("tenure"), raw.get("property_type"),
             raw.get("house_sub_type"), raw.get("building_era"),
             raw.get("bedrooms"), subject, relaxations,
+            age_min=age_min, age_max=age_max, comp_build_year=raw.get("build_year"),
         ):
             continue
 
@@ -964,6 +977,7 @@ async def _process_rows(
             raw.get("tenure"), raw.get("property_type"),
             raw.get("house_sub_type"), raw.get("building_era"),
             raw.get("bedrooms"), subject, relaxations,
+            age_min=age_min, age_max=age_max, comp_build_year=raw.get("build_year"),
         )
         logging.warning(
             "  [T%d] %s %s %s | tenure=%s pt=%s era=%s beds=%s | %s",
@@ -1032,6 +1046,8 @@ async def _run_flat_tier(
     building_months:     int = 30,
     neighbouring_months: int = 12,
     exclude_addr:        set[str] = frozenset(),
+    age_min:             int = -50,
+    age_max:             int = 30,
 ) -> list[dict]:
     months = building_months if tier in (1, 2) else neighbouring_months
     oc = _outward(subject.postcode)
@@ -1104,7 +1120,7 @@ async def _run_flat_tier(
             rows_for_tier1 = rows_pc
 
         return await _process_rows(rows_for_tier1, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
     elif tier == 2:
         # Same development (named block) OR same street (numbered building)
@@ -1118,7 +1134,7 @@ async def _run_flat_tier(
 
             rows = await sc.outward(oc, months)
             return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                        geo_filter=geo2, exclude_addr=exclude_addr)
+                                        geo_filter=geo2, exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
         elif subject.street_name:
             # Flat in numbered building (e.g. "27 Albert Embankment") — street walk
             sn_norm = normalise_street(subject.street_name)
@@ -1133,14 +1149,14 @@ async def _run_flat_tier(
                 subject.street_name, len(search_codes), len(rows),
             )
             return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                        geo_filter=geo_street, exclude_addr=exclude_addr)
+                                        geo_filter=geo_street, exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
         else:
             return []
 
     elif tier == 3:
         rows = await sc.outward(oc, months)
         return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
     else:  # tier 4 — fetch adjacent codes in parallel
         adj_results = await asyncio.gather(
@@ -1152,7 +1168,7 @@ async def _run_flat_tier(
             if isinstance(r, list):
                 all_rows.extend(r)
         return await _process_rows(all_rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
 
 async def _run_house_tier(
@@ -1167,6 +1183,8 @@ async def _run_house_tier(
     building_months:     int = 30,
     neighbouring_months: int = 12,
     exclude_addr:        set[str] = frozenset(),
+    age_min:             int = -50,
+    age_max:             int = 30,
 ) -> list[dict]:
     months = building_months if tier in (1, 2) else neighbouring_months
     oc = _outward(subject.postcode)
@@ -1175,7 +1193,7 @@ async def _run_house_tier(
         # Tier 1: Same postcode — all house sales in the exact postcode
         rows = await sc.postcode(subject.postcode, months)
         return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
     elif tier == 2:
         # Tier 2: Same street — across subject's outward code + adjacent codes
@@ -1194,12 +1212,12 @@ async def _run_house_tier(
             subject.street_name, len(search_codes), len(rows_street),
         )
         return await _process_rows(rows_street, subject, epc, val_date, seen, relax, tier, months,
-                                    geo_filter=geo_street, exclude_addr=exclude_addr)
+                                    geo_filter=geo_street, exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
     elif tier == 3:
         rows = await sc.outward(oc, months)
         return await _process_rows(rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
     else:  # tier 4 — fetch all adjacent codes in parallel
         adj_results = await asyncio.gather(
@@ -1211,7 +1229,7 @@ async def _run_house_tier(
             if isinstance(r, list):
                 all_rows.extend(r)
         return await _process_rows(all_rows, subject, epc, val_date, seen, relax, tier, months,
-                                    exclude_addr=exclude_addr)
+                                    exclude_addr=exclude_addr, age_min=age_min, age_max=age_max)
 
 # ---------------------------------------------------------------------------
 # Orchestrator
@@ -1324,6 +1342,8 @@ async def _orchestrate(
     neighbouring_months:  int       = 12,
     exclude_ids:          list[str] = [],
     exclude_address_keys: list[str] = [],
+    age_min:              int       = -50,
+    age_max:              int       = 30,
 ) -> tuple[list[dict], int]:
     """
     3-phase orchestrator per spec §6. Falls back to Supabase pipeline.
@@ -1367,6 +1387,7 @@ async def _orchestrate(
                 building_months=building_months,
                 neighbouring_months=neighbouring_months,
                 exclude_addr=exclude_addr_set,
+                age_min=age_min, age_max=age_max,
             )
             logging.warning("⏱ Comp: Tier %d relax=%s → %d results in %.0fms",
                             tier_num, phase_relax, len(results), (time.monotonic() - _tt) * 1000)
@@ -1436,6 +1457,63 @@ async def _batch_lease_remaining(uprns: list[str], as_of: date) -> dict[str, str
         return {}
 
 
+async def _bulk_resolve_imd_deciles(postcodes: list[str]) -> dict[str, int]:
+    """Resolve postcode → LSOA → IMD overall decile for a batch of postcodes.
+
+    Returns dict mapping postcode → imd_decile (1-10).
+    Uses postcodes.io bulk endpoint (max 100) then existing _fetch_imd() per LSOA.
+    """
+    if not postcodes:
+        return {}
+
+    # Phase 1: Postcodes → LSOA codes via postcodes.io bulk
+    pc_to_lsoa: dict[str, str] = {}
+    try:
+        client = _get_http_client()
+        resp = await client.post(
+            POSTCODES_IO_URL,
+            json={"postcodes": postcodes[:100]},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            for item in resp.json().get("result", []):
+                r = item.get("result")
+                if r and r.get("codes", {}).get("lsoa"):
+                    pc_to_lsoa[item["query"]] = r["codes"]["lsoa"]
+    except Exception as exc:
+        logging.warning("Bulk postcodes.io lookup failed: %s", exc)
+        return {}
+
+    if not pc_to_lsoa:
+        return {}
+
+    # Phase 2: Deduplicated LSOA → IMD decile via _fetch_imd()
+    unique_lsoas = list(set(pc_to_lsoa.values()))
+    sem = asyncio.Semaphore(5)
+
+    async def _bounded_fetch(lsoa: str) -> tuple[str, int | None]:
+        async with sem:
+            result = await _fetch_imd(lsoa)
+            return (lsoa, result.get("overall_decile") if result else None)
+
+    imd_results = await asyncio.gather(
+        *[_bounded_fetch(lsoa) for lsoa in unique_lsoas],
+        return_exceptions=True,
+    )
+    lsoa_to_decile: dict[str, int] = {}
+    for r in imd_results:
+        if isinstance(r, tuple) and r[1] is not None:
+            lsoa_to_decile[r[0]] = r[1]
+
+    # Phase 3: Chain postcode → lsoa → decile
+    result: dict[str, int] = {}
+    for pc, lsoa in pc_to_lsoa.items():
+        dec = lsoa_to_decile.get(lsoa)
+        if dec is not None:
+            result[pc] = dec
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -1455,16 +1533,22 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
         except Exception:
             pass
 
+    # Hard cap: clamp target to prevent overload / data scraping
+    is_building = req.max_tier <= 2
+    hard_cap = MAX_COMPS_BUILDING if is_building else MAX_COMPS_WIDER
+    effective_target = min(req.target_count, hard_cap)
+
     # Query Supabase spine tables (transactions) for comparables
     pool, total_scanned = [], 0
 
     try:
         pool, total_scanned = await asyncio.wait_for(
-            _orchestrate(req.subject, req.target_count, val_date, epc_email, epc_key,
+            _orchestrate(req.subject, effective_target, val_date, epc_email, epc_key,
                          max_tier=req.max_tier, building_months=req.building_months,
                          neighbouring_months=req.neighbouring_months,
                          exclude_ids=req.exclude_transaction_ids,
-                         exclude_address_keys=req.exclude_address_keys),
+                         exclude_address_keys=req.exclude_address_keys,
+                         age_min=req.age_min, age_max=req.age_max),
             timeout=TOTAL_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -1487,6 +1571,12 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
         except asyncio.TimeoutError:
             logging.warning("Distance annotation timed out — falling back to date sort")
 
+    # ── Radius filter: drop comps beyond max_distance_m ──
+    if req.max_distance_m is not None and pool:
+        before = len(pool)
+        pool = [r for r in pool if r.get("_dist_m") is not None and r["_dist_m"] <= req.max_distance_m]
+        logging.warning("Radius filter: max_distance_m=%.0f, %d → %d comps", req.max_distance_m, before, len(pool))
+
     # Sort: tier ASC, then distance ASC (if available), then most recent first
     has_distances = any(r.get("_dist_m") is not None for r in pool)
     if has_distances:
@@ -1497,6 +1587,9 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
     else:
         pool_sorted = sorted(pool, key=lambda r: r["sale_date"], reverse=True)
         pool_sorted = sorted(pool_sorted, key=lambda r: r["_tier"])
+
+    # Enforce hard cap on output
+    pool_sorted = pool_sorted[:hard_cap]
 
     comparables = [
         _make_candidate(r, r["_tier"], r["_label"], r["_window"], r["_relax"], val_date)
@@ -1528,6 +1621,15 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
             except (ValueError, TypeError):
                 pass
 
+    # ── IMD decile per comparable (postcode → LSOA → IMD) ──
+    unique_pcs = list({r["postcode"] for r in pool_sorted if r.get("postcode")})
+    if unique_pcs:
+        imd_map = await _bulk_resolve_imd_deciles(unique_pcs)
+        for comp, raw in zip(comparables, pool_sorted):
+            pc = raw.get("postcode")
+            if pc and pc in imd_map:
+                comp.imd_decile = imd_map[pc]
+
     all_relax: list[str] = []
     for c in comparables:
         for rx in c.spec_relaxations:
@@ -1536,16 +1638,103 @@ async def search_comparables(request: Request, req: ComparableSearchRequest, _us
 
     return ComparableSearchResponse(
         subject        = req.subject,
-        target_count   = req.target_count,
+        target_count   = effective_target,
         comparables    = comparables,
         search_metadata = SearchMetadata(
             tiers_searched           = max((c.geographic_tier for c in comparables), default=0),
             spec_relaxations_applied = all_relax,
             total_candidates_scanned = total_scanned,
             search_duration_ms       = int((time.monotonic() - t0) * 1000),
-            target_met               = len(comparables) >= req.target_count,
+            target_met               = len(comparables) >= effective_target,
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-Select — similarity scoring + MC adjustment engine
+# ---------------------------------------------------------------------------
+
+
+class AutoSelectSubject(BaseModel):
+    """Subject property with all fields needed for similarity scoring."""
+    address:           str
+    postcode:          str
+    tenure:            str
+    property_type:     str
+    bedrooms:          int | None = None
+    floor_area_sqm:    float | None = None
+    build_year:        int | None = None
+    construction_age_best: int | None = None
+    building_era:      str | None = None
+    epc_score:         int | None = None
+    epc_rating:        str | None = None
+    imd_decile:        int | None = None
+    house_sub_type:    str | None = None
+    saon:              str | None = None
+    lat:               float | None = None
+    lon:               float | None = None
+
+
+class AutoSelectRequest(BaseModel):
+    subject:        AutoSelectSubject
+    comparables:    list[dict]               # pool of ComparableCandidate dicts
+    borough_slug:   str                      # e.g. "sutton"
+    property_type:  str                      # "flat" | "house"
+    hpi_factor:     float         = 1.0      # HPI time adjustment factor
+    iterations:     int           = 50_000
+    top_n:          int           = 5
+    seed:           int | None    = None     # optional for reproducibility
+
+
+@router.post("/auto-select")
+async def auto_select_comparables(
+    request: Request,
+    req: AutoSelectRequest,
+    _user: dict = Depends(get_current_user),
+):
+    """Score, rank, and run Monte Carlo simulation on a comparable pool.
+
+    Returns the best N comps with adjustment breakdowns and a valuation
+    distribution derived from borough-specific LR coefficients.
+    """
+    from services.comp_montecarlo import run_simulation
+
+    t0 = time.monotonic()
+
+    # Build subject dict with all fields the scorer needs
+    subj = req.subject.model_dump() if hasattr(req.subject, "model_dump") else dict(req.subject)
+
+    # Normalise inputs to lowercase (DB stores lowercase)
+    borough = req.borough_slug.strip().lower()
+    prop_type = req.property_type.strip().lower()
+    if "flat" in prop_type or "maisonette" in prop_type:
+        prop_type = "flat"
+    elif prop_type not in ("flat", "house"):
+        prop_type = "house"
+
+    try:
+        result = run_simulation(
+            comparables=req.comparables,
+            subject=subj,
+            borough_slug=borough,
+            property_type=prop_type,
+            hpi_factor=req.hpi_factor,
+            iterations=req.iterations,
+            top_n=req.top_n,
+            seed=req.seed,
+        )
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=str(e))
+
+    elapsed = round((time.monotonic() - t0) * 1000)
+    logging.info("auto-select: %s/%s, %d comps, %d iters in %dms",
+                 req.borough_slug, req.property_type, len(req.comparables),
+                 req.iterations, elapsed)
+
+    resp = result.to_dict()
+    resp["elapsed_ms"] = elapsed
+    return resp
 
 
 # ---------------------------------------------------------------------------

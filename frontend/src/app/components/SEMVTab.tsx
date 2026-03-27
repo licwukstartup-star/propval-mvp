@@ -2,6 +2,8 @@
 import { useMemo, useState, useRef, useCallback } from "react";
 import { fmtK, fmtPsf, fmtDateShort } from "@/lib/formatters";
 import { computeAdjFactor, computeSizeAdj } from "@/lib/hpi-adjustments";
+import { scorePool, type ScoredComparable, type ScoreBreakdown } from "@/lib/comp-scoring";
+import { API_BASE } from "@/lib/constants";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface ComparableCandidate {
@@ -27,6 +29,44 @@ type HpiTrendSlice = {
   hpi_terraced: number | null;
 };
 
+// ── Auto-select MC result types ──
+interface AutoSelectComp {
+  transaction_id: string | null;
+  address: string;
+  price: number;
+  floor_area_sqm: number;
+  raw_psf: number;
+  time_adj_pct: number;
+  size_adj_pct: number;
+  rooms_adj_pct: number;
+  epc_adj_pct: number;
+  imd_adj_pct: number;
+  age_adj_pct: number;
+  total_adj_pct: number;
+  adjusted_psf: number;
+  implied_mv: number;
+  similarity: number;
+}
+
+interface AutoSelectResult {
+  iterations: number;
+  best_5: AutoSelectComp[];
+  valuation: {
+    median: number;
+    mean: number;
+    p5: number;
+    p25: number;
+    p75: number;
+    p95: number;
+    std: number;
+    iterations_valid: number;
+  };
+  histogram: { bin_center: number; count: number; density: number }[];
+  selection_frequency: { transaction_id: string; address: string; frequency: number; similarity: number }[];
+  coefficients_used: { borough: string; property_type: string; mdape: number; coefficients: Record<string, number> };
+  elapsed_ms: number;
+}
+
 interface SEMVTabProps {
   layer1Comps: ComparableCandidate[];
   adoptedComparables: ComparableCandidate[];
@@ -39,6 +79,14 @@ interface SEMVTabProps {
   subjectEpcScore: number | null;
   subjectSaon: string | null;
   subjectAreaM2: number | null;
+  subjectBedrooms: number | null;
+  subjectBuildYear: number | null;
+  subjectImdDecile: number | null;
+  subjectAddress: string | null;
+  subjectPostcode: string | null;
+  subjectTenure: string | null;
+  boroughSlug: string | null;
+  accessToken: string | null;
   hpiCorrelation: number;
   onHpiCorrelationChange: (v: number) => void;
   compSizeElasticity: number;
@@ -1056,6 +1104,14 @@ export default function SEMVTab({
   subjectEpcScore,
   subjectSaon,
   subjectAreaM2,
+  subjectBedrooms,
+  subjectBuildYear,
+  subjectImdDecile,
+  subjectAddress,
+  subjectPostcode,
+  subjectTenure,
+  boroughSlug,
+  accessToken,
   hpiCorrelation,
   onHpiCorrelationChange,
   compSizeElasticity,
@@ -1066,6 +1122,131 @@ export default function SEMVTab({
   onFloorPremiumChange,
   onAdoptedMVChange,
 }: SEMVTabProps) {
+  // ── Auto-select state ──
+  const [autoSelectResult, setAutoSelectResult] = useState<AutoSelectResult | null>(null);
+  const [autoSelectLoading, setAutoSelectLoading] = useState(false);
+  const [autoSelectError, setAutoSelectError] = useState<string | null>(null);
+
+  // ── Similarity scores for the comp pool ──
+  const subjectForScoring = useMemo(() => ({
+    floor_area_sqm: subjectAreaM2,
+    bedrooms: subjectBedrooms,
+    build_year: subjectBuildYear,
+    epc_score: subjectEpcScore,
+    imd_decile: subjectImdDecile,
+  }), [subjectAreaM2, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile]);
+
+  const scoredComps = useMemo(
+    () => scorePool(layer1Comps, subjectForScoring),
+    [layer1Comps, subjectForScoring]
+  );
+
+  // Map transaction_id/address → similarity score for display
+  const similarityMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const { comparable, score } of scoredComps) {
+      const key = (comparable as any).transaction_id ?? (comparable as any).address;
+      m.set(key, score.composite);
+    }
+    return m;
+  }, [scoredComps]);
+
+  // ── Auto-compose SEMV pool: all direct (tier 1-2) + top 30 scored wider (tier 3-4) ──
+  const semvPool = useMemo(() => {
+    const direct: ComparableCandidate[] = [];
+    const wider: ComparableCandidate[] = [];
+    for (const c of layer1Comps) {
+      const tier = (c as any).geographic_tier;
+      if (tier != null && tier <= 2) {
+        direct.push(c);
+      } else {
+        wider.push(c);
+      }
+    }
+    // Score wider comps and take top 30
+    const scoredWider = scorePool(wider, subjectForScoring);
+    const top30Wider = scoredWider.slice(0, 30).map(s => s.comparable as ComparableCandidate);
+    return [...direct, ...top30Wider];
+  }, [layer1Comps, subjectForScoring]);
+
+  // Auto-select handler — uses the auto-composed SEMV pool (direct + top 30 wider)
+  const handleAutoSelect = useCallback(async () => {
+    if (!boroughSlug || !subjectPropertyType || !subjectAreaM2 || !subjectPostcode || !subjectTenure || !accessToken) return;
+    if (semvPool.length < 2) return;
+    setAutoSelectLoading(true);
+    setAutoSelectError(null);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+      const res = await fetch(`${API_BASE}/api/comparables/auto-select`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          subject: {
+            address: subjectAddress ?? "",
+            postcode: subjectPostcode,
+            tenure: subjectTenure,
+            property_type: subjectPropertyType,
+            bedrooms: subjectBedrooms,
+            floor_area_sqm: subjectAreaM2,
+            build_year: subjectBuildYear,
+            epc_score: subjectEpcScore,
+            imd_decile: subjectImdDecile,
+          },
+          comparables: semvPool,
+          borough_slug: boroughSlug,
+          property_type: subjectPropertyType,
+          hpi_factor: 1.0,  // TODO: compute from HPI trend
+          iterations: 50000,
+          top_n: 5,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? "Auto-select failed");
+      }
+      const data: AutoSelectResult = await res.json();
+      setAutoSelectResult(data);
+    } catch (e: any) {
+      setAutoSelectError(e.message ?? "Unknown error");
+    } finally {
+      setAutoSelectLoading(false);
+    }
+  }, [boroughSlug, subjectPropertyType, subjectAreaM2, subjectPostcode, subjectTenure,
+      subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken]);
+
+  // ── Auto-trigger: run MC as soon as we have a valid SEMV pool ──
+  const autoSelectRanRef = useRef(false);
+  const prevPoolSize = useRef(0);
+  useMemo(() => {
+    // Reset when pool changes significantly (new search) or token becomes available
+    if (semvPool.length !== prevPoolSize.current) {
+      autoSelectRanRef.current = false;
+      prevPoolSize.current = semvPool.length;
+      setAutoSelectError(null);
+      setAutoSelectResult(null);
+    }
+  }, [semvPool.length]);
+
+  // Fire auto-select once when pool is ready
+  if (
+    !autoSelectRanRef.current &&
+    !autoSelectLoading &&
+    (!autoSelectResult || !autoSelectResult.histogram) &&
+    semvPool.length >= 2 &&
+    boroughSlug &&
+    subjectPropertyType &&
+    subjectAreaM2 &&
+    subjectAreaM2 > 0 &&
+    subjectPostcode &&
+    subjectTenure &&
+    accessToken
+  ) {
+    autoSelectRanRef.current = true;
+    // Defer to avoid calling setState during render
+    setTimeout(() => handleAutoSelect(), 0);
+  }
+
   // Validation
   const hasLayer1 = layer1Comps.length >= 3;
   const hasAdopted = adoptedComparables.length > 0;
@@ -1208,13 +1389,14 @@ export default function SEMVTab({
     return ids;
   }, [selectedLayer1]);
 
-  if (!ready) {
+  // ── Auto-select can run with just search results + subject size — no adoption needed ──
+  const autoSelectReady = semvPool.length >= 2 && hasSize && !!boroughSlug && !!subjectPropertyType;
+
+  if (!ready && !autoSelectReady) {
     const missing: string[] = [];
-    if (!hasLayer1) missing.push("comparable search (minimum 3 results)");
-    if (!hasAdopted) missing.push("adopted comparables");
-    if (!hasSeedMV) missing.push("adopted comparables with floor area (for indicative MV)");
+    if (!hasLayer1 && semvPool.length < 2) missing.push("comparable search (minimum 2 results)");
     if (!hasSize) missing.push("subject property floor area");
-    if (hasLayer1 && compsWithSize.length < 2) missing.push("at least 2 comparables with floor area data (comps without size are skipped automatically)");
+    if (!boroughSlug) missing.push("borough identification (for LR coefficients)");
 
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
@@ -1238,21 +1420,28 @@ export default function SEMVTab({
     );
   }
 
-  const { simMVs, mean, stdDev, p1, p99, mode } = sim!;
-  // Recalculate percentile and sigma against the effective MV (which may be mode, not seed)
+  // Old SEMV sim results (only available when adopted comps + MV exist)
+  const simMVs = sim?.simMVs ?? [];
+  const mean = sim?.mean ?? 0;
+  const stdDev = sim?.stdDev ?? 0;
+  const p1 = sim?.p1 ?? 0;
+  const p99 = sim?.p99 ?? 0;
+  const mode = sim?.mode ?? 0;
   const percentile = useMemo(() => {
-    if (!simMVs.length) return 0;
+    if (!simMVs.length || !effectiveMV) return 0;
     let lo = 0, hi = simMVs.length;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (simMVs[mid] < effectiveMV!) lo = mid + 1; else hi = mid;
+      if (simMVs[mid] < effectiveMV) lo = mid + 1; else hi = mid;
     }
     return Math.round((lo / simMVs.length) * 100);
   }, [simMVs, effectiveMV]);
-  const sigma = stdDev > 0 ? (effectiveMV! - mean) / stdDev : 0;
+  const sigma = stdDev > 0 && effectiveMV ? (effectiveMV - mean) / stdDev : 0;
 
   return (
     <div className="space-y-3 pb-6">
+      {/* Row 1: Adjustment sliders (2x2 grid) + Key stats — only when old SEMV is ready */}
+      {ready && (<>
       {/* Row 1: Adjustment sliders (2x2 grid) + Key stats */}
       <div className="grid grid-cols-[1fr_1fr] gap-3">
         {/* Left: 2x2 slider grid */}
@@ -1389,6 +1578,7 @@ export default function SEMVTab({
                 <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Raw PSF</th>
                 <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-right">Adj PSF</th>
                 <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-center">Date</th>
+                <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-center">Sim</th>
                 <th className="px-3 py-2 text-[var(--color-text-secondary)] font-medium text-center">Status</th>
               </tr>
             </thead>
@@ -1465,6 +1655,22 @@ export default function SEMVTab({
                         {c.transaction_date.slice(0, 7)}
                       </td>
                       <td className="px-3 py-2 text-center">
+                        {(() => {
+                          const simScore = similarityMap.get(c.transaction_id ?? c.address);
+                          if (simScore == null) return "—";
+                          const pct = Math.round(simScore * 100);
+                          return (
+                            <span className={`text-[10px] font-semibold tabular-nums ${
+                              pct >= 80 ? "text-[var(--color-status-success)]" :
+                              pct >= 60 ? "text-[#F59E0B]" :
+                              "text-[var(--color-status-danger)]"
+                            }`}>
+                              {pct}%
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-3 py-2 text-center">
                         {sizeExcluded ? (
                           <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wider bg-[var(--color-border)]/50 text-[var(--color-text-muted)] border border-[var(--color-text-muted)]/30 line-through">
                             SIZE EXCLUDED
@@ -1487,7 +1693,301 @@ export default function SEMVTab({
         </div>
       </div>
 
-      {/* 6. Methodology Footer */}
+      </>)}
+
+      {/* 6. Auto-Select Best 5 — MC Adjustment Engine */}
+      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-panel)] overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--color-border)]">
+          <div>
+            <h3 className="text-xs font-bold text-[var(--color-accent)] uppercase tracking-wider" style={{ fontFamily: "Orbitron, Inter, sans-serif" }}>
+              Auto-Select &amp; Adjust (MC)
+            </h3>
+            <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5">
+              {(() => {
+                const direct = semvPool.filter((c: any) => c.geographic_tier != null && c.geographic_tier <= 2).length;
+                const wider = semvPool.length - direct;
+                return `Pool: ${direct} direct + ${wider} wider (top 30) = ${semvPool.length} comps`;
+              })()}
+            </p>
+          </div>
+          {autoSelectLoading && (
+            <span className="text-xs text-[var(--color-accent)] animate-pulse">Running 50K iterations…</span>
+          )}
+        </div>
+
+        {autoSelectError && (
+          <div className="px-4 py-2 text-xs text-[var(--color-status-danger)] bg-[var(--color-status-danger)]/5">
+            {autoSelectError}
+          </div>
+        )}
+
+        {!boroughSlug && (
+          <div className="px-4 py-6 text-center text-xs text-[var(--color-text-muted)]">
+            Borough not identified — auto-select requires borough-specific LR coefficients
+          </div>
+        )}
+
+        {autoSelectResult && (
+          <div className="divide-y divide-[var(--color-border)]">
+            {/* Valuation Distribution Summary */}
+            <div className="px-4 py-3">
+              <div className="grid grid-cols-4 gap-3 text-center">
+                <div>
+                  <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">P5</div>
+                  <div className="text-sm font-bold text-[var(--color-text-primary)]">{fmtK(autoSelectResult.valuation.p5)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">Median</div>
+                  <div className="text-sm font-bold text-[var(--color-accent)]">{fmtK(autoSelectResult.valuation.median)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">Mean</div>
+                  <div className="text-sm font-bold text-[var(--color-text-primary)]">{fmtK(autoSelectResult.valuation.mean)}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide mb-0.5">P95</div>
+                  <div className="text-sm font-bold text-[var(--color-text-primary)]">{fmtK(autoSelectResult.valuation.p95)}</div>
+                </div>
+              </div>
+              <div className="mt-2 text-center text-[10px] text-[var(--color-text-muted)]">
+                {autoSelectResult.iterations.toLocaleString()} iterations in {autoSelectResult.elapsed_ms}ms
+                &middot; {autoSelectResult.coefficients_used.borough} {autoSelectResult.coefficients_used.property_type} model
+                &middot; MdAPE {autoSelectResult.coefficients_used.mdape.toFixed(1)}%
+              </div>
+            </div>
+
+            {/* Distribution Chart */}
+            {autoSelectResult.histogram?.length > 0 && (() => {
+              const hist = autoSelectResult.histogram;
+              const val = autoSelectResult.valuation;
+              const W = 800, H = 240;
+              const PAD_L = 60, PAD_R = 20, PAD_T = 20, PAD_B = 40;
+              const plotW = W - PAD_L - PAD_R;
+              const plotH = H - PAD_T - PAD_B;
+
+              const maxDensity = Math.max(...hist.map(h => h.density));
+              const minV = hist[0].bin_center;
+              const maxV = hist[hist.length - 1].bin_center;
+              const range = maxV - minV || 1;
+
+              const xScale = (v: number) => PAD_L + ((v - minV) / range) * plotW;
+              const yScale = (d: number) => PAD_T + plotH - (d / maxDensity) * plotH;
+
+              // Build smooth curve path
+              const points = hist.map(h => ({ x: xScale(h.bin_center), y: yScale(h.density), v: h.bin_center }));
+              let path = `M ${points[0].x},${yScale(0)} L ${points[0].x},${points[0].y}`;
+              for (let i = 0; i < points.length - 1; i++) {
+                const p0 = points[Math.max(0, i - 1)];
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                const p3 = points[Math.min(points.length - 1, i + 2)];
+                const cp1x = p1.x + (p2.x - p0.x) / 6;
+                const cp1y = p1.y + (p2.y - p0.y) / 6;
+                const cp2x = p2.x - (p3.x - p1.x) / 6;
+                const cp2y = p2.y - (p3.y - p1.y) / 6;
+                path += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+              }
+              path += ` L ${points[points.length - 1].x},${yScale(0)} Z`;
+
+              // P5-P95 shaded region
+              const p5x = xScale(val.p5);
+              const p95x = xScale(val.p95);
+              const shadePoints = points.filter(p => p.x >= p5x && p.x <= p95x);
+              let shadePath = "";
+              if (shadePoints.length > 1) {
+                shadePath = `M ${p5x},${yScale(0)} L ${shadePoints[0].x},${shadePoints[0].y}`;
+                for (let i = 1; i < shadePoints.length; i++) {
+                  shadePath += ` L ${shadePoints[i].x},${shadePoints[i].y}`;
+                }
+                shadePath += ` L ${p95x},${yScale(0)} Z`;
+              }
+
+              const medianX = xScale(val.median);
+              const meanX = xScale(val.mean);
+
+              // X-axis ticks
+              const rough = range / 5;
+              const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+              const norm = rough / mag;
+              const niceStep = norm <= 1 ? mag : norm <= 2 ? 2 * mag : norm <= 5 ? 5 * mag : 10 * mag;
+              const ticks: { v: number; x: number }[] = [];
+              for (let v = Math.ceil(minV / niceStep) * niceStep; v <= maxV; v += niceStep) {
+                ticks.push({ v, x: xScale(v) });
+              }
+              const fmt = (v: number) => v >= 1_000_000 ? `£${(v / 1_000_000).toFixed(1)}m` : `£${Math.round(v / 1000)}k`;
+
+              return (
+                <div className="px-4 py-3">
+                  <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 260 }}>
+                    {/* P5-P95 shaded area */}
+                    {shadePath && <path d={shadePath} fill="var(--color-accent)" opacity={0.12} />}
+
+                    {/* Distribution curve */}
+                    <path d={path} fill="var(--color-accent)" opacity={0.06} />
+                    <path d={path.replace(/ Z$/, "")} fill="none" stroke="var(--color-accent)" strokeWidth={2} opacity={0.8} />
+
+                    {/* Median line */}
+                    <line x1={medianX} y1={PAD_T} x2={medianX} y2={PAD_T + plotH}
+                      stroke="var(--color-accent)" strokeWidth={2} />
+                    <text x={medianX + 5} y={PAD_T + 14} fill="var(--color-accent)" fontSize={10} fontFamily="Inter, sans-serif" fontWeight="bold">
+                      Median {fmt(val.median)}
+                    </text>
+
+                    {/* Mean dashed line */}
+                    <line x1={meanX} y1={PAD_T} x2={meanX} y2={PAD_T + plotH}
+                      stroke="var(--color-accent)" strokeWidth={1.5} strokeDasharray="6,4" opacity={0.6} />
+                    <text x={meanX - 5} y={PAD_T + 28} fill="var(--color-accent)" fontSize={9} textAnchor="end" fontFamily="Inter, sans-serif" opacity={0.7}>
+                      Mean {fmt(val.mean)}
+                    </text>
+
+                    {/* P5 / P95 labels */}
+                    <line x1={p5x} y1={PAD_T} x2={p5x} y2={PAD_T + plotH}
+                      stroke="var(--color-text-muted)" strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
+                    <text x={p5x} y={PAD_T + plotH + 14} fill="var(--color-text-muted)" fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif">
+                      P5 {fmt(val.p5)}
+                    </text>
+                    <line x1={p95x} y1={PAD_T} x2={p95x} y2={PAD_T + plotH}
+                      stroke="var(--color-text-muted)" strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
+                    <text x={p95x} y={PAD_T + plotH + 14} fill="var(--color-text-muted)" fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif">
+                      P95 {fmt(val.p95)}
+                    </text>
+
+                    {/* X-axis ticks */}
+                    {ticks.map(t => (
+                      <g key={t.v}>
+                        <line x1={t.x} y1={PAD_T + plotH} x2={t.x} y2={PAD_T + plotH + 5} stroke="var(--color-text-muted)" opacity={0.4} />
+                        <text x={t.x} y={PAD_T + plotH + 30} fill="var(--color-text-muted)" fontSize={9} textAnchor="middle" fontFamily="Inter, sans-serif">
+                          {fmt(t.v)}
+                        </text>
+                      </g>
+                    ))}
+
+                    {/* Axes */}
+                    <line x1={PAD_L} y1={PAD_T + plotH} x2={PAD_L + plotW} y2={PAD_T + plotH}
+                      stroke="var(--color-border)" strokeWidth={1} />
+                  </svg>
+                </div>
+              );
+            })()}
+
+            {/* Adjustment Grid — Best 5 */}
+            <div className="px-4 py-3">
+              <div className="text-[9px] text-[var(--color-text-muted)] uppercase tracking-wide font-medium mb-2">
+                Best 5 Comparables — Adjustment Grid
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--color-border)]">
+                      <th className="text-left px-2 py-1.5 text-[var(--color-text-muted)] font-medium w-[160px]"></th>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <th key={i} className="text-center px-2 py-1.5 text-[var(--color-text-secondary)] font-medium min-w-[100px]">
+                          Comp {i + 1}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-b border-[var(--color-border)]/50">
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Address</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center text-[10px] max-w-[120px] truncate" title={c.address}>
+                          {c.address.split(",")[0]}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Transaction price</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center font-medium">
+                          £{c.price.toLocaleString()}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50">
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Floor area (sqm)</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">{c.floor_area_sqm}</td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Raw PSF</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-[var(--color-text-primary)] text-center">£{c.raw_psf.toFixed(0)}/sqm</td>
+                      ))}
+                    </tr>
+                    {/* Adjustment rows */}
+                    {(["time", "size", "rooms", "epc", "imd", "age"] as const).map((dim) => {
+                      const label = { time: "Time (HPI)", size: "Size", rooms: "Bedrooms", epc: "EPC", imd: "IMD", age: "Age" }[dim];
+                      const key = `${dim}_adj_pct` as keyof AutoSelectComp;
+                      return (
+                        <tr key={dim} className="border-b border-[var(--color-border)]/50">
+                          <td className="px-2 py-1.5 text-[var(--color-text-muted)]">{label} adj</td>
+                          {autoSelectResult.best_5.map((c, i) => {
+                            const v = c[key] as number;
+                            return (
+                              <td key={i} className={`px-2 py-1.5 text-center font-medium ${
+                                Math.abs(v) < 0.1 ? "text-[var(--color-text-muted)]" :
+                                v > 0 ? "text-[var(--color-status-success)]" : "text-[var(--color-status-warning)]"
+                              }`}>
+                                {Math.abs(v) < 0.1 ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                    {/* Totals */}
+                    <tr className="border-b-2 border-[var(--color-border)] bg-[var(--color-bg-surface)]">
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] font-semibold">Total adj</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className={`px-2 py-1.5 text-center font-bold ${
+                          c.total_adj_pct > 0 ? "text-[var(--color-status-success)]" :
+                          c.total_adj_pct < 0 ? "text-[var(--color-status-warning)]" : "text-[var(--color-text-primary)]"
+                        }`}>
+                          {c.total_adj_pct > 0 ? "+" : ""}{c.total_adj_pct.toFixed(1)}%
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50">
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] font-semibold">Adjusted PSF</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-center font-bold text-[var(--color-accent)]">
+                          £{c.adjusted_psf.toFixed(0)}/sqm
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b border-[var(--color-border)]/50 bg-[var(--color-bg-surface)]">
+                      <td className="px-2 py-1.5 text-[var(--color-text-primary)] font-semibold">Implied MV</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-center font-bold text-[var(--color-accent)]">
+                          {fmtK(c.implied_mv)}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr>
+                      <td className="px-2 py-1.5 text-[var(--color-text-muted)]">Similarity</td>
+                      {autoSelectResult.best_5.map((c, i) => (
+                        <td key={i} className="px-2 py-1.5 text-center">
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                            c.similarity >= 0.8 ? "bg-[var(--color-status-success)]/15 text-[var(--color-status-success)]" :
+                            c.similarity >= 0.6 ? "bg-[#F59E0B]/15 text-[#F59E0B]" :
+                            "bg-[var(--color-status-danger)]/15 text-[var(--color-status-danger)]"
+                          }`}>
+                            {(c.similarity * 100).toFixed(0)}%
+                          </span>
+                        </td>
+                      ))}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 7. Methodology Footer */}
       <p className="text-[10px] text-[var(--color-text-muted)] text-center leading-relaxed max-w-2xl mx-auto">
         SEMV V1.0 &middot; 100,000 Monte Carlo simulations &middot;
         Auto-selected top {selectedLayer1.length} of {layer1Comps.length} comps by similarity &middot;
