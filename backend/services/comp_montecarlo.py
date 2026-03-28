@@ -210,6 +210,7 @@ def run_simulation(
     hpi_factor: float = 1.0,
     iterations: int = 50_000,
     top_n: int = 10,
+    quality_premium: float = 0.0,
     weights: dict[str, float] | None = None,
     params_dir: str | None = None,
     seed: int | None = None,
@@ -283,7 +284,7 @@ def run_simulation(
                 comp, subject, coeffs, rng, hpi_factor
             )
             if adj_psf > 0:
-                implied_mv = adj_psf * subj_sqm
+                implied_mv = adj_psf * (1.0 + quality_premium) * subj_sqm
                 adjusted_mvs.append(implied_mv)
                 adjusted_weights.append(scores_list[idx])
                 adj_accum[idx].append(adj_pcts)
@@ -360,7 +361,7 @@ def run_simulation(
             med_time = med_size = med_rooms = med_epc = med_imd = med_age = med_total = 0.0
 
         adj_psf = raw_psf * (1.0 + med_total)
-        implied_mv = adj_psf * subj_sqm
+        implied_mv = adj_psf * (1.0 + quality_premium) * subj_sqm
 
         best_5.append(CompAdjustment(
             transaction_id=_safe(comp, "transaction_id"),

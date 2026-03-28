@@ -1683,6 +1683,7 @@ class AutoSelectRequest(BaseModel):
     hpi_factor:     float         = 1.0      # HPI time adjustment factor
     iterations:     int           = 10_000
     top_n:          int           = 10
+    quality_premium: float        = 0.0      # PSF premium for recently improved properties (0.0-0.15)
     seed:           int | None    = None     # optional for reproducibility
 
 
@@ -1721,6 +1722,7 @@ async def auto_select_comparables(
             hpi_factor=req.hpi_factor,
             iterations=req.iterations,
             top_n=req.top_n,
+            quality_premium=req.quality_premium,
             seed=req.seed,
         )
     except ValueError as e:

@@ -1139,6 +1139,7 @@ export default function SEMVTab({
   const [autoSelectError, setAutoSelectError] = useState<string | null>(null);
   const [adoptedAdjustedAreaM2, setAdoptedAdjustedAreaM2] = useState<number | null>(null);
   const [checkedExtensions, setCheckedExtensions] = useState<Record<string, boolean>>({});
+  const [qualityPremium, setQualityPremium] = useState<number>(0); // 0.0 to 0.15 (percentage as decimal)
 
   // Effective floor area: use adopted adjusted area if set, otherwise EPC area
   const effectiveAreaM2 = adoptedAdjustedAreaM2 ?? subjectAreaM2;
@@ -1221,6 +1222,7 @@ export default function SEMVTab({
           hpi_factor: 1.0,  // TODO: compute from HPI trend
           iterations: 10000,
           top_n: 10,
+          quality_premium: qualityPremium,
         }),
       });
       if (!res.ok) {
@@ -1235,7 +1237,7 @@ export default function SEMVTab({
       setAutoSelectLoading(false);
     }
   }, [boroughSlug, subjectPropertyType, subjectAreaM2, subjectPostcode, subjectTenure,
-      subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken, effectiveAreaM2]);
+      subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken, effectiveAreaM2, qualityPremium]);
 
   // ── Auto-trigger: run MC as soon as we have a valid SEMV pool ──
   const autoSelectRanRef = useRef(!!savedAutoSelectResult?.histogram);
@@ -1822,6 +1824,63 @@ export default function SEMVTab({
                     </span>
                   )}
                 </div>
+
+                {/* Quality premium suggestion */}
+                {(() => {
+                  const suggestedPremium = (planningExtensions as any).quality_premium ?? 0;
+                  const premiumReason = (planningExtensions as any).quality_premium_reason ?? "";
+                  const epcHist = (planningExtensions as any).epc_history ?? [];
+                  const hasImprovement = suggestedPremium > 0 || (epcHist.length >= 2 && epcHist[0].rating !== epcHist[epcHist.length - 1].rating);
+
+                  if (!hasImprovement) return null;
+
+                  return (
+                    <div className="mt-2 pt-2 border-t border-[#8B5CF6]/20">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-[#8B5CF6] font-semibold">Quality Premium</span>
+                        {epcHist.length >= 2 && (
+                          <span className="text-[10px] text-[var(--color-text-secondary)]">
+                            EPC {epcHist[0].rating}→{epcHist[epcHist.length - 1].rating}
+                          </span>
+                        )}
+                        {premiumReason && <span className="text-[10px] text-[var(--color-text-muted)] italic">{premiumReason}</span>}
+                      </div>
+                      <div className="flex items-center gap-3 mt-1">
+                        <input
+                          type="range" min={0} max={15} step={0.5}
+                          value={qualityPremium * 100}
+                          onChange={(e) => {
+                            const v = Number(e.target.value) / 100;
+                            setQualityPremium(v);
+                            // Reset SEMV to re-run with new premium
+                            if (autoSelectResult) {
+                              autoSelectRanRef.current = false;
+                              setAutoSelectResultLocal(null);
+                              onAutoSelectResult(null);
+                            }
+                          }}
+                          className="w-32 h-1.5 accent-[#8B5CF6]"
+                        />
+                        <span className={`text-xs font-bold tabular-nums ${qualityPremium > 0 ? "text-[#8B5CF6]" : "text-[var(--color-text-muted)]"}`}>
+                          {qualityPremium > 0 ? `+${(qualityPremium * 100).toFixed(1)}%` : "0%"}
+                        </span>
+                        {suggestedPremium > 0 && qualityPremium === 0 && (
+                          <button
+                            onClick={() => {
+                              setQualityPremium(suggestedPremium);
+                              autoSelectRanRef.current = false;
+                              setAutoSelectResultLocal(null);
+                              onAutoSelectResult(null);
+                            }}
+                            className="px-2 py-0.5 rounded text-[10px] font-semibold bg-[#8B5CF6]/15 text-[#8B5CF6] border border-[#8B5CF6]/30 hover:bg-[#8B5CF6]/25"
+                          >
+                            Apply suggested +{(suggestedPremium * 100).toFixed(1)}%
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Summary + adopt button */}
                 <div className="mt-3 flex items-center gap-3 pt-2 border-t border-[#F59E0B]/20">

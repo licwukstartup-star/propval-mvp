@@ -2141,7 +2141,7 @@ async def _fetch_subject_planning_extensions(
             try:
                 from supabase import create_client as _sc
                 _sb = _sc(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", ""))
-                epc_r = _sb.table("epc_certificates").select("floor_area_sqm, lodgement_date, inspection_date").eq("uprn", uprn).order("lodgement_date").execute()
+                epc_r = _sb.table("epc_certificates").select("floor_area_sqm, lodgement_date, inspection_date, energy_rating, energy_score").eq("uprn", uprn).order("lodgement_date").execute()
                 epc_history = epc_r.data or []
             except Exception:
                 pass
@@ -2149,10 +2149,15 @@ async def _fetch_subject_planning_extensions(
         # Determine the base EPC (most recent) — this is our anchor for all comparisons
         base_epc_date = ""
         base_epc_sqm = 0
+        base_epc_rating = ""
+        oldest_epc_rating = ""
         if epc_history:
             base = epc_history[-1]  # most recent by lodgement_date
             base_epc_date = base.get("lodgement_date") or ""
             base_epc_sqm = base.get("floor_area_sqm") or 0
+            base_epc_rating = base.get("energy_rating") or ""
+            oldest = epc_history[0]
+            oldest_epc_rating = oldest.get("energy_rating") or ""
         elif epc_lodgement_date:
             base_epc_date = epc_lodgement_date
 
@@ -2225,13 +2230,27 @@ async def _fetch_subject_planning_extensions(
             return empty
 
         # EPC history summary for the frontend
-        epc_summary = [{"date": e.get("lodgement_date", ""), "sqm": e.get("floor_area_sqm")} for e in epc_history] if epc_history else []
+        epc_summary = [{"date": e.get("lodgement_date", ""), "sqm": e.get("floor_area_sqm"), "rating": e.get("energy_rating", ""), "score": e.get("energy_score")} for e in epc_history] if epc_history else []
+
+        # ── Calculate suggested quality premium from EPC band improvement ──
+        EPC_BAND_PREMIUM = {"A": 0.14, "B": 0.10, "C": 0.03, "D": 0.00, "E": -0.035, "F": -0.065, "G": -0.10}
+        quality_premium = 0.0
+        quality_premium_reason = ""
+        if oldest_epc_rating and base_epc_rating and oldest_epc_rating != base_epc_rating:
+            old_prem = EPC_BAND_PREMIUM.get(oldest_epc_rating.upper(), 0.0)
+            new_prem = EPC_BAND_PREMIUM.get(base_epc_rating.upper(), 0.0)
+            delta = new_prem - old_prem
+            if delta > 0:
+                quality_premium = round(delta, 4)
+                quality_premium_reason = f"EPC improved from {oldest_epc_rating} to {base_epc_rating} — suggested quality premium {delta*100:.1f}%"
 
         return {
             "has_extension": True,
             "extensions": extensions,
             "epc_history": epc_summary,
-            "base_epc": {"date": base_epc_date, "sqm": base_epc_sqm} if base_epc_date else None,
+            "base_epc": {"date": base_epc_date, "sqm": base_epc_sqm, "rating": base_epc_rating} if base_epc_date else None,
+            "quality_premium": quality_premium,
+            "quality_premium_reason": quality_premium_reason,
         }
 
     except Exception:
