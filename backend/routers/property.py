@@ -2053,17 +2053,30 @@ def _parse_extension_types(description: str) -> list[str]:
     return found
 
 
-def _estimate_extension_sqm(ext_types: list[str], house_sub_type: str | None) -> float:
-    """Estimate total additional sqm from extension types and house sub-type."""
+def _has_demolition(description: str) -> bool:
+    """Check if description mentions demolition of existing structures."""
+    desc_lower = description.lower()
+    return bool(re.search(r"demolit|remov.*existing|replac.*existing", desc_lower))
+
+
+def _estimate_extension_sqm(ext_types: list[str], house_sub_type: str | None, has_demolition: bool = False) -> tuple[float, str]:
+    """Estimate net additional sqm from extension types and house sub-type.
+
+    Returns (estimated_sqm, note) where note explains if it's net or replacement.
+    """
     sub = (house_sub_type or "semi-detached").lower().strip()
     total = 0.0
     for ext in ext_types:
         sqm = _SIZE_ESTIMATES.get((ext, sub))
         if sqm is None:
-            # Fallback to semi-detached estimate
             sqm = _SIZE_ESTIMATES.get((ext, "semi-detached"), 20)
         total += sqm
-    return total
+
+    if has_demolition:
+        # Demolition + erection = replacement — net change is uncertain
+        # Conservative estimate: assume net gain is ~50% of gross (demolished structure was smaller)
+        return round(total * 0.5), "Net estimate — includes demolition of existing structure"
+    return total, "Gross addition"
 
 
 async def _fetch_subject_planning_extensions(
@@ -2073,6 +2086,7 @@ async def _fetch_subject_planning_extensions(
     address: str | None,
     epc_lodgement_date: str | None,
     house_sub_type: str | None,
+    uprn: str | None = None,
 ) -> dict:
     """Detect granted planning extensions for the subject property.
 
@@ -2121,8 +2135,28 @@ async def _fetch_subject_planning_extensions(
 
         hits = resp.json().get("hits", {}).get("hits", [])
 
+        # ── Fetch EPC history for cross-reference ──
+        epc_history: list[dict] = []
+        if uprn:
+            try:
+                from supabase import create_client as _sc
+                _sb = _sc(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", ""))
+                epc_r = _sb.table("epc_certificates").select("floor_area_sqm, lodgement_date, inspection_date").eq("uprn", uprn).order("lodgement_date").execute()
+                epc_history = epc_r.data or []
+            except Exception:
+                pass
+
+        # Determine the base EPC (most recent) — this is our anchor for all comparisons
+        base_epc_date = ""
+        base_epc_sqm = 0
+        if epc_history:
+            base = epc_history[-1]  # most recent by lodgement_date
+            base_epc_date = base.get("lodgement_date") or ""
+            base_epc_sqm = base.get("floor_area_sqm") or 0
+        elif epc_lodgement_date:
+            base_epc_date = epc_lodgement_date
+
         extensions = []
-        total_additional_sqm = 0.0
 
         for hit in hits:
             src = hit.get("_source", {})
@@ -2135,29 +2169,69 @@ async def _fetch_subject_planning_extensions(
             if not ext_types:
                 continue
 
-            # Check if this extension was granted after the EPC date
             dec_date = src.get("decision_date") or ""
-            if epc_lodgement_date and dec_date and dec_date < epc_lodgement_date:
-                continue  # Extension pre-dates EPC — already reflected in floor area
+            demolition = _has_demolition(desc)
+            est_sqm, est_note = _estimate_extension_sqm(ext_types, house_sub_type, demolition)
 
-            est_sqm = _estimate_extension_sqm(ext_types, house_sub_type)
-            total_additional_sqm += est_sqm
+            # ── Confidence: compare planning grant date against base EPC date ──
+            confidence = "likely_new"
+            confidence_reason = ""
+
+            if base_epc_date and dec_date:
+                from datetime import datetime as _dt
+
+                def _parse_date(s: str):
+                    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d/%m/%y"):
+                        try:
+                            return _dt.strptime(s.strip(), fmt).date()
+                        except ValueError:
+                            continue
+                    return None
+
+                dec_d = _parse_date(dec_date)
+                base_d = _parse_date(base_epc_date)
+
+                if dec_d and base_d:
+                    if dec_d <= base_d:
+                        confidence = "already_in_epc"
+                        confidence_reason = f"Granted {dec_d.isoformat()} — before base EPC {base_d.isoformat()} ({base_epc_sqm}sqm). Likely already reflected in floor area"
+                    else:
+                        confidence = "likely_new"
+                        confidence_reason = f"Granted {dec_d.isoformat()} — after base EPC {base_d.isoformat()} ({base_epc_sqm}sqm). Extension likely not reflected in current floor area"
+                else:
+                    confidence_reason = f"Could not parse dates: grant='{dec_date}' epc='{base_epc_date}'"
+            else:
+                confidence_reason = "No base EPC date available for comparison"
+
+            # Override: if demolition is involved, mark as uncertain regardless
+            if demolition:
+                if confidence == "likely_new":
+                    confidence = "uncertain"
+                confidence_reason += " | Includes demolition — net area change uncertain"
 
             extensions.append({
                 "reference": src.get("lpa_app_no", ""),
-                "description": desc[:300],
+                "description": desc,  # full description, no truncation
                 "decision_date": dec_date,
                 "extension_types": ext_types,
-                "estimated_sqm": est_sqm,
+                "estimated_sqm": float(est_sqm),
+                "estimate_note": est_note,
+                "has_demolition": demolition,
+                "confidence": confidence,
+                "confidence_reason": confidence_reason,
             })
 
         if not extensions:
             return empty
 
+        # EPC history summary for the frontend
+        epc_summary = [{"date": e.get("lodgement_date", ""), "sqm": e.get("floor_area_sqm")} for e in epc_history] if epc_history else []
+
         return {
             "has_extension": True,
             "extensions": extensions,
-            "total_additional_sqm": total_additional_sqm,
+            "epc_history": epc_summary,
+            "base_epc": {"date": base_epc_date, "sqm": base_epc_sqm} if base_epc_date else None,
         }
 
     except Exception:
@@ -3186,7 +3260,7 @@ async def enrich_slow(request: Request, body: SlowEnrichRequest, _user: dict = D
         imd_coro = _fetch_imd(body.lsoa_code)
         plan_coro = _fetch_subject_planning_extensions(
             body.lat, body.lon, body.region, body.address,
-            body.epc_lodgement_date, body.house_sub_type,
+            body.epc_lodgement_date, body.house_sub_type, body.uprn,
         ) if has_coords else asyncio.sleep(0)
 
         try:

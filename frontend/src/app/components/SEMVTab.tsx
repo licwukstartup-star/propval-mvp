@@ -1137,6 +1137,11 @@ export default function SEMVTab({
   const [autoSelectResult, setAutoSelectResultLocal] = useState<AutoSelectResult | null>(savedAutoSelectResult);
   const [autoSelectLoading, setAutoSelectLoading] = useState(false);
   const [autoSelectError, setAutoSelectError] = useState<string | null>(null);
+  const [adoptedAdjustedAreaM2, setAdoptedAdjustedAreaM2] = useState<number | null>(null);
+  const [checkedExtensions, setCheckedExtensions] = useState<Record<string, boolean>>({});
+
+  // Effective floor area: use adopted adjusted area if set, otherwise EPC area
+  const effectiveAreaM2 = adoptedAdjustedAreaM2 ?? subjectAreaM2;
 
   // Wrap setter to also notify parent for persistence
   const setAutoSelectResult = useCallback((r: AutoSelectResult | null) => {
@@ -1146,12 +1151,12 @@ export default function SEMVTab({
 
   // ── Similarity scores for the comp pool ──
   const subjectForScoring = useMemo(() => ({
-    floor_area_sqm: subjectAreaM2,
+    floor_area_sqm: effectiveAreaM2,
     bedrooms: subjectBedrooms,
     build_year: subjectBuildYear,
     epc_score: subjectEpcScore,
     imd_decile: subjectImdDecile,
-  }), [subjectAreaM2, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile]);
+  }), [effectiveAreaM2, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile]);
 
   const scoredComps = useMemo(
     () => scorePool(layer1Comps, subjectForScoring),
@@ -1188,7 +1193,7 @@ export default function SEMVTab({
 
   // Auto-select handler — uses the auto-composed SEMV pool (direct + top 30 wider)
   const handleAutoSelect = useCallback(async () => {
-    if (!boroughSlug || !subjectPropertyType || !subjectAreaM2 || !subjectPostcode || !subjectTenure || !accessToken) return;
+    if (!boroughSlug || !subjectPropertyType || !effectiveAreaM2 || !subjectPostcode || !subjectTenure || !accessToken) return;
     if (semvPool.length < 2) return;
     setAutoSelectLoading(true);
     setAutoSelectError(null);
@@ -1205,7 +1210,7 @@ export default function SEMVTab({
             tenure: subjectTenure,
             property_type: subjectPropertyType,
             bedrooms: subjectBedrooms,
-            floor_area_sqm: subjectAreaM2,
+            floor_area_sqm: effectiveAreaM2,
             build_year: subjectBuildYear,
             epc_score: subjectEpcScore,
             imd_decile: subjectImdDecile,
@@ -1230,7 +1235,7 @@ export default function SEMVTab({
       setAutoSelectLoading(false);
     }
   }, [boroughSlug, subjectPropertyType, subjectAreaM2, subjectPostcode, subjectTenure,
-      subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken]);
+      subjectAddress, subjectBedrooms, subjectBuildYear, subjectEpcScore, subjectImdDecile, semvPool, accessToken, effectiveAreaM2]);
 
   // ── Auto-trigger: run MC as soon as we have a valid SEMV pool ──
   const autoSelectRanRef = useRef(!!savedAutoSelectResult?.histogram);
@@ -1253,8 +1258,8 @@ export default function SEMVTab({
     semvPool.length >= 2 &&
     boroughSlug &&
     subjectPropertyType &&
-    subjectAreaM2 &&
-    subjectAreaM2 > 0 &&
+    effectiveAreaM2 &&
+    effectiveAreaM2 > 0 &&
     subjectPostcode &&
     subjectTenure &&
     accessToken
@@ -1732,30 +1737,123 @@ export default function SEMVTab({
           )}
         </div>
 
-        {/* Planning extension warning */}
-        {planningExtensions?.has_extension && (
-          <div className="px-4 py-2.5 border-b border-[#F59E0B]/30 bg-[#F59E0B]/5">
-            <div className="flex items-start gap-2">
-              <span className="text-[#F59E0B] text-sm mt-0.5">&#9888;</span>
-              <div className="text-xs">
-                <p className="font-semibold text-[#F59E0B] mb-1">
-                  Planning Extension Detected — EPC floor area may be outdated
+        {/* Planning extension checklist */}
+        {planningExtensions?.has_extension && (() => {
+          const exts = planningExtensions.extensions ?? [];
+          const selectedSqm = exts.reduce((sum: number, ext: any) => {
+            const key = ext.reference || `ext-${ext.decision_date}`;
+            const isChecked = checkedExtensions[key] ?? false;
+            return sum + (isChecked ? (Number(ext.estimated_sqm) || 0) : 0);
+          }, 0);
+          const adjustedArea = Math.round((Number(subjectAreaM2) || 0) + selectedSqm);
+          const confidenceLabel: Record<string, { text: string; color: string }> = {
+            likely_new: { text: "LIKELY NEW", color: "#F59E0B" },
+            uncertain: { text: "NET CHANGE UNCERTAIN", color: "#94A3B8" },
+            already_in_epc: { text: "ALREADY IN EPC", color: "var(--color-status-success)" },
+          };
+          const baseEpc = (planningExtensions as any).base_epc;
+
+          return (
+            <div className="border-b border-[#F59E0B]/30 bg-[#F59E0B]/5">
+              <div className="px-4 py-2.5">
+                <p className="text-xs font-semibold text-[#F59E0B] mb-2">
+                  &#9888; Planning Extensions Detected — select which to include in floor area
                 </p>
-                {planningExtensions.extensions.map((ext, i) => (
-                  <p key={i} className="text-[var(--color-text-secondary)]">
-                    <span className="font-medium">{ext.reference}</span> ({ext.decision_date}) — {ext.description.slice(0, 120)}
-                    {ext.description.length > 120 ? "…" : ""}
-                    <span className="ml-1 text-[#F59E0B] font-semibold">+{ext.estimated_sqm}sqm est.</span>
+
+                {/* Extension checklist */}
+                <div className="space-y-1.5">
+                  {exts.map((ext: any, i: number) => {
+                    const key = ext.reference || `ext-${i}`;
+                    const isChecked = checkedExtensions[key] ?? false;
+                    const conf = confidenceLabel[ext.confidence] ?? confidenceLabel.likely_new;
+                    const sqm = Number(ext.estimated_sqm) || 0;
+
+                    return (
+                      <label key={key} className="flex items-start gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            setCheckedExtensions(prev => ({ ...prev, [key]: e.target.checked }));
+                            // Reset adopted area when selections change
+                            if (adoptedAdjustedAreaM2) {
+                              setAdoptedAdjustedAreaM2(null);
+                            }
+                          }}
+                          className="mt-1 accent-[#F59E0B]"
+                        />
+                        <div className="flex-1 text-xs">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-[var(--color-text-primary)]">{ext.reference}</span>
+                            <span className="text-[var(--color-text-muted)]">({ext.decision_date})</span>
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold" style={{ color: conf.color, backgroundColor: `color-mix(in srgb, ${conf.color} 15%, transparent)` }}>
+                              {conf.text}
+                            </span>
+                            <span className="font-bold text-[#F59E0B]">+{sqm}sqm est.</span>
+                            {(ext as any).has_demolition && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[var(--color-status-danger)]/10 text-[var(--color-status-danger)]">
+                                INCLUDES DEMOLITION
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[var(--color-text-secondary)] mt-0.5 leading-relaxed">{ext.description}</p>
+                          {(ext as any).estimate_note && (ext as any).estimate_note !== "Gross addition" && (
+                            <p className="text-[10px] text-[var(--color-status-warning)] mt-0.5">{(ext as any).estimate_note}</p>
+                          )}
+                          {ext.confidence_reason && (
+                            <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5 italic">{ext.confidence_reason}</p>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {/* Base EPC + history */}
+                <div className="mt-2 text-[10px] text-[var(--color-text-muted)]">
+                  {baseEpc && (
+                    <span className="font-semibold text-[var(--color-text-secondary)]">
+                      Base EPC: {baseEpc.date} — {baseEpc.sqm}sqm
+                    </span>
+                  )}
+                  {(planningExtensions as any).epc_history?.length > 1 && (
+                    <span className="ml-2">
+                      (history: {(planningExtensions as any).epc_history.map((e: any) => `${e.date} ${e.sqm}sqm`).join(" → ")})
+                    </span>
+                  )}
+                </div>
+
+                {/* Summary + adopt button */}
+                <div className="mt-3 flex items-center gap-3 pt-2 border-t border-[#F59E0B]/20">
+                  <p className="text-xs text-[var(--color-text-primary)] font-medium">
+                    Base: {subjectAreaM2 ?? "?"}sqm {selectedSqm > 0 ? `+ ${selectedSqm}sqm selected = ${adjustedArea}sqm` : "(none selected)"}
                   </p>
-                ))}
-                <p className="mt-1 text-[var(--color-text-primary)] font-medium">
-                  EPC: {subjectAreaM2 ? `${subjectAreaM2}sqm` : "?"} → Adjusted estimate: {subjectAreaM2 ? `${Math.round(subjectAreaM2 + planningExtensions.total_additional_sqm)}sqm` : "?"} (+{planningExtensions.total_additional_sqm}sqm)
-                  <span className="ml-2 text-[var(--color-text-muted)] font-normal">Verify with measured GIA on inspection</span>
-                </p>
+                  {adoptedAdjustedAreaM2 ? (
+                    <span className="px-2.5 py-1 rounded text-[10px] font-semibold bg-[var(--color-status-success)]/15 text-[var(--color-status-success)] border border-[var(--color-status-success)]/30">
+                      ADOPTED — {adoptedAdjustedAreaM2}sqm ({Math.round(adoptedAdjustedAreaM2 * 10.764)} sqft)
+                    </span>
+                  ) : selectedSqm > 0 ? (
+                    <button
+                      onClick={() => {
+                        setAdoptedAdjustedAreaM2(adjustedArea);
+                        autoSelectRanRef.current = false;
+                        setAutoSelectResultLocal(null);
+                        onAutoSelectResult(null);
+                      }}
+                      className="px-2.5 py-1 rounded text-[10px] font-semibold transition-colors
+                        bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30
+                        hover:bg-[#F59E0B]/25"
+                    >
+                      Adopt {adjustedArea}sqm & re-run SEMV
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-[var(--color-text-muted)]">Tick extensions to include, then adopt</span>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {autoSelectError && (
           <div className="px-4 py-2 text-xs text-[var(--color-status-danger)] bg-[var(--color-status-danger)]/5">
