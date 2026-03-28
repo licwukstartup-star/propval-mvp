@@ -12,6 +12,7 @@ export interface ReportMetadata {
   applicant_name: string
   bank_reference: string
   preparer_name: string
+  purpose_of_valuation: string
   preparer_qualifications: string
   counter_signatory: string
   counter_signatory_qualifications: string
@@ -81,6 +82,8 @@ export interface ReportTypingProps {
   onReportContentChange?: (content: Partial<ReportContentData>) => void
   onSave?: () => Promise<void>
   valuationDate?: string
+  activePanelSlug?: string | null
+  onPanelChange?: (slug: string | null) => void
 }
 
 /* ── View modes ───────────────────────────────────────────────────────── */
@@ -101,6 +104,14 @@ export interface ReportTypingState {
   saveFlash: "ok" | "err" | null
   showFirmSettings: boolean
   firmSettingsTarget: string | null
+  templateSchema: TemplateSchema | null
+  templateName: string | null
+
+  // Panel state
+  activePanel: PanelConfig | null
+  availablePanels: PanelConfig[]
+  panelReminders: ActiveReminder[]
+  setActivePanel: (slug: string | null) => void
 
   // Actions
   updateMeta: (field: keyof ReportMetadata, value: string) => void
@@ -149,4 +160,99 @@ export interface SectionDef {
   cats: string[]
   wizardStep: number
   fields: FieldDef[]
+}
+
+/* ── Panel config (from panel_configs table) ─────────────────────────── */
+
+export interface PanelFieldOverride {
+  min_count?: number
+  require_ranking?: boolean
+  required?: boolean
+  min_length?: number
+}
+
+export interface PanelInlineReminder {
+  trigger_field: string
+  condition: string
+  message: string
+  severity: "warning" | "info"
+}
+
+export interface PanelConfig {
+  id: string
+  slug: string
+  name: string
+  description?: string
+  is_active: boolean
+  config: {
+    version?: string
+    extra_sections?: Array<{
+      id: string
+      type: string
+      title: string
+      insert_after: string
+      ai_section_key?: string
+      source_field?: string
+      panel_boilerplate?: string | null
+    }>
+    hidden_sections?: string[]
+    section_order?: string[]
+    field_overrides?: Record<string, PanelFieldOverride>
+    inline_reminders?: PanelInlineReminder[]
+    qa_rules?: string[]
+    boilerplate_overrides?: Record<string, string>
+    branding_overrides?: Partial<{ accent_color: string; font_family: string }>
+  }
+}
+
+export interface ActiveReminder {
+  field: string
+  message: string
+  severity: "warning" | "info"
+}
+
+/* ── Template schema (JSONB from report_templates table) ─────────────── */
+
+export interface TemplateSectionDef {
+  id: string
+  title: string
+  type: "cover_page" | "boilerplate" | "narrative" | "data_field" | "comparables_table" | "valuation_summary" | "auto" | "image" | "image_grid" | "appendices" | "placeholder"
+  /** Firm template field key (for boilerplate type) */
+  source_field?: string
+  /** AI section key (for narrative type) */
+  ai_section_key?: string
+  /** Data field keys (for data_field type) */
+  fields?: string[]
+  /** Source reference (for auto type) */
+  source?: string
+  /** Columns for comparables_table */
+  columns?: string[]
+  /** Max rows for comparables_table */
+  max_rows?: number
+  /** Image grid layout e.g. "2x3" */
+  layout?: string
+  /** Nested subsections */
+  subsections?: TemplateSectionDef[]
+}
+
+export interface TemplateSchema {
+  version: string
+  page: {
+    size: string
+    margins: { top: number; right: number; bottom: number; left: number }
+    orientation: string
+  }
+  branding: {
+    font_family: string
+    font_size: number
+    accent_color: string
+  }
+  header: {
+    layout: string
+    content: string[]
+  }
+  footer: {
+    content: string
+  }
+  sections: TemplateSectionDef[]
 }

@@ -17,22 +17,10 @@ Usage:
 """
 
 import logging
-import os
-from supabase import create_client
+
+from services.supabase_admin import get_service_client as _get_sb
 
 log = logging.getLogger(__name__)
-
-_supabase_client = None
-
-
-def _get_sb():
-    global _supabase_client
-    if _supabase_client is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if url and key:
-            _supabase_client = create_client(url, key)
-    return _supabase_client
 
 
 class UPRNCoordService:

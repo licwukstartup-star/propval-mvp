@@ -9,6 +9,8 @@ interface QATabProps {
   session?: { access_token: string } | null
   result?: any
   adoptedComparables?: any[]
+  visible?: boolean
+  panelSlug?: string | null
 }
 
 interface CopyItem {
@@ -52,9 +54,11 @@ const CATEGORY_LABEL: Record<string, string> = {
   data_xref: "Data Cross-Ref",
   compliance: "RICS Compliance",
   contradiction: "Contradiction",
+  panel_compliance: "Panel Rule",
+  panel: "Panel Rule",
 }
 
-export default function QATab({ caseId, session, result, adoptedComparables }: QATabProps) {
+export default function QATab({ caseId, session, result, adoptedComparables, visible, panelSlug }: QATabProps) {
   const [copies, setCopies] = useState<CopyItem[]>([])
   const [selectedCopyId, setSelectedCopyId] = useState<string | null>(null)
   const [copyHtml, setCopyHtml] = useState<string | null>(null)
@@ -73,9 +77,9 @@ export default function QATab({ caseId, session, result, adoptedComparables }: Q
     return () => window.removeEventListener("propval-navigate-qa", handler)
   }, [])
 
-  // Fetch copies on mount
+  // Fetch copies on mount and when tab becomes visible
   useEffect(() => {
-    if (!caseId || !session?.access_token) return
+    if (!caseId || !session?.access_token || visible === false) return
     const ac = new AbortController()
     fetch(`${API_BASE}/api/cases/${caseId}/copies`, {
       headers: { Authorization: `Bearer ${session.access_token}` },
@@ -85,7 +89,7 @@ export default function QATab({ caseId, session, result, adoptedComparables }: Q
       .then(d => setCopies(d.copies || []))
       .catch(() => {})
     return () => ac.abort()
-  }, [caseId, session])
+  }, [caseId, session, visible])
 
   // Load selected copy HTML
   useEffect(() => {
@@ -141,7 +145,7 @@ export default function QATab({ caseId, session, result, adoptedComparables }: Q
       const res = await fetch(`${API_BASE}/api/qa/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ copy_id: selectedCopyId, structured_data: structured }),
+        body: JSON.stringify({ copy_id: selectedCopyId, structured_data: structured, panel_slug: panelSlug || null }),
       })
       if (!res.ok) throw new Error("QA failed")
       const data = await res.json()

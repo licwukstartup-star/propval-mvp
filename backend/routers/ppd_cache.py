@@ -52,20 +52,13 @@ CSV_COLS = [
 # Supabase client (singleton)
 # ---------------------------------------------------------------------------
 
-_sb = None
 _epc_download_lock = asyncio.Lock()       # only one EPC download at a time
 _epc_downloading: set[str] = set()        # outward codes currently downloading
 _epc_events: dict[str, asyncio.Event] = {}  # outward → Event (set when download done)
 
 def _get_sb():
-    global _sb
-    if _sb is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if not url or not key:
-            raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set")
-        _sb = create_client(url, key)
-    return _sb
+    from services.supabase_admin import require_service_client
+    return require_service_client()
 
 
 def _outward(postcode: str) -> str:

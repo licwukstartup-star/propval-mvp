@@ -30,6 +30,11 @@ const FILTERS = [
 const STATUS_FILTERS = ["in_progress", "complete", "issued"];
 const TYPE_FILTERS = ["research", "full_valuation"];
 
+const TYPE_COLORS: Record<string, { bg: string; text: string }> = {
+  full_valuation: { bg: "color-mix(in srgb, var(--color-status-info) 15%, transparent)", text: "var(--color-status-info)" },
+  research: { bg: "color-mix(in srgb, var(--color-accent-purple) 15%, transparent)", text: "var(--color-accent-purple-text)" },
+};
+
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   in_progress: { bg: "color-mix(in srgb, var(--color-status-warning) 15%, transparent)", text: "var(--color-status-warning)" },
   complete: { bg: "color-mix(in srgb, var(--color-status-success) 15%, transparent)", text: "var(--color-status-success)" },
@@ -51,7 +56,11 @@ const COLUMNS: { key: string; label: string; sortable: boolean; width: string }[
 
 function fmtDate(d: string | null) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  const dt = new Date(d);
+  const day = String(dt.getDate()).padStart(2, "0");
+  const mon = dt.toLocaleDateString("en-GB", { month: "short" });
+  const yr = String(dt.getFullYear()).slice(-2);
+  return `${day} ${mon} ${yr}`;
 }
 function fmtDateTime(d: string) {
   return new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -205,19 +214,26 @@ export default function MyCasesPanel({
 
           {/* Filter pills */}
           <div className="flex gap-1.5">
-            {FILTERS.map(f => (
-              <button
-                key={f.key}
-                onClick={() => onSetCasesFilter(f.key)}
-                className={`px-2.5 py-1 text-[10px] font-medium rounded-full border transition-colors ${
-                  casesFilter === f.key
-                    ? "border-[var(--color-accent)]/60 bg-[var(--color-btn-primary-bg)]/10 text-[var(--color-accent)]"
-                    : "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+            {FILTERS.map(f => {
+              const isActive = casesFilter === f.key;
+              const fc = TYPE_COLORS[f.key] ?? STATUS_COLORS[f.key];
+              return (
+                <button
+                  key={f.key}
+                  onClick={() => onSetCasesFilter(f.key)}
+                  className={`px-2.5 py-1 text-[10px] font-medium rounded-full border transition-colors ${
+                    !isActive
+                      ? "border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+                      : f.key === "all"
+                        ? "border-[var(--color-accent)]/60 bg-[var(--color-btn-primary-bg)]/10 text-[var(--color-accent)]"
+                        : ""
+                  }`}
+                  style={isActive && fc ? { borderColor: fc.text, backgroundColor: fc.bg, color: fc.text } : undefined}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Spacer */}
@@ -331,8 +347,7 @@ export default function MyCasesPanel({
                     {/* Property (name + address) */}
                     <td className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--color-bg-surface)" }}>
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-[var(--color-text-primary)] truncate">{c.display_name ?? c.title}</p>
-                        <p className="text-[10px] text-[var(--color-text-secondary)] truncate mt-0.5">{c.address}</p>
+                        <p className="text-xs font-semibold text-[var(--color-text-primary)] truncate">{c.address || c.display_name || c.title}</p>
                       </div>
                     </td>
 
@@ -341,12 +356,20 @@ export default function MyCasesPanel({
                       {c.postcode ?? "—"}
                     </td>
 
-                    {/* Type */}
+                    {/* Type + Panel badge */}
                     <td className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--color-bg-surface)" }}>
-                      <span className="text-[10px] px-2 py-0.5 rounded capitalize"
-                        style={{ backgroundColor: "color-mix(in srgb, var(--color-accent-purple) 15%, transparent)", color: "var(--color-accent-purple-text)" }}>
-                        {typeLabel}
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] px-2 py-0.5 rounded capitalize"
+                          style={{ backgroundColor: (TYPE_COLORS[c.case_type ?? "research"] ?? TYPE_COLORS.research).bg, color: (TYPE_COLORS[c.case_type ?? "research"] ?? TYPE_COLORS.research).text }}>
+                          {typeLabel}
+                        </span>
+                        {c.instruction_source && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded uppercase font-semibold"
+                            style={{ backgroundColor: "color-mix(in srgb, var(--color-status-warning) 12%, transparent)", color: "var(--color-status-warning)" }}>
+                            {c.instruction_source}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Status */}
@@ -375,14 +398,6 @@ export default function MyCasesPanel({
                     {/* Actions */}
                     <td className="px-3 py-2.5" style={{ borderBottom: "1px solid var(--color-bg-surface)" }}>
                       <div className="flex items-center gap-1">
-                        {/* Open */}
-                        <button
-                          onClick={e => { e.stopPropagation(); onLoadCase(c); }}
-                          className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-accent)]/30 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 transition-colors"
-                          title="Open case"
-                        >
-                          Open
-                        </button>
                         {/* Delete */}
                         {confirmDeleteId === c.id ? (
                           <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>

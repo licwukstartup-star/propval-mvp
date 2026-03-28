@@ -45,18 +45,9 @@ def _get_http_client() -> httpx.AsyncClient:
 # Supabase client (lazy — only initialised when env vars are present)
 # ---------------------------------------------------------------------------
 
-_supabase_client = None
-
-
 def _get_supabase():
-    global _supabase_client
-    if _supabase_client is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if url and key:
-            from supabase import create_client
-            _supabase_client = create_client(url, key)
-    return _supabase_client
+    from services.supabase_admin import get_service_client
+    return get_service_client()
 
 
 def _upsert_property_library(
@@ -2139,8 +2130,7 @@ async def _fetch_subject_planning_extensions(
         epc_history: list[dict] = []
         if uprn:
             try:
-                from supabase import create_client as _sc
-                _sb = _sc(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", ""))
+                _sb = _get_supabase()
                 epc_r = _sb.table("epc_certificates").select("floor_area_sqm, lodgement_date, inspection_date, energy_rating, energy_score").eq("uprn", uprn).order("lodgement_date").execute()
                 epc_history = epc_r.data or []
             except Exception:
@@ -2937,6 +2927,7 @@ class InspireLookupRequest(BaseModel):
     uprn: str | None = None
 
 @router.post("/inspire-lookup")
+@limiter.limit("30/minute")
 async def inspire_lookup(request: Request, body: InspireLookupRequest, _user=Depends(get_current_user)):
     """Return all available coordinate sources for a property. Used to enrich saved cases loaded from Supabase."""
     uprn_hit = _uprn_coords(request, body.uprn) if body.uprn else {}
@@ -2972,6 +2963,7 @@ class BatchUPRNCoordsRequest(BaseModel):
 
 
 @router.post("/batch-uprn-coords")
+@limiter.limit("30/minute")
 async def batch_uprn_coords(request: Request, body: BatchUPRNCoordsRequest, _user=Depends(get_current_user)):
     """Return building-level coordinates for a batch of UPRNs.
 
@@ -2998,6 +2990,7 @@ class InspireAreaRequest(BaseModel):
 
 
 @router.post("/inspire-polygons-area")
+@limiter.limit("20/minute")
 async def inspire_polygons_area(request: Request, body: InspireAreaRequest, _user=Depends(get_current_user)):
     """Return INSPIRE polygons within radius of each dot (subject + comparables).
 
@@ -3019,6 +3012,7 @@ async def inspire_polygons_area(request: Request, body: InspireAreaRequest, _use
 
 
 @router.post("/inspire-polygons")
+@limiter.limit("20/minute")
 async def inspire_polygons(request: Request, body: InspirePolygonsRequest, _user=Depends(get_current_user)):
     """Return INSPIRE title boundary polygons for a list of coordinates.
 
@@ -3530,7 +3524,8 @@ def _render_epc_pdf(print_url: str) -> bytes:
 
 
 @router.get("/epc-pdf")
-async def download_epc_pdf(cert_url: str = Query(...), _user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def download_epc_pdf(request: Request, cert_url: str = Query(...), _user: dict = Depends(get_current_user)):
     from urllib.parse import urlparse
     parsed = urlparse(cert_url)
     expected = urlparse(_EPC_CERT_BASE)
@@ -3621,6 +3616,7 @@ def _autocomplete_ppd_supplement_sync(pc: str) -> list[dict]:
 
 
 @router.get("/autocomplete")
+@limiter.limit("60/minute")
 async def autocomplete_addresses(postcode: str, request: Request, _user: dict = Depends(get_current_user)):
     """Return address list for a postcode. Queries local Supabase cache first, falls back to EPC API."""
     pc = extract_postcode(postcode)

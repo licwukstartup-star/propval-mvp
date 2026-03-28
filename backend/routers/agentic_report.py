@@ -7,9 +7,10 @@ POST /api/agentic-report/generate
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from .rate_limit import limiter
 from services.agentic_report_service import generate_agentic_report
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,9 @@ class AgenticReportRequest(BaseModel):
 
 
 @router.post("/generate")
+@limiter.limit("5/minute")
 async def generate_report(
+    request: Request,
     body: AgenticReportRequest,
     authorization: str = Header(None),
 ):

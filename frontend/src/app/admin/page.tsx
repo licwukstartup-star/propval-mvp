@@ -403,7 +403,7 @@ export default function AdminPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3" style={{ color: 'var(--color-text-secondary)' }}>
-                        {new Date(u.created_at).toLocaleDateString()}
+                        {(() => { const d = new Date(u.created_at); return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)}`; })()}
                       </td>
                     </tr>
                   ))}

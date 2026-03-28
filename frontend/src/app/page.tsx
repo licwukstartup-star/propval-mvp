@@ -1346,15 +1346,43 @@ export default function Home() {
         setBuildingSearchAddressKeys(addressKeys);
         setBuildingSearchDone(true);
 
-        // Chain wider search (Tier 1-4) excluding building results
-        fetch(`${API_BASE}/api/comparables/search`, {
-          method: "POST", headers, body: JSON.stringify(makeBody(3, ids, addressKeys)),
-        })
-          .then(r => r.ok ? r.json() : null)
-          .then((widerData: SearchResponse | null) => {
-            if (widerData) setOutwardSearchResult(widerData);
-          })
-          .catch(() => { /* silent — user can still search manually */ });
+        // Chain wider search with relaxation loop — progressively expand
+        // until we have enough comps for SEMV (minimum 5)
+        const MIN_COMPS_FOR_SEMV = 5;
+        const relaxSteps: { max_tier: number; neighbouring_months: number }[] = [
+          { max_tier: 3, neighbouring_months: 12 },
+          { max_tier: 4, neighbouring_months: 12 },
+          { max_tier: 4, neighbouring_months: 24 },
+          { max_tier: 4, neighbouring_months: 36 },
+        ];
+
+        const runRelaxedSearch = async (stepIdx: number) => {
+          if (stepIdx >= relaxSteps.length) return;
+          const step = relaxSteps[stepIdx];
+          const body = {
+            ...makeBody(step.max_tier, ids, addressKeys),
+            neighbouring_months: step.neighbouring_months,
+          };
+          try {
+            const r = await fetch(`${API_BASE}/api/comparables/search`, {
+              method: "POST", headers, body: JSON.stringify(body),
+            });
+            if (!r.ok) return;
+            const widerData: SearchResponse = await r.json();
+            if (widerData) {
+              setOutwardSearchResult(widerData);
+              const totalComps = buildingData.comparables.length + (widerData.comparables?.length ?? 0);
+              if (totalComps < MIN_COMPS_FOR_SEMV && stepIdx + 1 < relaxSteps.length) {
+                console.log(`[SEMV prefetch] ${totalComps} comps at step ${stepIdx} (tier=${step.max_tier}, months=${step.neighbouring_months}) — relaxing...`);
+                await runRelaxedSearch(stepIdx + 1);
+                return;
+              }
+              console.log(`[SEMV prefetch] ${totalComps} comps at step ${stepIdx} (tier=${step.max_tier}, months=${step.neighbouring_months}) — sufficient`);
+            }
+          } catch { /* silent — user can still search manually */ }
+        };
+
+        runRelaxedSearch(0);
       })
       .catch(() => {
         // Silent failure — user can still trigger search manually from the tab

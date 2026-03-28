@@ -56,7 +56,7 @@ function relativeTime(iso: string | null): string {
   const days = Math.floor(hrs / 24);
   if (days === 1) return "Yesterday";
   if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const d = new Date(iso); return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)}`;
 }
 
 const CATEGORY_CONFIG = {
@@ -270,7 +270,7 @@ function TickerItem({ indicator }: { indicator: MacroIndicator }) {
       </div>
       {indicator.last_updated && (
         <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-          {new Date(indicator.last_updated).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" })}
+          {(() => { const d = new Date(indicator.last_updated); return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)}`; })()}
         </span>
       )}
     </div>
@@ -516,7 +516,7 @@ export default function NewsPage() {
           borderBottom: "1px solid var(--color-border)",
         }}
       >
-        <div className="max-w-7xl mx-auto px-4 pt-7 pb-3">
+        <div className="w-full px-6 pt-7 pb-3">
 
           {/* ── Section header ── */}
           <div className="flex items-center gap-3 mb-4">
@@ -661,7 +661,7 @@ export default function NewsPage() {
           SCROLLABLE PANEL — news cards · attribution footer
           ════════════════════════════════════════════════════════ */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-7xl mx-auto px-4 pt-6 pb-8">
+        <div className="w-full px-6 pt-6 pb-8">
 
           {/* ── Search result count ── */}
           {searchLower && !loadingArticles && !error && (

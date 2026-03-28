@@ -55,6 +55,36 @@ const SECTION_TYPES = [
   { value: "placeholder", label: "Placeholder" },
 ];
 
+/** AI section keys available for narrative sections */
+const AI_SECTION_KEYS = [
+  { value: "", label: "— None —" },
+  { value: "location_description", label: "Location Description (2.2)" },
+  { value: "subject_development", label: "Development Description (2.3)" },
+  { value: "subject_building", label: "Building Description (2.3)" },
+  { value: "subject_property", label: "Property Summary (2.3)" },
+  { value: "market_commentary", label: "Market Commentary (3.3)" },
+  { value: "valuation_considerations", label: "Valuation Considerations (3.6)" },
+  { value: "environmental_commentary", label: "Environmental Commentary (2.7)" },
+  { value: "fire_risk_commentary", label: "Fire Risk Commentary (2.7.1)" },
+];
+
+/** Firm template fields available for boilerplate sections */
+const FIRM_TEMPLATE_FIELDS = [
+  { value: "", label: "— None —" },
+  { value: "instructions", label: "Instructions (1.1)" },
+  { value: "purpose", label: "Purpose of Valuation (1.3)" },
+  { value: "responsibility", label: "Responsibility (1.9)" },
+  { value: "disclosure", label: "Disclosure (1.10)" },
+  { value: "pi_insurance", label: "PI Insurance (1.11)" },
+  { value: "expertise", label: "Expertise (1.12)" },
+  { value: "inspection", label: "Inspection (1.13)" },
+  { value: "environmental", label: "Environmental (2.9)" },
+  { value: "asbestos", label: "Asbestos (2.15)" },
+  { value: "fire_risk", label: "Fire Risk (2.18)" },
+  { value: "methodology", label: "Methodology (4.1)" },
+  { value: "general_comments", label: "General Comments (4.6)" },
+];
+
 // ── Confidence indicator ─────────────────────────────────────────────────────
 
 function ConfidenceDot({ confidence }: { confidence: number }) {
@@ -307,6 +337,7 @@ export default function TemplateUploadFlow({ session, onSaved }: UploadFlowProps
                 <th className="text-[10px] font-semibold uppercase tracking-wider text-left px-4 py-2" style={{ color: "var(--color-text-secondary)" }}>#</th>
                 <th className="text-[10px] font-semibold uppercase tracking-wider text-left px-4 py-2" style={{ color: "var(--color-text-secondary)" }}>Section Title</th>
                 <th className="text-[10px] font-semibold uppercase tracking-wider text-left px-4 py-2" style={{ color: "var(--color-text-secondary)" }}>Type</th>
+                <th className="text-[10px] font-semibold uppercase tracking-wider text-left px-4 py-2" style={{ color: "var(--color-text-secondary)" }}>Mapping</th>
                 <th className="text-[10px] font-semibold uppercase tracking-wider text-left px-4 py-2" style={{ color: "var(--color-text-secondary)" }}>Confidence</th>
               </tr>
             </thead>
@@ -342,6 +373,33 @@ export default function TemplateUploadFlow({ session, onSaved }: UploadFlowProps
                         <option key={t.value} value={t.value}>{t.label}</option>
                       ))}
                     </select>
+                  </td>
+                  <td className="px-4 py-2">
+                    {cls.type === "narrative" ? (
+                      <select
+                        className="text-[11px] bg-transparent border rounded px-2 py-1 outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text-primary)" }}
+                        value={cls.ai_section_key || ""}
+                        onChange={(e) => updateClassification(i, "ai_section_key", e.target.value)}
+                      >
+                        {AI_SECTION_KEYS.map((k) => (
+                          <option key={k.value} value={k.value}>{k.label}</option>
+                        ))}
+                      </select>
+                    ) : cls.type === "boilerplate" ? (
+                      <select
+                        className="text-[11px] bg-transparent border rounded px-2 py-1 outline-none"
+                        style={{ borderColor: "var(--color-border)", color: "var(--color-text-primary)" }}
+                        value={cls.source_field || ""}
+                        onChange={(e) => updateClassification(i, "source_field", e.target.value)}
+                      >
+                        {FIRM_TEMPLATE_FIELDS.map((f) => (
+                          <option key={f.value} value={f.value}>{f.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-[10px]" style={{ color: "var(--color-text-secondary)" }}>—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2">
                     <ConfidenceDot confidence={cls.confidence} />

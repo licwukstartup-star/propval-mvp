@@ -81,7 +81,7 @@ export default function TenureMarketContent({ state }: { state: ReportTypingStat
                       <tr key={c.transaction_id || i} style={{ background: i % 2 === 1 ? "var(--color-bg-surface)" : "transparent", borderBottom: "1px solid var(--color-bg-surface)" }}>
                         <td className="px-2 py-1.5" style={{ color: "var(--color-text-primary)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.address}</td>
                         <td className="px-2 py-1.5 font-medium" style={{ color: "var(--color-text-primary)" }}>£{typeof c.price === "number" ? c.price.toLocaleString() : c.price}</td>
-                        <td className="px-2 py-1.5" style={{ color: "var(--color-text-secondary)" }}>{c.transaction_date ? new Date(c.transaction_date).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "—"}</td>
+                        <td className="px-2 py-1.5" style={{ color: "var(--color-text-secondary)" }}>{c.transaction_date ? (() => { const d = new Date(c.transaction_date); return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)}`; })() : "—"}</td>
                         <td className="px-2 py-1.5" style={{ color: "var(--color-text-secondary)" }}>{c.property_type || "—"}</td>
                         <td className="px-2 py-1.5" style={{ color: "var(--color-text-secondary)" }}>{c.tenure || "—"}</td>
                         <td className="px-2 py-1.5 text-right" style={{ color: "var(--color-text-secondary)" }}>{areaSqft ? `${areaSqft} sq ft` : "—"}</td>

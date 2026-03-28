@@ -28,6 +28,8 @@ from routers import reviews as reviews_router
 from routers import snapshots as snapshots_router
 from routers import templates as templates_router
 from routers import feedback as feedback_router
+from routers import suggestions as suggestions_router
+from routers import panels as panels_router
 from routers.rate_limit import limiter
 from services.inspire import InspireService
 from services.uprn_coords import UPRNCoordService
@@ -66,7 +68,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -108,6 +110,8 @@ app.include_router(qa_router.router)
 app.include_router(reviews_router.router)
 app.include_router(notifications_router.router)
 app.include_router(feedback_router.router)
+app.include_router(suggestions_router.router)
+app.include_router(panels_router.router)
 
 
 _health_sb = None

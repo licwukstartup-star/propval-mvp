@@ -150,13 +150,10 @@ def _row_to_coeffs(row: dict) -> AdjustmentCoeffs:
 def _load_from_supabase(borough_slug: str, property_type: str) -> AdjustmentCoeffs | None:
     """Load coefficients from Supabase lr_model_coefficients table."""
     try:
-        from supabase import create_client
-        url = os.getenv("SUPABASE_URL", "")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", "")
-        if not url or not key:
+        from services.supabase_admin import get_service_client
+        sb = get_service_client()
+        if not sb:
             return None
-
-        sb = create_client(url, key)
         result = (
             sb.table("lr_model_coefficients")
             .select("*")

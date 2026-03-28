@@ -6,6 +6,7 @@ import FirmSignatorySettings from "./FirmSignatorySettings"
 import FirmTemplateSettings from "./FirmTemplateSettings"
 import useReportTypingState from "./report-typing/useReportTypingState"
 import FloatingSaveButton from "./report-typing/shared/FloatingSaveButton"
+import PanelSwitcher from "./report-typing/shared/PanelSwitcher"
 import WizardView from "./report-typing/views/WizardView"
 import type { ViewMode, ReportTypingProps } from "./report-typing/types"
 
@@ -96,6 +97,29 @@ export default function ReportTyping(props: ReportTypingProps) {
               <option key={k} value={k}>{v}</option>
             ))}
           </select>
+          {/* Panel theme switcher */}
+          <PanelSwitcher
+            activePanel={state.activePanel}
+            availablePanels={state.availablePanels}
+            onPanelChange={state.setActivePanel}
+          />
+          {/* Active template indicator */}
+          {state.templateName && (
+            <span
+              className="text-xs px-2.5 py-1.5 rounded-lg border"
+              style={{
+                borderColor: "color-mix(in srgb, var(--color-accent) 27%, transparent)",
+                color: "var(--color-accent)",
+                backgroundColor: "color-mix(in srgb, var(--color-accent) 7%, transparent)",
+              }}
+              title="Report template in use"
+            >
+              <svg className="w-3 h-3 inline-block mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              {state.templateName}
+            </span>
+          )}
           {/* Firm Template button */}
           <button onClick={() => state.setShowFirmSettings(true)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors"

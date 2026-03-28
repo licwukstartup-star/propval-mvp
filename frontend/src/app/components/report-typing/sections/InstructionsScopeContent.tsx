@@ -32,7 +32,18 @@ export default function InstructionsScopeContent({ state, page = 1 }: { state: R
             <AutoField label="Applicant" value={meta.applicant_name || "—"} />
           </Sub>
           <Sub num="1.3" title="Purpose of Valuation" cats={["A", "B"]} onCatClick={c => handleCatClick(c, "1.3")}>
-            <FirmText fieldKey="purpose" fallback="No purpose of valuation boilerplate set" firmTemplate={firmTemplate} onOpenSettings={openSettings} />
+            {meta.purpose_of_valuation ? (
+              <p className="text-xs font-semibold mb-1.5 px-2 py-1 rounded inline-block"
+                style={{ backgroundColor: "color-mix(in srgb, var(--color-accent) 10%, transparent)", color: "var(--color-status-info)" }}>
+                {meta.purpose_of_valuation}
+              </p>
+            ) : (
+              <p className="text-xs mb-1.5" style={{ color: "var(--color-accent-pink)" }}>
+                No purpose selected — set on Cover page
+              </p>
+            )}
+            <FirmText fieldKey="purpose" fallback="No purpose of valuation boilerplate set" firmTemplate={firmTemplate} onOpenSettings={openSettings}
+              replacements={{ purpose_of_valuation: meta.purpose_of_valuation }} />
           </Sub>
           <Sub num="1.4–1.6" title="Dates & Standards" cats={["A", "B"]} onCatClick={c => handleCatClick(c, "1.4–1.6")}>
             <div>

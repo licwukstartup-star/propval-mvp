@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 class RunQARequest(BaseModel):
     copy_id: str
     structured_data: Optional[dict] = None  # property + valuer + meta + comparables + semv
+    panel_slug: Optional[str] = None  # Panel theme for panel-specific QA rules
 
 
 @router.post("/run")
@@ -64,12 +65,27 @@ async def run_qa(
             if case.get("comparables") and "comparables" not in structured:
                 structured["comparables"] = case["comparables"]
 
+    # Fetch panel QA rules if panel_slug provided
+    panel_qa_rules = None
+    if body.panel_slug:
+        panel_resp = (
+            sb.table("panel_configs")
+            .select("config")
+            .eq("slug", body.panel_slug)
+            .eq("is_active", True)
+            .execute()
+        )
+        if panel_resp.data:
+            from services.panel_service import get_panel_qa_rules
+            panel_qa_rules = get_panel_qa_rules(panel_resp.data[0]["config"])
+
     # Run AI QA
     findings, model_used = await run_qa_checks(
         editor_html=copy["editor_html"],
         structured_data=structured,
         user_id=user.get("id"),
         user_email=user.get("email"),
+        panel_qa_rules=panel_qa_rules,
     )
 
     # Persist results

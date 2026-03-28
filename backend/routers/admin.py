@@ -1,22 +1,20 @@
-import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from supabase import create_client
 
 from .auth import get_current_user, require_admin
 from .rate_limit import limiter
+from services.supabase_admin import require_service_client
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 def _admin_sb():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
+    try:
+        return require_service_client()
+    except RuntimeError:
         raise HTTPException(status_code=500, detail="Supabase admin credentials not configured")
-    return create_client(url, key)
 
 
 @router.get("/users")

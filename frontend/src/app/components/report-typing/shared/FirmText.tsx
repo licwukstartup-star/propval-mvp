@@ -5,11 +5,18 @@ interface FirmTextProps {
   fallback: string
   firmTemplate: FirmTemplate
   onOpenSettings: () => void
+  /** Optional token replacements, e.g. { purpose_of_valuation: "Secured Lending" } */
+  replacements?: Record<string, string>
 }
 
-export default function FirmText({ fieldKey, fallback, firmTemplate, onOpenSettings }: FirmTextProps) {
-  const text = firmTemplate[fieldKey]
+export default function FirmText({ fieldKey, fallback, firmTemplate, onOpenSettings, replacements }: FirmTextProps) {
+  let text = firmTemplate[fieldKey]
   if (text) {
+    if (replacements) {
+      for (const [token, value] of Object.entries(replacements)) {
+        text = text.replaceAll(`{${token}}`, value || `[${token}]`)
+      }
+    }
     return <p className="text-sm leading-relaxed" style={{ color: "var(--color-text-primary)" }}>{text}</p>
   }
   return (

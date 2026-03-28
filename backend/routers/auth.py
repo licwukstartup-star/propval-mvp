@@ -105,12 +105,15 @@ async def get_current_user(
 
 
 def get_user_supabase(user: dict):
-    """Create a Supabase client scoped to the user's session.
+    """Return a Supabase client scoped to the user's session.
 
     Uses the anon key + the user's JWT so Row Level Security (RLS) is
     enforced server-side.  Use this for ALL user-scoped data (cases,
     firm_templates, etc.).  Reserve service-role clients for admin-only
     or system-level operations (property library, caches, news).
+
+    Creates a fresh client per request to avoid token leakage between
+    concurrent async requests sharing the same event loop.
     """
     url = os.getenv("SUPABASE_URL")
     anon_key = os.getenv("SUPABASE_ANON_KEY")

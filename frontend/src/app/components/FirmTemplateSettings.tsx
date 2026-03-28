@@ -17,7 +17,8 @@ const SECTION_FIELDS: TemplateField[] = [
   { key: "firm_address", label: "Firm Address", section: "Firm Identity", placeholder: "e.g. 10 High Street, London EC1A 1BB", rows: 2 },
   { key: "firm_rics_number", label: "RICS Firm Number", section: "Firm Identity", placeholder: "e.g. 123456", rows: 1 },
   { key: "instructions", label: "1.1 — Instructions", section: "Section 1: Instructions & Scope", placeholder: "We have been instructed by [Client] to undertake a valuation of the above property for mortgage/secured lending purposes in accordance with…", rows: 5 },
-  { key: "purpose", label: "1.3 — Purpose of Valuation", section: "Section 1: Instructions & Scope", placeholder: "This valuation has been prepared for mortgage/secured lending purposes for the use of the instructing lender…", rows: 4 },
+  { key: "purpose", label: "1.3 — Purpose of Valuation (Boilerplate)", section: "Section 1: Instructions & Scope", placeholder: "This valuation has been prepared for mortgage/secured lending purposes for the use of the instructing lender…", rows: 4 },
+  { key: "purpose_options", label: "1.3 — Purpose of Valuation (Dropdown Options)", section: "Section 1: Instructions & Scope", placeholder: "Secured Lending\nHelp to Buy\nRight to Buy\nShared Ownership\nCapital Gains Tax (CGT)\nProbate / Inheritance Tax\nMatrimonial / Divorce\nInsurance Reinstatement\nPrivate / Market Appraisal", rows: 8 },
   { key: "responsibility", label: "1.9 — Responsibility", section: "Section 1: Instructions & Scope", placeholder: "This report is prepared for the named client only. No responsibility is accepted to any third party who may use or rely upon it…", rows: 4 },
   { key: "disclosure", label: "1.10 — Disclosure", section: "Section 1: Instructions & Scope", placeholder: "We confirm that we have no material connection or involvement with the property or parties that could give rise to a conflict of interest…", rows: 3 },
   { key: "pi_insurance", label: "1.11 — PI Insurance", section: "Section 1: Instructions & Scope", placeholder: "Professional indemnity insurance is held with [Insurer] under policy number [Number] with a limit of indemnity of £[Amount]…", rows: 3 },
@@ -54,6 +55,25 @@ interface FirmTemplateSettingsProps {
 
 const AI_PROMPT_KEYS = new Set(["ai_prompt_location", "ai_prompt_subject_development", "ai_prompt_subject_building", "ai_prompt_subject_property", "ai_prompt_market", "ai_prompt_valuation"])
 
+/** Keys stored as JSON arrays but edited as newline-separated text */
+const JSON_ARRAY_KEYS = new Set(["purpose_options"])
+
+/** Convert a JSON array string to newline-separated text for editing */
+function jsonArrayToLines(raw: string | undefined): string {
+  if (!raw) return ""
+  try {
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr)) return arr.join("\n")
+  } catch { /* not valid JSON, return as-is */ }
+  return raw
+}
+
+/** Convert newline-separated text back to a JSON array string for storage */
+function linesToJsonArray(text: string): string {
+  const arr = text.split("\n").map(s => s.trim()).filter(Boolean)
+  return JSON.stringify(arr)
+}
+
 export default function FirmTemplateSettings({ session, onClose, onSaved, scrollToField }: FirmTemplateSettingsProps) {
   const [template, setTemplate] = useState<FirmTemplate>({})
   const [loading, setLoading] = useState(true)
@@ -81,7 +101,8 @@ export default function FirmTemplateSettings({ session, onClose, onSaved, scroll
       .then(data => {
         const t: FirmTemplate = {}
         for (const f of SECTION_FIELDS) {
-          t[f.key] = data[f.key] ?? ""
+          const raw = data[f.key] ?? ""
+          t[f.key] = JSON_ARRAY_KEYS.has(f.key) ? jsonArrayToLines(raw) : raw
         }
         setTemplate(t)
       })
@@ -130,7 +151,13 @@ export default function FirmTemplateSettings({ session, onClose, onSaved, scroll
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify(template),
+        body: JSON.stringify(
+          Object.fromEntries(
+            Object.entries(template).map(([k, v]) =>
+              [k, JSON_ARRAY_KEYS.has(k) ? linesToJsonArray(v) : v]
+            )
+          )
+        ),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
@@ -204,6 +231,11 @@ export default function FirmTemplateSettings({ session, onClose, onSaved, scroll
                         <label className="text-[10px] font-medium mb-1 block" style={{ color: "var(--color-text-secondary)" }}>
                           {field.label}
                         </label>
+                        {JSON_ARRAY_KEYS.has(field.key) && (
+                          <p className="text-[10px] mb-1" style={{ color: "var(--color-text-muted)" }}>
+                            One option per line. These appear in the Purpose of Valuation dropdown on the Cover page.
+                          </p>
+                        )}
                         {field.rows <= 1 ? (
                           <input
                             type="text"

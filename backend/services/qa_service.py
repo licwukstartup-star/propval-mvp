@@ -196,8 +196,13 @@ async def run_qa_checks(
     structured_data: dict,
     user_id: str | None = None,
     user_email: str | None = None,
+    panel_qa_rules: list[str] | None = None,
 ) -> tuple[list[dict], str]:
     """Run AI QA checks on a report copy.
+
+    Args:
+        panel_qa_rules: Optional list of panel-specific QA rules to append
+            to the system prompt (e.g. "Verify at least 5 comps").
 
     Returns (findings_list, model_used).
     """
@@ -211,6 +216,13 @@ async def run_qa_checks(
                  "suggestion": "Generate AI sections and fill in wizard fields before running QA"}], "none"
 
     prompt = _build_qa_prompt(report_text, structured_data)
+
+    # Append panel-specific QA rules if provided
+    if panel_qa_rules:
+        prompt += "\n\n=== PANEL-SPECIFIC RULES (this report must also satisfy) ===\n"
+        for rule in panel_qa_rules:
+            prompt += f"- {rule}\n"
+        prompt += "\nFor panel rule violations, include 'panel' in the category field (e.g. 'panel_compliance').\n"
 
     # Fallback chain: Gemini → Groq → Cerebras
     providers = []

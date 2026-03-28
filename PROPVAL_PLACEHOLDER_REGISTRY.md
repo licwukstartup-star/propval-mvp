@@ -34,7 +34,7 @@ Entered or selected once at case setup. The system echoes each value everywhere 
 | `{{property_address}}` | properties.full_address | TEXT | Cover, header, 2.1+ | Echoed on every page |
 | `{{property_postcode}}` | properties.postcode | TEXT | Cover, 2.1 | Subject property postcode |
 | `{{uprn}}` | properties.uprn | BIGINT | Internal | Universal Property Reference Number |
-| `{{valuation_purpose}}` | cases.valuation_purpose | ENUM | 1.1, 1.3 | e.g. secured_lending, probate |
+| `{{valuation_purpose}}` | cases.valuation_purpose | ENUM | Cover, 1.1, 1.3 | Dropdown on Cover page; options editable in Firm Template. e.g. Secured Lending, Probate, CGT |
 | `{{valuation_basis}}` | cases.valuation_basis | ENUM | 1.3, 4.1 | e.g. Market Value, Market Rent |
 | `{{report_type}}` | cases.report_type | ENUM | Cover, 1.1 | Links to report template |
 | `{{inspection_type}}` | cases.inspection_type | ENUM | 1.5 | full / external / desktop |

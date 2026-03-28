@@ -14,6 +14,7 @@ export const CAT_COLORS: Record<string, { bg: string; text: string; label: strin
 export const EMPTY_META: ReportMetadata = {
   report_reference: "", report_date: "", instruction_date: "", inspection_date: "",
   valuation_date: "", client_name: "", applicant_name: "", bank_reference: "",
+  purpose_of_valuation: "",
   preparer_name: "", preparer_qualifications: "", counter_signatory: "", counter_signatory_qualifications: "",
 }
 
@@ -40,6 +41,7 @@ export const SECTION_DEFS: SectionDef[] = [
       { key: "report_reference", source: "meta", required: true },
       { key: "report_date", source: "meta", required: true },
       { key: "client_name", source: "meta", required: true },
+      { key: "purpose_of_valuation", source: "meta", required: true },
     ],
   },
   {

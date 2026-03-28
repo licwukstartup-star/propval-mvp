@@ -65,6 +65,8 @@ class CreateSnapshotRequest(BaseModel):
     transaction_category: str | None = None
     epc_rating: str | None = None
     epc_score: int | None = None
+    imd_decile: int | None = None
+    construction_age_best: int | None = None
     source_note: str | None = None
     licence_restricted: bool = False
 
@@ -112,6 +114,8 @@ class CreateAndAdoptRequest(BaseModel):
     transaction_category: str | None = None
     epc_rating: str | None = None
     epc_score: int | None = None
+    imd_decile: int | None = None
+    construction_age_best: int | None = None
     source_note: str | None = None
     licence_restricted: bool = False
 
@@ -165,12 +169,11 @@ def _get_firm_id(user: dict) -> str | None:
         return app_meta["firm_id"]
 
     # Fallback: query firm_members table using service role
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
+    from services.supabase_admin import get_service_client
+    sb = get_service_client()
+    if not sb:
         return None
     try:
-        sb = create_client(url, key)
         resp = sb.table("firm_members").select("firm_id").eq("user_id", user["id"]).limit(1).execute()
         if resp.data:
             return resp.data[0]["firm_id"]
@@ -226,6 +229,8 @@ async def create_snapshot(
         "transaction_category": body.transaction_category,
         "epc_rating": body.epc_rating,
         "epc_score": body.epc_score,
+        "imd_decile": body.imd_decile,
+        "construction_age_best": body.construction_age_best,
         "source_note": body.source_note,
         "licence_restricted": body.licence_restricted,
     }
@@ -311,6 +316,8 @@ async def create_and_adopt(
             "transaction_category": body.transaction_category,
             "epc_rating": body.epc_rating,
             "epc_score": body.epc_score,
+            "imd_decile": body.imd_decile,
+            "construction_age_best": body.construction_age_best,
             "source_note": body.source_note,
             "licence_restricted": body.licence_restricted,
         }
@@ -337,7 +344,8 @@ async def create_and_adopt(
         err = str(e)
         if "duplicate" in err.lower() or "unique" in err.lower():
             raise HTTPException(409, "This comparable is already adopted for this case")
-        raise HTTPException(500, f"Failed to adopt snapshot: {err}")
+        logger.error("Failed to adopt snapshot %s: %s", snapshot_id, err)
+        raise HTTPException(500, "Failed to adopt snapshot")
 
     if not comp_resp.data:
         raise HTTPException(500, "Failed to create case_comp")
@@ -401,7 +409,8 @@ async def adopt_snapshot(
         err = str(e)
         if "duplicate" in err.lower() or "unique" in err.lower():
             raise HTTPException(409, "Already adopted")
-        raise HTTPException(500, f"Failed to adopt: {err}")
+        logger.error("Failed to adopt snapshot: %s", err)
+        raise HTTPException(500, "Failed to adopt snapshot")
 
     if not resp.data:
         raise HTTPException(500, "Failed to adopt snapshot")

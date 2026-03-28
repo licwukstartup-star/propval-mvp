@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import type { CardSizeKey } from "@/types/property";
 import { SIZE_PRESETS } from "@/lib/styles";
 
@@ -15,8 +15,17 @@ interface PropCardProps {
 export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, children }: PropCardProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const [maxCols, setMaxCols] = useState(4);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const handle = (e: MediaQueryListEvent | MediaQueryList) => setMaxCols(e.matches ? 4 : 2);
+    handle(mq);
+    mq.addEventListener("change", handle);
+    return () => mq.removeEventListener("change", handle);
+  }, []);
   const size: CardSizeKey = (cardSizes[id] as CardSizeKey) ?? "1x1";
   const preset = SIZE_PRESETS.find(p => p.key === size) ?? SIZE_PRESETS[0];
+  const cols = Math.min(preset.cols, maxCols);
 
   const openMenu = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -35,7 +44,7 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
   return (
     <div
       style={{
-        gridColumn: `span ${preset.cols}`,
+        gridColumn: `span ${cols}`,
         gridRow: `span ${preset.rows}`,
         position: "relative",
       }}
@@ -123,10 +132,10 @@ export default function PropCard({ id, isCustomising, cardSizes, onSizeChange, c
                   onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.1)"; }}
                   onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.05)"; }}
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 8px)", gridTemplateRows: "repeat(2, 8px)", gap: 2 }}>
-                    {[0,1,2,3,4,5].map(i => {
-                      const row = Math.floor(i / 3);
-                      const col = i % 3;
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 8px)", gridTemplateRows: "repeat(2, 8px)", gap: 2 }}>
+                    {[0,1,2,3,4,5,6,7].map(i => {
+                      const row = Math.floor(i / 4);
+                      const col = i % 4;
                       const filled = col < p.cols && row < p.rows;
                       return (
                         <div key={i} style={{

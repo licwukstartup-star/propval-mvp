@@ -19,6 +19,7 @@ import Subscript from "@tiptap/extension-subscript"
 import Superscript from "@tiptap/extension-superscript"
 import { PlaceholderNode } from "./extensions/PlaceholderNode"
 import { SectionBlock } from "./extensions/SectionBlock"
+import { InlineSuggestion } from "./extensions/InlineSuggestion"
 import { buildTemplateFromSchema } from "./template/buildTemplateFromSchema"
 import { resolvePlaceholders } from "./template/resolvePlaceholders"
 import type { TemplateSchema } from "./types"
@@ -294,6 +295,7 @@ export function useDocumentEditorState(state: ReportTypingState, templateSchema?
       Underline,
       TextAlign.configure({
         types: ["heading", "paragraph"],
+        defaultAlignment: "justify",
       }),
       Table.configure({
         resizable: true,
@@ -323,6 +325,9 @@ export function useDocumentEditorState(state: ReportTypingState, templateSchema?
         resolvedValues: {},
       }),
       SectionBlock,
+      InlineSuggestion.configure({
+        enabled: true,
+      }),
     ],
     content: initialContent.current,
     editorProps: {

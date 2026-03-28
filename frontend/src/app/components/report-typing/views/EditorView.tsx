@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef, useEffect, useMemo } from "react"
 import { EditorContent } from "@tiptap/react"
 import type { ReportTypingState, AiSectionKey } from "../types"
 import { useDocumentEditorState } from "../useDocumentEditorState"
@@ -8,6 +8,164 @@ import AiSidebar from "./AiSidebar"
 import TemplateExportButton from "../shared/TemplateExportButton"
 import CopyPoolPanel from "../CopyPoolPanel"
 import { API_BASE } from "@/lib/constants"
+import { PLACEHOLDER_REGISTRY, type PlaceholderDef } from "../extensions/placeholderRegistry"
+
+// ── Vibe Valuation: suggestion fetching hook ────────────────────────────
+function useInlineSuggestions(
+  editor: ReturnType<typeof import("@tiptap/react").useEditor> | null,
+  enabled: boolean,
+  propertyData: Record<string, unknown>,
+  comparables: Record<string, unknown>[],
+  semvOutput: Record<string, unknown>,
+) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const lastTextRef = useRef("")
+
+  // Fetch suggestion after typing pause
+  const fetchSuggestion = useCallback(async () => {
+    if (!editor || !enabled) return
+    // Don't fetch if a suggestion is currently being displayed (e.g. during partial accept)
+    const ext = editor.extensionManager.extensions.find(
+      (x: any) => x.name === "inlineSuggestion"
+    ) as any
+    if (ext?.storage?.suggestion) return
+    const { from } = editor.state.selection
+    // Get text before cursor (up to 500 chars)
+    const textBeforeFull = editor.state.doc.textBetween(0, from, "\n")
+    const textBefore = textBeforeFull.slice(-500)
+    // Skip if nothing meaningful to complete
+    if (textBefore.trim().length < 10) return
+    // Skip if text hasn't changed since last fetch
+    if (textBefore === lastTextRef.current) return
+    lastTextRef.current = textBefore
+
+    // Get text after cursor (up to 200 chars)
+    const docSize = editor.state.doc.content.size
+    const docEnd = Math.min(from + 200, docSize > 0 ? docSize : from)
+    const textAfter = from < docEnd ? editor.state.doc.textBetween(from, docEnd, "\n") : ""
+
+    // Detect which section we're in (simple heuristic: last heading before cursor)
+    let sectionKey = "general"
+    const headingMatch = textBeforeFull.match(/(?:^|\n)([\d]+\.[\d]*\s+.{3,60})(?:\n|$)/g)
+    if (headingMatch) {
+      const lastHeading = headingMatch[headingMatch.length - 1].trim().toLowerCase()
+      if (lastHeading.includes("location")) sectionKey = "location_description"
+      else if (lastHeading.includes("development")) sectionKey = "subject_development"
+      else if (lastHeading.includes("building")) sectionKey = "subject_building"
+      else if (lastHeading.includes("property") || lastHeading.includes("description")) sectionKey = "subject_property"
+      else if (lastHeading.includes("market")) sectionKey = "market_commentary"
+      else if (lastHeading.includes("valuation")) sectionKey = "valuation_considerations"
+      else if (lastHeading.includes("tenure")) sectionKey = "tenure"
+      else if (lastHeading.includes("condition")) sectionKey = "condition"
+      else if (lastHeading.includes("flood")) sectionKey = "flood_risk"
+      else if (lastHeading.includes("energy") || lastHeading.includes("epc")) sectionKey = "energy_performance"
+    }
+
+    // Cancel any in-flight request
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai-suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          section_key: sectionKey,
+          text_before: textBefore,
+          text_after: textAfter,
+          property_data: propertyData,
+          comparables: comparables,
+          semv_output: semvOutput,
+        }),
+        signal: ctrl.signal,
+      })
+      if (!resp.ok) return
+      const data = await resp.json()
+      if (data.suggestion && editor && !ctrl.signal.aborted) {
+        editor.commands.setSuggestion(data.suggestion)
+      }
+    } catch {
+      // Aborted or network error — ignore
+    }
+  }, [editor, enabled, propertyData, comparables, semvOutput])
+
+  // Set up the debounced trigger on editor updates
+  useEffect(() => {
+    if (!editor || !enabled) return
+
+    const handler = () => {
+      // Clear previous timer
+      if (timerRef.current) clearTimeout(timerRef.current)
+      // Set new timer (1 second debounce)
+      timerRef.current = setTimeout(fetchSuggestion, 1000)
+    }
+
+    editor.on("update", handler)
+    return () => {
+      editor.off("update", handler)
+      if (timerRef.current) clearTimeout(timerRef.current)
+      abortRef.current?.abort()
+    }
+  }, [editor, enabled, fetchSuggestion])
+
+  // Ctrl+Space to trigger immediately
+  useEffect(() => {
+    if (!editor || !enabled) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.code === "Space") {
+        e.preventDefault()
+        fetchSuggestion()
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown)
+    return () => document.removeEventListener("keydown", handleKeyDown)
+  }, [editor, enabled, fetchSuggestion])
+
+  // Log feedback when suggestion is accepted or dismissed
+  // Uses capture phase to read storage BEFORE the extension's keyboard shortcut clears it
+  useEffect(() => {
+    if (!editor) return
+
+    const logFeedback = (suggestion: string, action: string) => {
+      if (!suggestion) return
+      fetch(`${API_BASE}/api/ai-suggest/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          section_key: "inline",
+          suggestion,
+          action,
+          valuer_edit: "",
+          property_type: (propertyData as any)?.property_type || "",
+          borough: (propertyData as any)?.admin_district || "",
+        }),
+      }).catch(() => {}) // fire-and-forget
+    }
+
+    const handleKey = (e: KeyboardEvent) => {
+      // Read storage before the extension's handler clears it
+      const ext = editor.extensionManager.extensions.find(
+        (x: any) => x.name === "inlineSuggestion"
+      ) as any
+      const currentSuggestion = ext?.storage?.suggestion
+      if (!currentSuggestion) return
+
+      if (e.key === "Tab") {
+        logFeedback(currentSuggestion, "accepted")
+      } else if (e.key === "ArrowRight" && (e.ctrlKey || e.metaKey)) {
+        logFeedback(currentSuggestion, "accepted_word")
+      } else if (e.key === "Escape") {
+        logFeedback(currentSuggestion, "dismissed")
+      }
+    }
+
+    // Capture phase ensures we read storage before TipTap's handler clears it
+    document.addEventListener("keydown", handleKey, true)
+    return () => document.removeEventListener("keydown", handleKey, true)
+  }, [editor, propertyData])
+}
 
 // ── Toolbar button component ──────────────────────────────────────────────
 
@@ -39,6 +197,135 @@ function ToolbarSep() {
   return <div className="w-px h-5 mx-1" style={{ backgroundColor: "var(--color-border)" }} />
 }
 
+// ── Category labels ──────────────────────────────────────────────────────
+
+const CATEGORY_LABELS: Record<PlaceholderDef["category"], string> = {
+  B: "Case Metadata",
+  C: "API Data",
+  D: "AI Content",
+  E: "Valuer Content",
+  F: "Assembly",
+}
+
+// ── Placeholder dropdown ─────────────────────────────────────────────────
+
+function PlaceholderDropdown({ editor }: { editor: ReturnType<typeof import("@tiptap/react").useEditor> }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState("")
+  const ref = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [open])
+
+  // Focus search when opened
+  useEffect(() => {
+    if (open) inputRef.current?.focus()
+  }, [open])
+
+  // Group & filter placeholders
+  const grouped = useMemo(() => {
+    const all = Object.values(PLACEHOLDER_REGISTRY)
+    const q = search.toLowerCase().trim()
+    const filtered = q ? all.filter(p => p.label.toLowerCase().includes(q) || p.key.toLowerCase().includes(q)) : all
+    const groups: Partial<Record<PlaceholderDef["category"], PlaceholderDef[]>> = {}
+    for (const p of filtered) {
+      ;(groups[p.category] ??= []).push(p)
+    }
+    return groups
+  }, [search])
+
+  const insert = (p: PlaceholderDef) => {
+    if (!editor) return
+    ;(editor.chain().focus() as any).insertPlaceholder({
+      key: p.key,
+      category: p.category,
+      required: p.required,
+      label: p.label,
+    }).run()
+    setOpen(false)
+    setSearch("")
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <ToolbarBtn onClick={() => setOpen(o => !o)} active={open} title="Insert Placeholder">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path strokeLinecap="round" d="M7 9.5h4M13 9.5h4M7 14h3M13 14h4" />
+        </svg>
+      </ToolbarBtn>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-50 rounded-lg border shadow-lg overflow-hidden"
+          style={{
+            backgroundColor: "var(--color-bg-surface)",
+            borderColor: "var(--color-border)",
+            width: 280,
+          }}
+        >
+          {/* Search */}
+          <div className="p-1.5 border-b" style={{ borderColor: "var(--color-border)" }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search placeholders..."
+              className="w-full text-xs px-2 py-1 rounded border outline-none"
+              style={{
+                borderColor: "var(--color-border)",
+                backgroundColor: "var(--color-bg)",
+                color: "var(--color-text-primary)",
+              }}
+            />
+          </div>
+          {/* List */}
+          <div className="overflow-y-auto" style={{ maxHeight: 320 }}>
+            {(Object.keys(CATEGORY_LABELS) as PlaceholderDef["category"][]).map(cat => {
+              const items = grouped[cat]
+              if (!items?.length) return null
+              return (
+                <div key={cat}>
+                  <div className="text-[9px] font-semibold uppercase tracking-wider px-3 py-1 sticky top-0"
+                    style={{ color: "var(--color-text-secondary)", backgroundColor: "var(--color-bg-hover)" }}
+                  >
+                    {CATEGORY_LABELS[cat]}
+                  </div>
+                  {items.map(p => (
+                    <button
+                      key={p.key}
+                      onClick={() => insert(p)}
+                      className="w-full text-left px-3 py-1 text-xs hover:bg-[var(--color-bg-hover)] flex items-center gap-2 transition-colors"
+                      style={{ color: "var(--color-text-primary)" }}
+                    >
+                      <span className="flex-1 truncate">{p.label}</span>
+                      {p.required && (
+                        <span className="text-[8px] px-1 rounded" style={{ color: "var(--color-status-error)", backgroundColor: "color-mix(in srgb, var(--color-status-error) 10%, transparent)" }}>REQ</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
+            {Object.keys(grouped).length === 0 && (
+              <div className="px-3 py-4 text-xs text-center" style={{ color: "var(--color-text-secondary)" }}>
+                No placeholders found
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main EditorView ───────────────────────────────────────────────────────
 
 interface EditorViewProps {
@@ -52,7 +339,18 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
   const [copyPoolOpen, setCopyPoolOpen] = useState(false)
   const [savingCopy, setSavingCopy] = useState(false)
   const [copyFlash, setCopyFlash] = useState<"ok" | "err" | null>(null)
-  const { editor, insertTextAtSection, getContentHTML, getContentJSON, exportDocx, printDocument } = useDocumentEditorState(state)
+  const [aiAssistEnabled, setAiAssistEnabled] = useState(true)
+  const { editor, insertTextAtSection, getContentHTML, getContentJSON, exportDocx, printDocument } = useDocumentEditorState(state, state.templateSchema)
+
+  // Vibe Valuation: inline suggestions
+  // state.result IS the property data (PropertyResult), state.adoptedComparables is the comps array
+  useInlineSuggestions(
+    editor,
+    aiAssistEnabled,
+    state.result || {},
+    state.adoptedComparables || [],
+    {},  // SEMV output not on ReportTypingState — will be wired when SEMV tab passes it through
+  )
 
   const saveCopy = useCallback(async () => {
     if (!editor || !caseId || !session?.access_token) return
@@ -70,6 +368,7 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
             valuer: state.valuer,
             aiSections: state.aiSections,
           },
+          panel_id: state.activePanel?.id || null,
         }),
       })
       if (!res.ok) throw new Error("Failed to save copy")
@@ -86,6 +385,49 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
   const handleAiInsert = useCallback((key: AiSectionKey, text: string) => {
     insertTextAtSection(key, text)
   }, [insertTextAtSection])
+
+  // Vibe Valuation: chat sidebar helpers
+  const handleInsertAtCursor = useCallback((text: string) => {
+    if (!editor) return
+    editor.chain().focus().command(({ tr }) => {
+      tr.insertText(text)
+      return true
+    }).run()
+  }, [editor])
+
+  const handleReplaceSelection = useCallback((text: string) => {
+    if (!editor) return
+    editor.chain().focus().command(({ tr }) => {
+      // Read selection from the transaction (post-focus), not stale editor state
+      const { from, to } = tr.selection
+      if (from !== to) {
+        tr.insertText(text, from, to)
+      } else {
+        tr.insertText(text)
+      }
+      return true
+    }).run()
+  }, [editor])
+
+  // Get current selection text and cursor section for chat context
+  const selectedText = editor ? (() => {
+    const { from, to } = editor.state.selection
+    return from !== to ? editor.state.doc.textBetween(from, to, "\n") : ""
+  })() : ""
+
+  const cursorSection = editor ? (() => {
+    const { from } = editor.state.selection
+    const textBefore = editor.state.doc.textBetween(0, from, "\n")
+    const headings = textBefore.match(/(?:^|\n)([\d]+\.[\d]*\s+.{3,60})(?:\n|$)/g)
+    return headings ? headings[headings.length - 1].trim() : ""
+  })() : ""
+
+  const contextText = editor ? (() => {
+    const { from } = editor.state.selection
+    const start = Math.max(0, from - 300)
+    const end = Math.min(editor.state.doc.content.size, from + 300)
+    return editor.state.doc.textBetween(start, end, "\n")
+  })() : ""
 
   if (!editor) {
     return (
@@ -161,6 +503,9 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
         <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign("right").run()} active={editor.isActive({ textAlign: "right" })} title="Align Right">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M9 12h12M3 18h18" /></svg>
         </ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign("justify").run()} active={editor.isActive({ textAlign: "justify" })} title="Justify">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M3 12h18M3 18h18" /></svg>
+        </ToolbarBtn>
 
         <ToolbarSep />
 
@@ -190,6 +535,11 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
         <ToolbarBtn onClick={() => editor.chain().focus().toggleBlockquote().run()} active={editor.isActive("blockquote")} title="Blockquote">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10H5a1 1 0 01-1-1V6a1 1 0 011-1h3a1 1 0 011 1v5.5a3.5 3.5 0 01-3.5 3.5M18 10h-3a1 1 0 01-1-1V6a1 1 0 011-1h3a1 1 0 011 1v5.5a3.5 3.5 0 01-3.5 3.5" /></svg>
         </ToolbarBtn>
+
+        <ToolbarSep />
+
+        {/* Placeholder inserter */}
+        <PlaceholderDropdown editor={editor} />
 
         {/* ── Right side: word count + export + AI ── */}
         <div className="ml-auto flex items-center gap-1.5">
@@ -237,6 +587,23 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
             className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
             style={{ borderColor: "var(--color-border)", color: "var(--color-text-secondary)" }}
           >PDF</button>
+          {/* Vibe Valuation: AI Assist toggle */}
+          <button onClick={() => setAiAssistEnabled(p => !p)}
+            className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
+            style={{
+              borderColor: aiAssistEnabled
+                ? "color-mix(in srgb, var(--color-status-success) 27%, transparent)"
+                : "var(--color-border)",
+              color: aiAssistEnabled ? "var(--color-status-success)" : "var(--color-text-secondary)",
+              backgroundColor: aiAssistEnabled
+                ? "color-mix(in srgb, var(--color-status-success) 7%, transparent)"
+                : "transparent",
+            }}
+            title={aiAssistEnabled ? "AI Assist: ON (Ctrl+Space to trigger)" : "AI Assist: OFF"}
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" /></svg>
+            {aiAssistEnabled ? "Assist ON" : "Assist OFF"}
+          </button>
           <button onClick={() => setSidebarCollapsed(p => !p)}
             className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors"
             style={{
@@ -270,10 +637,15 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
           />
         )}
 
-        {/* AI Sidebar */}
+        {/* AI Sidebar — Vibe Valuation chat + section generators */}
         <AiSidebar
           state={state}
           onInsert={handleAiInsert}
+          onInsertAtCursor={handleInsertAtCursor}
+          onReplaceSelection={handleReplaceSelection}
+          selectedText={selectedText}
+          cursorSection={cursorSection}
+          contextText={contextText}
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed(p => !p)}
         />
@@ -286,7 +658,7 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
           width: min(210mm, calc(100% - 24px));
           min-height: 297mm;
           padding: 20mm;
-          background: white;
+          background: #FFF1E0;
           box-shadow: 0 2px 8px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.05);
           color: #1D1D1F;
           font-family: Calibri, 'Segoe UI', sans-serif;
@@ -313,15 +685,18 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
         /* TipTap editor styles */
         .propval-tiptap-editor {
           outline: none;
-          caret-color: #FF00FF;
+          caret-color: #1C1C1E;
         }
         .propval-tiptap-editor:focus {
           outline: none;
         }
         .propval-a4-page .ProseMirror {
-          caret-color: #FF00FF;
+          caret-color: #1C1C1E;
           outline: none;
-          cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='20' viewBox='0 0 16 20'%3E%3Cpath d='M1 1l6 18 2-7 7-2L1 1z' fill='%23FF00FF' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E") 1 1, text;
+          cursor: text;
+        }
+        .propval-a4-page .ProseMirror *::selection {
+          background: rgba(0, 122, 255, 0.25);
         }
 
         /* Headings */
@@ -380,6 +755,15 @@ export default function EditorView({ state, session, caseId }: EditorViewProps) 
           max-width: 100%;
           height: auto;
           margin: 8px 0;
+        }
+
+        /* Vibe Valuation: ghost text suggestion */
+        .vibe-ghost-text {
+          color: #9CA3AF;
+          font-style: italic;
+          opacity: 0.6;
+          pointer-events: none;
+          user-select: none;
         }
 
         /* Print styles */

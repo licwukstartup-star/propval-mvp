@@ -27,6 +27,7 @@ class CreateCopyRequest(BaseModel):
     editor_json: Optional[dict] = None
     wizard_snapshot: Optional[dict] = None
     label: Optional[str] = None
+    panel_id: Optional[str] = None  # Snapshot of active panel at copy time
 
 
 class UpdateCopyRequest(BaseModel):
@@ -115,6 +116,8 @@ async def create_copy(
         "wizard_snapshot": body.wizard_snapshot,
         "created_by": user["id"],
     }
+    if body.panel_id:
+        row["panel_id"] = body.panel_id
     del row["_auto_label"]
 
     result = _insert_copy_with_retry(sb, row, case_id)

@@ -154,11 +154,11 @@ export interface PropertyResult {
   } | null;
 }
 
-export type CardSizeKey = "1x1" | "2x1" | "3x1" | "1x2" | "2x2";
+export type CardSizeKey = "1x1" | "2x1" | "3x1" | "4x1" | "1x2" | "2x2";
 
 export type TabKey = "property" | "comparables" | "wider" | "additional" | "adopted" | "hpi" | "map" | "report_typing" | "semv" | "qa" | "agentic_report";
 
-export type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf";
+export type AdoptedSortKey = "default" | "date" | "size" | "price" | "psf" | "postcode" | "type" | "rooms" | "epc" | "age";
 
 export interface SavedCaseSummary {
   id: string;
@@ -170,6 +170,8 @@ export interface SavedCaseSummary {
   case_type: string;
   status: string;
   valuation_date: string | null;
+  panel_id?: string | null;
+  instruction_source?: string | null;
   created_at: string;
   updated_at: string;
 }

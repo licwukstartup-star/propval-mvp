@@ -80,7 +80,7 @@ function StepContent({ step, state }: { step: number; state: ReportTypingState }
 
 export default function WizardView({ state }: { state: ReportTypingState }) {
   const [current, setCurrent] = useState(0)
-  const { sectionCompletion } = state
+  const { sectionCompletion, panelReminders, activePanel } = state
 
   // Calculate per-step completion by averaging section completions
   const stepCompletions = WIZARD_STEPS.map(step => {
@@ -92,6 +92,38 @@ export default function WizardView({ state }: { state: ReportTypingState }) {
   return (
     <div>
       <StepIndicator steps={WIZARD_STEPS} current={current} completions={stepCompletions} onStepClick={setCurrent} />
+
+      {/* Panel reminders — soft nudges from active panel */}
+      {panelReminders.length > 0 && (
+        <div className="space-y-1.5 mb-4">
+          {panelReminders.map((r, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg"
+              style={{
+                backgroundColor: r.severity === "warning"
+                  ? "color-mix(in srgb, var(--color-status-warning) 10%, transparent)"
+                  : "color-mix(in srgb, var(--color-status-info) 10%, transparent)",
+                border: `1px solid ${r.severity === "warning"
+                  ? "color-mix(in srgb, var(--color-status-warning) 25%, transparent)"
+                  : "color-mix(in srgb, var(--color-status-info) 25%, transparent)"}`,
+                color: r.severity === "warning" ? "var(--color-status-warning)" : "var(--color-status-info)",
+              }}
+            >
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                {r.severity === "warning"
+                  ? <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  : <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                }
+              </svg>
+              <span>{r.message}</span>
+              {activePanel && (
+                <span className="ml-auto text-[10px] opacity-70 font-medium">{activePanel.name}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Step header */}
       <div className="flex items-center justify-between mb-4">

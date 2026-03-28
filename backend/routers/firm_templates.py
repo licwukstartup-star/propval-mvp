@@ -4,10 +4,11 @@ Phase 1: one template per surveyor (single firm).
 Future: migrate to firm_id with shared access across firm members.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from .auth import get_current_user, get_user_supabase
+from .rate_limit import limiter
 
 router = APIRouter(prefix="/api/firm-templates", tags=["firm-templates"])
 
@@ -20,6 +21,8 @@ TEMPLATE_FIELDS = [
     "pi_insurance", "expertise", "inspection", "environmental",
     "asbestos", "fire_risk", "methodology", "general_comments",
     "firm_name", "firm_address", "firm_rics_number",
+    # Purpose of valuation dropdown options (JSON array string)
+    "purpose_options",
     # AI prompt customisation fields
     "ai_prompt_location",
     "ai_prompt_subject_development", "ai_prompt_subject_building", "ai_prompt_subject_property",
@@ -39,9 +42,11 @@ DEFAULT_BOILERPLATE: dict[str, str] = {
         "of the instructing lender's current valuation specification."
     ),
     "purpose": (
-        "This valuation has been prepared for mortgage/secured lending purposes "
-        "for the sole use of the instructing lender and their successors in title. "
-        "No responsibility is accepted to any other party who may seek to rely upon it."
+        "This valuation has been prepared for {purpose_of_valuation} purposes "
+        "for the sole use of the instructing party and their successors in title. "
+        "The valuation must not be used for any purpose other than that stated. "
+        "No responsibility is accepted to any other party who may seek to rely upon "
+        "the whole or any part of the contents of this report for any other purpose."
     ),
     "responsibility": (
         "This report is provided for the stated purpose and for the use of the named "
@@ -114,6 +119,8 @@ DEFAULT_BOILERPLATE: dict[str, str] = {
         "valuation date. This valuation is current only at the date stated and may "
         "not be valid at a later date."
     ),
+    # Purpose of valuation dropdown options — JSON array
+    "purpose_options": '["Secured Lending","Help to Buy","Right to Buy","Shared Ownership","Shared Equity","Equity Release","Capital Gains Tax (CGT)","Probate / Inheritance Tax","Matrimonial / Divorce","Insurance Reinstatement","Litigation","Accounting / Financial Reporting","Company Accounts","Tax Planning","Portfolio Valuation","Transfer / Acquisition","Lease Extension / Enfranchisement","Private / Market Appraisal","Development Appraisal"]',
     # AI prompt customisation — empty string means "use system default"
     "ai_prompt_location": "",
     "ai_prompt_subject_development": "",
@@ -140,6 +147,7 @@ class FirmTemplateUpdate(BaseModel):
     firm_name: str | None = None
     firm_address: str | None = None
     firm_rics_number: str | None = None
+    purpose_options: str | None = None
     ai_prompt_location: str | None = None
     ai_prompt_subject_development: str | None = None
     ai_prompt_subject_building: str | None = None
@@ -152,7 +160,8 @@ class FirmTemplateUpdate(BaseModel):
 # GET — retrieve current surveyor's firm template
 # ---------------------------------------------------------------------------
 @router.get("")
-async def get_firm_template(user=Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def get_firm_template(request: Request, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
     resp = (
@@ -171,7 +180,9 @@ async def get_firm_template(user=Depends(get_current_user)):
 # PUT — upsert (create or update) the firm template
 # ---------------------------------------------------------------------------
 @router.put("")
+@limiter.limit("20/minute")
 async def upsert_firm_template(
+    request: Request,
     body: FirmTemplateUpdate,
     user=Depends(get_current_user),
 ):

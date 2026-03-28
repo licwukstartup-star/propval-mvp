@@ -27,6 +27,10 @@ const config: Config = {
         orbitron: ["var(--font-orbitron)", "sans-serif"],
         mono: ["var(--font-mono)", "'Courier New'", "monospace"],
       },
+      screens: {
+        '3xl': '1920px',
+        '4xl': '2560px',
+      },
     },
   },
   plugins: [],

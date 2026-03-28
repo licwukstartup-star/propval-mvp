@@ -591,6 +591,9 @@ async def generate_property_narrative(
     """
     address = property_data.get("address")
     postcode = property_data.get("postcode")
+    _section_key = property_data.get("requested_section")
+    _property_type = property_data.get("property_type")
+    _borough = property_data.get("borough") or property_data.get("district")
 
     # Build prompt
     try:
@@ -643,12 +646,13 @@ async def generate_property_narrative(
             text, model_used, prompt_tokens, output_tokens = await call_fn()
             latency_ms = int((time.monotonic() - start) * 1000)
 
-            # Log success
+            # Log success (with quality-tracking fields from migration 028)
             await log_ai_usage(
                 user_id=user_id, user_email=user_email, endpoint="ai-narrative",
                 model=model_used, input_text=prompt, output_text=text,
                 success=True, latency_ms=latency_ms, address=address, postcode=postcode,
                 prompt_token_count=prompt_tokens, candidates_token_count=output_tokens,
+                section_key=_section_key, property_type=_property_type, borough=_borough,
             )
 
             if provider_name != "groq":

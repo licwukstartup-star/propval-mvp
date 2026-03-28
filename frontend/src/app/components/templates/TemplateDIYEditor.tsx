@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useCallback } from "react";
+import { getPlaceholdersByCategory, type PlaceholderDef } from "../report-typing/extensions/placeholderRegistry";
 
 // ── Types (local to editor) ─────────────────────────────────────────────────
 
@@ -85,6 +86,8 @@ const AI_SECTION_KEYS = [
   "subject_property",
   "market_commentary",
   "valuation_considerations",
+  "environmental_commentary",
+  "fire_risk_commentary",
 ];
 
 const BOILERPLATE_FIELDS = [
@@ -129,6 +132,104 @@ function TypeBadge({ type }: { type: string }) {
     >
       {info.label}
     </span>
+  );
+}
+
+// ── Placeholder browser (expandable panel showing all registry placeholders) ─
+
+const CATEGORY_LABELS: Record<string, string> = {
+  B: "Case Metadata",
+  C: "API Auto-populated",
+  D: "AI-Generated",
+  E: "Valuer Input",
+  F: "Auto Assembly",
+};
+
+function PlaceholderBrowser({
+  selectedFields,
+  onToggleField,
+}: {
+  selectedFields: string[];
+  onToggleField: (field: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [filterCat, setFilterCat] = useState<string>("all");
+
+  const categories = ["B", "C", "D", "E", "F"] as const;
+  const allPlaceholders = categories.flatMap((cat) => getPlaceholdersByCategory(cat));
+  const filtered = filterCat === "all" ? allPlaceholders : allPlaceholders.filter((p) => p.category === filterCat);
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 text-[10px] font-medium transition-colors"
+        style={{ color: "var(--color-accent)" }}
+      >
+        <svg
+          className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+        Browse All Placeholders ({allPlaceholders.length})
+      </button>
+
+      {expanded && (
+        <div className="mt-2 space-y-2">
+          {/* Category filter */}
+          <div className="flex gap-1 flex-wrap">
+            <button
+              onClick={() => setFilterCat("all")}
+              className="text-[9px] px-2 py-0.5 rounded-full border transition-colors"
+              style={{
+                backgroundColor: filterCat === "all" ? "var(--color-btn-primary-bg)" : "transparent",
+                color: filterCat === "all" ? "var(--color-btn-primary-text)" : "var(--color-text-secondary)",
+                borderColor: filterCat === "all" ? "var(--color-accent)" : "var(--color-border)",
+              }}
+            >
+              All
+            </button>
+            {categories.map((cat) => (
+              <button
+                key={cat}
+                onClick={() => setFilterCat(cat)}
+                className="text-[9px] px-2 py-0.5 rounded-full border transition-colors"
+                style={{
+                  backgroundColor: filterCat === cat ? "var(--color-btn-primary-bg)" : "transparent",
+                  color: filterCat === cat ? "var(--color-btn-primary-text)" : "var(--color-text-secondary)",
+                  borderColor: filterCat === cat ? "var(--color-accent)" : "var(--color-border)",
+                }}
+              >
+                {CATEGORY_LABELS[cat]} ({getPlaceholdersByCategory(cat).length})
+              </button>
+            ))}
+          </div>
+
+          {/* Placeholder chips */}
+          <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
+            {filtered.map((p) => {
+              const selected = selectedFields.includes(p.key);
+              return (
+                <button
+                  key={p.key}
+                  onClick={() => onToggleField(p.key)}
+                  className="text-[10px] px-2 py-1 rounded-full border transition-colors"
+                  title={`${p.label} (${p.category}) — ${p.source}`}
+                  style={{
+                    backgroundColor: selected ? "var(--color-btn-primary-bg)" : "transparent",
+                    color: selected ? "var(--color-btn-primary-text)" : "var(--color-text-secondary)",
+                    borderColor: selected ? "var(--color-accent)" : "var(--color-border)",
+                  }}
+                >
+                  {p.required && "* "}{p.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -453,6 +554,19 @@ function SectionCard({
                 <option value="3x3">3 x 3</option>
               </select>
             </div>
+          )}
+
+          {/* Placeholder browser — for data_field or cover_page sections */}
+          {(section.type === "data_field" || section.type === "cover_page") && (
+            <PlaceholderBrowser
+              selectedFields={section.fields || []}
+              onToggleField={(field) => {
+                const fields = (section.fields || []).includes(field)
+                  ? (section.fields || []).filter((x) => x !== field)
+                  : [...(section.fields || []), field];
+                onUpdate({ ...section, fields });
+              }}
+            />
           )}
 
           {/* Subsections */}

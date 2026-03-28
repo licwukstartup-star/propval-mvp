@@ -93,6 +93,8 @@ class SaveCaseRequest(BaseModel):
     ai_narrative: dict | None = None
     report_content: dict | None = None
     ui_state: dict | None = None
+    panel_slug: str | None = None          # Panel theme (e.g. "vas", "method")
+    instruction_source: str | None = None  # Where the instruction came from
 
 
 class UpdateCaseRequest(BaseModel):
@@ -109,6 +111,8 @@ class UpdateCaseRequest(BaseModel):
     ai_narrative: dict | None = None
     report_content: dict | None = None
     ui_state: dict | None = None
+    panel_slug: str | None = None          # Switch panel theme
+    instruction_source: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +130,21 @@ async def save_case(request: Request, body: SaveCaseRequest, user: dict = Depend
     display_name = _generate_display_name(
         body.address, body.case_type, body.valuation_basis, body.valuation_date,
     )
+
+    # Resolve panel_id from slug or instruction_source
+    panel_id = None
+    panel_slug = body.panel_slug or body.instruction_source
+    if panel_slug:
+        panel_resp = (
+            sb.table("panel_configs")
+            .select("id")
+            .eq("slug", panel_slug)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        if panel_resp.data:
+            panel_id = panel_resp.data[0]["id"]
 
     row = {
         "surveyor_id": user["id"],
@@ -150,6 +169,8 @@ async def save_case(request: Request, body: SaveCaseRequest, user: dict = Depend
         "ai_narrative": body.ai_narrative,
         "report_content": body.report_content,
         "ui_state": body.ui_state or {},
+        "panel_id": panel_id,
+        "instruction_source": body.instruction_source or body.panel_slug,
     }
     resp = sb.table("cases").insert(row).execute()
     return resp.data[0]
@@ -163,7 +184,8 @@ async def list_cases(request: Request, user: dict = Depends(get_current_user)):
     cols = (
         "id, display_name, title, address, postcode, uprn, "
         "case_type, status, valuation_date, case_sequence, "
-        "valuation_basis, firm_reference, created_at, updated_at"
+        "valuation_basis, firm_reference, panel_id, instruction_source, "
+        "created_at, updated_at"
     )
     q = sb.table("cases").select(cols).eq("surveyor_id", user["id"])
     try:
@@ -241,6 +263,26 @@ async def update_case(
         # Map property_data to the DB column property_snapshot
         if "property_data" in updates:
             updates["property_snapshot"] = updates.pop("property_data")
+        # Resolve panel_slug to panel_id and sync instruction_source
+        if "panel_slug" in updates:
+            slug = updates.pop("panel_slug")
+            if slug:
+                # Set panel
+                panel_resp = (
+                    sb.table("panel_configs")
+                    .select("id")
+                    .eq("slug", slug)
+                    .eq("is_active", True)
+                    .limit(1)
+                    .execute()
+                )
+                updates["panel_id"] = panel_resp.data[0]["id"] if panel_resp.data else None
+                if "instruction_source" not in updates:
+                    updates["instruction_source"] = slug
+            else:
+                # Empty string = clear panel
+                updates["panel_id"] = None
+                updates["instruction_source"] = None
         if not updates:
             raise HTTPException(400, "Nothing to update")
 

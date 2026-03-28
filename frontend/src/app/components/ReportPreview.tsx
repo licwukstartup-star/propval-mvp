@@ -111,6 +111,7 @@ export default function ReportPreview({ result, adoptedComparables, session, rep
   const meta: ReportMetadata = {
     report_reference: "", report_date: "", instruction_date: "", inspection_date: "",
     valuation_date: valuationDate || "", client_name: "", applicant_name: "", bank_reference: "",
+    purpose_of_valuation: "",
     preparer_name: "", preparer_qualifications: "", counter_signatory: "", counter_signatory_qualifications: "",
     ...reportContent?.metadata,
   }

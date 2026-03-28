@@ -67,27 +67,28 @@ export const rptStripe = (i: number): React.CSSProperties =>
   ({ backgroundColor: i % 2 === 0 ? "#F9F9FB" : "#FFFFFF" });
 
 // Card size constants
-export const CARD_SIZES_KEY = "propval-card-sizes-v1";
+export const CARD_SIZES_KEY = "propval-card-sizes-v2";
 
 export const SIZE_PRESETS: { key: CardSizeKey; label: string; cols: number; rows: number }[] = [
   { key: "1x1", label: "Small", cols: 1, rows: 1 },
   { key: "2x1", label: "Wide",  cols: 2, rows: 1 },
-  { key: "3x1", label: "Full",  cols: 3, rows: 1 },
+  { key: "3x1", label: "Triple", cols: 3, rows: 1 },
+  { key: "4x1", label: "Full",  cols: 4, rows: 1 },
   { key: "1x2", label: "Tall",  cols: 1, rows: 2 },
   { key: "2x2", label: "Large", cols: 2, rows: 2 },
 ];
 
 export const PROP_CARD_DEFAULTS: Record<string, CardSizeKey> = {
-  epc:          "2x2",
+  epc:          "2x1",
   tenure:       "1x1",
   coordinates:  "1x1",
-  sales:        "3x1",
-  flood:        "1x1",
-  conservation: "1x1",
-  coal:         "1x1",
+  sales:        "4x1",
+  flood:        "2x1",
+  conservation: "2x2",
+  coal:         "2x2",
   ground:       "2x1",
   asbestos:     "1x1",
   connectivity: "2x1",
   imd:          "1x1",
-  planning:     "3x1",
+  planning:     "4x1",
 };

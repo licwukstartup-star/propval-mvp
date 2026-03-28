@@ -41,6 +41,7 @@ interface PropertyMapProps {
   subjectAddress: string;
   subjectEpc: string | null;
   subjectFloodRisk: string | null;
+  subjectPostcode: string;
   adoptedComparables: ComparableCandidate[];
   compCoords: Record<string, { lat: number; lon: number }>;
   onRemoveComparable?: (comp: ComparableCandidate) => void;
@@ -433,7 +434,7 @@ const GRADE_COLOURS: Record<string, { bg: string; border: string }> = {
 
 function ComparableClusterLayer({
   comparables, compCoords, onRemoveComparable,
-  subjectLat, subjectLon, subjectAddress, subjectEpc, subjectFloodRisk,
+  subjectLat, subjectLon, subjectAddress, subjectEpc, subjectFloodRisk, subjectPostcode,
 }: {
   comparables: ComparableCandidate[];
   compCoords: Record<string, { lat: number; lon: number }>;
@@ -443,6 +444,7 @@ function ComparableClusterLayer({
   subjectAddress: string;
   subjectEpc: string | null;
   subjectFloodRisk: string | null;
+  subjectPostcode: string;
 }) {
   const map = useMap();
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null);
@@ -543,6 +545,22 @@ function ComparableClusterLayer({
                 Street View
               </a>`
           }
+          <div style="display:flex;gap:8px;margin:8px 0">
+            <a href="#" onclick="window.open('https://www.rightmove.co.uk/house-prices/${comp.postcode.toLowerCase().replace(/\s+/g, "-")}.html','propval_rightmove','popup=1,width='+Math.round(screen.width/2)+',height='+screen.height+',left='+Math.round(screen.width/2)+',top=0');return false;"
+               style="flex:1;text-align:center;padding:7px 0;font-size:12px;font-weight:700;
+                      text-transform:uppercase;letter-spacing:0.06em;
+                      background:#00DEB6;color:#1a1a2e;border-radius:6px;
+                      text-decoration:none;cursor:pointer">
+              Rightmove
+            </a>
+            <a href="#" onclick="window.open('https://www.zoopla.co.uk/house-prices/${comp.postcode.toLowerCase().replace(/\s+/g, "-")}/','propval_zoopla','popup=1,width='+Math.round(screen.width/2)+',height='+screen.height+',left='+Math.round(screen.width/2)+',top=0');return false;"
+               style="flex:1;text-align:center;padding:7px 0;font-size:12px;font-weight:700;
+                      text-transform:uppercase;letter-spacing:0.06em;
+                      background:#8046F1;color:#fff;border-radius:6px;
+                      text-decoration:none;cursor:pointer">
+              Zoopla
+            </a>
+          </div>
           ${onRemoveRef.current ? `<button id="${removeId}" style="
             width:100%;padding:7px 0;font-size:13px;font-weight:700;
             text-transform:uppercase;letter-spacing:0.06em;
@@ -622,6 +640,22 @@ function ComparableClusterLayer({
               Street View
             </a>`
         }
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <a href="#" onclick="window.open('https://www.rightmove.co.uk/house-prices/${subjectPostcode.toLowerCase().replace(/\s+/g, "-")}.html','propval_rightmove','popup=1,width='+Math.round(screen.width/2)+',height='+screen.height+',left='+Math.round(screen.width/2)+',top=0');return false;"
+            style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;
+            font-size:12px;font-weight:700;color:#fff;text-decoration:none;cursor:pointer;
+            background:#00DCA5;letter-spacing:0.03em;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Rightmove
+          </a>
+          <a href="#" onclick="window.open('https://www.zoopla.co.uk/house-prices/${subjectPostcode.toLowerCase().replace(/\s+/g, "-")}/','propval_zoopla','popup=1,width='+Math.round(screen.width/2)+',height='+screen.height+',left='+Math.round(screen.width/2)+',top=0');return false;"
+            style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;
+            font-size:12px;font-weight:700;color:#fff;text-decoration:none;cursor:pointer;
+            background:#7B4DFF;letter-spacing:0.03em;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Zoopla
+          </a>
+        </div>
       </div>`,
       { className: "propval-popup", maxWidth: 660, autoPan: false, closeOnClick: false }
     );
@@ -1223,6 +1257,7 @@ export default function PropertyMap({
   subjectAddress,
   subjectEpc,
   subjectFloodRisk,
+  subjectPostcode,
   adoptedComparables,
   compCoords,
   onRemoveComparable,
@@ -1427,8 +1462,18 @@ export default function PropertyMap({
         .propval-popup .leaflet-popup-close-button:hover {
           color: var(--color-accent) !important;
         }
-        /* Hide default Leaflet attribution & zoom controls */
-        .leaflet-control-attribution { display: none !important; }
+        /* Attribution must remain visible per Google Maps TOS */
+        .leaflet-control-attribution {
+          font-size: 10px !important;
+          opacity: 0.7 !important;
+          background: rgba(0,0,0,0.3) !important;
+          color: #ccc !important;
+          padding: 2px 5px !important;
+        }
+        .leaflet-control-attribution a {
+          color: #aaa !important;
+        }
+        /* Hide default zoom controls (UX choice, not TOS-related) */
         .leaflet-control-zoom { display: none !important; }
         /* Override default MarkerCluster styles — we use custom iconCreateFunction */
         .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
@@ -1521,6 +1566,12 @@ export default function PropertyMap({
         zoom={15}
         scrollWheelZoom={true}
         preferCanvas={true}
+        zoomSnap={0.5}
+        zoomDelta={0.5}
+        wheelDebounceTime={80}
+        zoomAnimation={true}
+        fadeAnimation={true}
+        markerZoomAnimation={true}
         style={{ height: "100%", width: "100%" }}
       >
         <TileLayer
@@ -1528,6 +1579,9 @@ export default function PropertyMap({
           attribution={tile.attribution}
           {...(tile.subdomains ? { subdomains: tile.subdomains } : {})}
           maxZoom={19}
+          updateWhenZooming={false}
+          updateWhenIdle={true}
+          keepBuffer={4}
         />
 
         <InvalidateSizeOnVisible />
@@ -1560,6 +1614,7 @@ export default function PropertyMap({
           subjectAddress={subjectAddress}
           subjectEpc={subjectEpc ?? null}
           subjectFloodRisk={subjectFloodRisk ?? null}
+          subjectPostcode={subjectPostcode}
         />
 
         {/* Listed buildings (Heritage) — clustered */}

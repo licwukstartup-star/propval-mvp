@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gallery Cyberpunk — Content Page</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=IBM+Plex+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #1C1B1A;
+  --charcoal: #2E2D2B;
+  --graphite: #4A4845;
+  --stone: #7A7872;
+  --silver: #B0AEA8;
+  --ash: #D8D6D0;
+  --ivory: #F0EDE8;
+  --cyan: #00E5FF;
+  --cyan-muted: #00B8CC;
+  --cyan-subtle: rgba(0,184,204,0.08);
+  --magenta: #FF2D78;
+  --magenta-subtle: rgba(255,45,120,0.06);
+  --lime: #BFFF00;
+  --violet: #A855F7;
+  --violet-subtle: rgba(168,85,247,0.06);
+  --amber: #F5A623;
+  --amber-subtle: rgba(245,166,35,0.08);
+  --font-display: 'Cormorant Garamond', serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--ivory);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
+
+/* TOP BAR */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 40px;
+  border-bottom: 1px solid rgba(176,174,168,0.3);
+  position: sticky;
+  top: 0;
+  background: rgba(240,237,232,0.92);
+  backdrop-filter: blur(16px);
+  z-index: 50;
+}
+
+.topbar .logo {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.topbar .logo span { color: var(--cyan-muted); }
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--ash);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.5);
+  width: 240px;
+}
+
+.search-box input {
+  border: none;
+  background: none;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--graphite);
+  outline: none;
+  width: 100%;
+}
+
+.search-box .kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--silver);
+  background: var(--ivory);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--ash);
+}
+
+.topbar-link {
+  font-size: 13px;
+  color: var(--graphite);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.topbar-link:hover { color: var(--cyan-muted); }
+
+/* LAYOUT */
+.page {
+  display: grid;
+  grid-template-columns: 200px 1fr 240px;
+  max-width: 1200px;
+  margin: 0 auto;
+  min-height: calc(100vh - 56px);
+}
+
+/* LEFT NAV */
+.left-nav {
+  padding: 32px 20px;
+  border-right: 1px solid rgba(176,174,168,0.2);
+}
+
+.left-nav-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stone);
+  margin-bottom: 16px;
+}
+
+.left-nav a {
+  display: block;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--stone);
+  text-decoration: none;
+  border-radius: 4px;
+  margin-bottom: 2px;
+  transition: all 0.2s;
+}
+
+.left-nav a:hover { color: var(--graphite); background: rgba(0,0,0,0.03); }
+
+.left-nav a.active {
+  color: var(--ink);
+  font-weight: 500;
+  background: var(--cyan-subtle);
+  border-left: 2px solid var(--cyan-muted);
+  padding-left: 8px;
+}
+
+/* CONTENT */
+.content {
+  padding: 48px 56px;
+  max-width: 720px;
+}
+
+.content-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cyan-muted);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.content-tag::before {
+  content: '';
+  width: 20px;
+  height: 1px;
+  background: var(--cyan-muted);
+}
+
+.content h1 {
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 300;
+  line-height: 1.15;
+  color: var(--ink);
+  margin-bottom: 16px;
+}
+
+.content h1 em { font-style: italic; }
+
+.content-meta {
+  font-size: 13px;
+  color: var(--stone);
+  margin-bottom: 36px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.content-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.divider {
+  width: 100%;
+  height: 1px;
+  background: var(--ash);
+  margin-bottom: 36px;
+}
+
+.content p {
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--graphite);
+  margin-bottom: 20px;
+}
+
+.content h2 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--ink);
+  margin: 40px 0 16px;
+}
+
+/* CALLOUT BOX */
+.callout {
+  padding: 20px 24px;
+  border-radius: 6px;
+  margin: 28px 0;
+  border-left: 3px solid;
+}
+
+.callout.info {
+  background: var(--cyan-subtle);
+  border-color: var(--cyan-muted);
+}
+
+.callout.warning {
+  background: var(--amber-subtle);
+  border-color: var(--amber);
+}
+
+.callout.alert {
+  background: var(--magenta-subtle);
+  border-color: var(--magenta);
+}
+
+.callout-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.callout.info .callout-title { color: var(--cyan-muted); }
+.callout.warning .callout-title { color: #C4850A; }
+.callout.alert .callout-title { color: var(--magenta); }
+
+.callout p {
+  font-size: 13px;
+  color: var(--graphite);
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* INLINE CODE */
+code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(0,0,0,0.04);
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--charcoal);
+}
+
+/* CODE BLOCK */
+.code-block {
+  background: var(--ink);
+  color: var(--ash);
+  border-radius: 6px;
+  padding: 20px 24px;
+  margin: 24px 0;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.code-block .kw { color: var(--violet); }
+.code-block .fn { color: var(--cyan); }
+.code-block .str { color: var(--lime); }
+.code-block .cm { color: var(--stone); }
+.code-block .num { color: var(--amber); }
+
+/* TAGS */
+.tag-row {
+  display: flex;
+  gap: 8px;
+  margin: 24px 0;
+  flex-wrap: wrap;
+}
+
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+
+.tag.t-cyan { background: var(--cyan-subtle); border-color: rgba(0,184,204,0.2); color: var(--cyan-muted); }
+.tag.t-violet { background: var(--violet-subtle); border-color: rgba(168,85,247,0.15); color: #8B3FD4; }
+.tag.t-amber { background: var(--amber-subtle); border-color: rgba(245,166,35,0.2); color: #C4850A; }
+
+/* RIGHT SIDEBAR */
+.right-sidebar {
+  padding: 32px 20px;
+  border-left: 1px solid rgba(176,174,168,0.2);
+}
+
+.toc-title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stone);
+  margin-bottom: 16px;
+}
+
+.toc a {
+  display: block;
+  font-size: 12px;
+  color: var(--stone);
+  text-decoration: none;
+  padding: 5px 0;
+  border-left: 1px solid var(--ash);
+  padding-left: 12px;
+  margin-left: 4px;
+  transition: all 0.2s;
+}
+
+.toc a:hover {
+  color: var(--graphite);
+  border-left-color: var(--silver);
+}
+
+.toc a.active {
+  color: var(--cyan-muted);
+  border-left-color: var(--cyan-muted);
+  font-weight: 500;
+}
+
+.right-card {
+  margin-top: 32px;
+  background: var(--charcoal);
+  border-radius: 6px;
+  padding: 20px;
+}
+
+.right-card-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+  margin-bottom: 10px;
+}
+
+.right-card p {
+  font-size: 12px;
+  color: var(--silver);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.right-card-btn {
+  display: block;
+  text-align: center;
+  background: var(--cyan);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border-radius: 4px;
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  transition: background 0.2s;
+}
+
+.right-card-btn:hover { background: #00d4ec; }
+
+/* PROGRESS BAR */
+.progress-bar {
+  position: fixed;
+  top: 0; left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--cyan), var(--magenta));
+  z-index: 100;
+  width: 35%;
+  transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+
+<div class="progress-bar"></div>
+
+<div class="topbar">
+  <div class="logo">Arc<span>.</span>Docs</div>
+  <div class="topbar-right">
+    <div class="search-box">
+      <span style="color:var(--silver); font-size:14px;">&#9906;</span>
+      <input type="text" placeholder="Search documentation...">
+      <span class="kbd">&#8984;K</span>
+    </div>
+    <a href="#" class="topbar-link">API</a>
+    <a href="#" class="topbar-link">Changelog</a>
+  </div>
+</div>
+
+<div class="page">
+  <nav class="left-nav">
+    <div class="left-nav-title">Documentation</div>
+    <a href="#">Getting started</a>
+    <a href="#" class="active">Core concepts</a>
+    <a href="#">Configuration</a>
+    <a href="#">Data models</a>
+    <a href="#">Authentication</a>
+    <a href="#">API reference</a>
+    <a href="#">Integrations</a>
+    <a href="#">Deployment</a>
+  </nav>
+
+  <article class="content">
+    <div class="content-tag">Core concepts</div>
+    <h1>Understanding the <em>signal architecture</em></h1>
+    <div class="content-meta">
+      <span>Last updated: 24 Mar 2026</span>
+      <span>&#183;</span>
+      <span>8 min read</span>
+    </div>
+    <div class="divider"></div>
+
+    <p>The signal architecture is built on the principle that data should flow with minimal friction from source to insight. Rather than forcing analysts through rigid pipelines, the system adapts to how professionals actually think — in loops, tangents, and progressive refinement.</p>
+
+    <div class="callout info">
+      <div class="callout-title">Key principle</div>
+      <p>Every signal carries provenance metadata. You can always trace a conclusion back to its raw inputs — and the system makes this effortless rather than burdensome.</p>
+    </div>
+
+    <p>At the foundation level, signals are classified into three tiers based on their confidence interval and data lineage. This classification happens automatically, but can be manually overridden by senior analysts when domain knowledge supersedes statistical confidence.</p>
+
+    <h2>Signal classification</h2>
+
+    <p>The three-tier system uses a combination of source reliability scoring, temporal decay functions, and cross-reference validation to assign each signal a classification level. Tier 1 signals (designated <code>T1</code>) have the highest confidence and derive from primary sources with validated provenance.</p>
+
+    <div class="code-block">
+<span class="cm">// Signal classification pipeline</span>
+<span class="kw">const</span> <span class="fn">classifySignal</span> = (raw) => {
+  <span class="kw">const</span> confidence = <span class="fn">calculateConfidence</span>(raw);
+  <span class="kw">const</span> decay = <span class="fn">temporalDecay</span>(raw.timestamp, <span class="num">0.94</span>);
+
+  <span class="kw">if</span> (confidence * decay > <span class="num">0.85</span>) <span class="kw">return</span> <span class="str">'T1'</span>;
+  <span class="kw">if</span> (confidence * decay > <span class="num">0.60</span>) <span class="kw">return</span> <span class="str">'T2'</span>;
+  <span class="kw">return</span> <span class="str">'T3'</span>;
+};
+    </div>
+
+    <p>The decay factor of <code>0.94</code> means signals lose roughly 6% of their confidence score per period. For market-sensitive data, this window can be tightened to <code>0.88</code> — reflecting the faster obsolescence of financial intelligence.</p>
+
+    <div class="callout warning">
+      <div class="callout-title">Important</div>
+      <p>Manual overrides on signal classification are logged and audited. The system maintains a complete override history for compliance review.</p>
+    </div>
+
+    <h2>Pipeline integration</h2>
+
+    <p>Signals flow through a composable pipeline where each stage can transform, enrich, or filter the data stream. The pipeline supports both synchronous processing for real-time dashboards and asynchronous batch processing for historical analysis.</p>
+
+    <div class="tag-row">
+      <span class="tag t-cyan">Real-time</span>
+      <span class="tag t-violet">Batch processing</span>
+      <span class="tag t-amber">Hybrid mode</span>
+    </div>
+
+    <p>The hybrid mode is particularly useful during market events, where you want real-time signal flow augmented by historical context. The system automatically switches between modes based on signal volume thresholds, though this behaviour can be configured per-workspace.</p>
+
+    <div class="callout alert">
+      <div class="callout-title">Breaking change — v3.2</div>
+      <p>The pipeline API endpoint has moved from <code>/v2/pipeline</code> to <code>/v3/streams</code>. Legacy endpoints will be deprecated on 1 May 2026.</p>
+    </div>
+  </article>
+
+  <aside class="right-sidebar">
+    <div class="toc-title">On this page</div>
+    <div class="toc">
+      <a href="#" class="active">Overview</a>
+      <a href="#">Signal classification</a>
+      <a href="#">Pipeline integration</a>
+      <a href="#">Hybrid mode</a>
+      <a href="#">Configuration</a>
+    </div>
+
+    <div class="right-card">
+      <div class="right-card-title">Try it live</div>
+      <p>Experiment with signal classification in our interactive sandbox environment.</p>
+      <a href="#" class="right-card-btn">Open Sandbox</a>
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

@@ -117,6 +117,7 @@ export default function TemplateExportButton({ state, session }: TemplateExportB
         body: JSON.stringify({
           template_id: templateId,
           content,
+          panel_slug: state.activePanel?.slug || null,
         }),
       })
 

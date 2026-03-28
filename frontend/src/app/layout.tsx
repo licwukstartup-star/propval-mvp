@@ -6,6 +6,8 @@ import ThemeProvider from "@/components/ThemeProvider";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import Navbar from "@/components/Navbar";
 import CookieConsent from "@/components/CookieConsent";
+import AppShell from "@/components/AppShell";
+import { SidebarProvider } from "@/contexts/SidebarContext";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -39,21 +41,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-theme="dark" suppressHydrationWarning>
+    <html lang="en" data-theme="premium-dark" suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("propval-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})()`,
+            __html: `(function(){try{var t=localStorage.getItem("propval-theme");if(t==="light"||t==="dark"||t==="premium-dark"||t==="premium-light")document.documentElement.setAttribute("data-theme",t)}catch(e){}})()`,
           }}
         />
       </head>
       <body className={`${inter.variable} ${orbitron.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
         <ThemeProvider>
           <AuthProvider>
-            <Navbar />
-            <ErrorBoundary>
-              {children}
-            </ErrorBoundary>
+            <SidebarProvider>
+              <Navbar />
+              <ErrorBoundary>
+                <AppShell>
+                  {children}
+                </AppShell>
+              </ErrorBoundary>
+            </SidebarProvider>
             <CookieConsent />
           </AuthProvider>
         </ThemeProvider>

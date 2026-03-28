@@ -217,7 +217,7 @@ function TemplateCard({
           {sectionCount} section{sectionCount !== 1 ? "s" : ""}
         </span>
         <span className="text-[11px]" style={{ color: "var(--color-text-secondary)" }}>
-          {new Date(template.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+          {(() => { const d = new Date(template.created_at); return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)}`; })()}
         </span>
       </div>
 

@@ -10,12 +10,13 @@ import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from .auth import get_current_user, get_user_supabase
+from .rate_limit import limiter
 from services.template_service import parse_docx_structure, classify_sections_with_ai
 from services.report_generator import generate_report_docx
 
@@ -46,7 +47,8 @@ class TemplateUpdate(BaseModel):
 # GET /api/templates — list user's templates + system templates
 # ---------------------------------------------------------------------------
 @router.get("")
-async def list_templates(user=Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def list_templates(request: Request, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
 
@@ -66,7 +68,8 @@ async def list_templates(user=Depends(get_current_user)):
 # GET /api/templates/gallery — system templates only
 # ---------------------------------------------------------------------------
 @router.get("/gallery")
-async def list_gallery(user=Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def list_gallery(request: Request, user=Depends(get_current_user)):
     sb = get_user_supabase(user)
     resp = (
         sb.table("report_templates")
@@ -82,7 +85,8 @@ async def list_gallery(user=Depends(get_current_user)):
 # GET /api/templates/{template_id} — get full template with schema
 # ---------------------------------------------------------------------------
 @router.get("/{template_id}")
-async def get_template(template_id: UUID, user=Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def get_template(request: Request, template_id: UUID, user=Depends(get_current_user)):
     sb = get_user_supabase(user)
     resp = (
         sb.table("report_templates")
@@ -99,7 +103,8 @@ async def get_template(template_id: UUID, user=Depends(get_current_user)):
 # POST /api/templates — create a new template
 # ---------------------------------------------------------------------------
 @router.post("")
-async def create_template(body: TemplateCreate, user=Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def create_template(request: Request, body: TemplateCreate, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
 
@@ -125,7 +130,9 @@ async def create_template(body: TemplateCreate, user=Depends(get_current_user)):
 # PUT /api/templates/{template_id} — update a template
 # ---------------------------------------------------------------------------
 @router.put("/{template_id}")
+@limiter.limit("20/minute")
 async def update_template(
+    request: Request,
     template_id: UUID,
     body: TemplateUpdate,
     user=Depends(get_current_user),
@@ -156,7 +163,8 @@ async def update_template(
 # DELETE /api/templates/{template_id} — delete a template
 # ---------------------------------------------------------------------------
 @router.delete("/{template_id}")
-async def delete_template(template_id: UUID, user=Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def delete_template(request: Request, template_id: UUID, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
 
@@ -176,7 +184,8 @@ async def delete_template(template_id: UUID, user=Depends(get_current_user)):
 # POST /api/templates/{template_id}/clone — clone a template for editing
 # ---------------------------------------------------------------------------
 @router.post("/{template_id}/clone")
-async def clone_template(template_id: UUID, user=Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def clone_template(request: Request, template_id: UUID, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
 
@@ -210,7 +219,9 @@ async def clone_template(template_id: UUID, user=Depends(get_current_user)):
 # POST /api/templates/upload — parse uploaded .docx and classify with AI
 # ---------------------------------------------------------------------------
 @router.post("/upload")
+@limiter.limit("5/minute")
 async def upload_and_parse_template(
+    request: Request,
     file: UploadFile = File(...),
     user=Depends(get_current_user),
 ):
@@ -221,6 +232,11 @@ async def upload_and_parse_template(
     """
     if not file.filename or not file.filename.lower().endswith(".docx"):
         raise HTTPException(400, "Only .docx files are supported")
+
+    # Validate MIME type (don't rely on extension alone)
+    _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if file.content_type and file.content_type != _DOCX_MIME:
+        raise HTTPException(400, "Invalid file type — expected a .docx document")
 
     # Check file size before reading (Content-Length header, if available)
     if file.size and file.size > 10 * 1024 * 1024:
@@ -257,14 +273,16 @@ async def upload_and_parse_template(
         raise
     except Exception as exc:
         logger.error("Template upload failed: %s", exc, exc_info=True)
-        raise HTTPException(500, f"Failed to parse template: {str(exc)}")
+        raise HTTPException(500, "Failed to parse template")
 
 
 # ---------------------------------------------------------------------------
 # POST /api/templates/save-uploaded — save an AI-parsed template after review
 # ---------------------------------------------------------------------------
 @router.post("/save-uploaded")
+@limiter.limit("10/minute")
 async def save_uploaded_template(
+    request: Request,
     body: TemplateCreate,
     user=Depends(get_current_user),
 ):
@@ -293,14 +311,21 @@ async def save_uploaded_template(
 class ReportGenerateRequest(BaseModel):
     template_id: str
     content: dict  # { metadata, valuer_inputs, ai_sections, comparables, property, firm_template }
+    panel_slug: Optional[str] = None  # Panel theme overlay (e.g. "vas", "method")
 
 
 @router.post("/generate-report")
+@limiter.limit("10/minute")
 async def generate_report(
+    request: Request,
     body: ReportGenerateRequest,
     user=Depends(get_current_user),
 ):
-    """Generate a .docx report by merging content with a template schema."""
+    """Generate a .docx report by merging content with a template schema.
+
+    If panel_slug is provided, the panel config overlay is merged onto the
+    template before rendering — same data, different presentation.
+    """
     sb = get_user_supabase(user)
 
     # Fetch template schema
@@ -326,8 +351,23 @@ async def generate_report(
     if not template_schema or not template_schema.get("sections"):
         raise HTTPException(422, "Template has no sections defined. Edit the template in the Templates tab first.")
 
+    # Fetch panel config if requested
+    panel_config = None
+    if body.panel_slug:
+        panel_resp = (
+            sb.table("panel_configs")
+            .select("config")
+            .eq("slug", body.panel_slug)
+            .eq("is_active", True)
+            .execute()
+        )
+        if panel_resp.data:
+            panel_config = panel_resp.data[0]["config"]
+        else:
+            logger.warning("Panel '%s' not found or inactive, generating without panel", body.panel_slug)
+
     try:
-        docx_path = generate_report_docx(body.content, template_schema)
+        docx_path = generate_report_docx(body.content, template_schema, panel_config)
         return FileResponse(
             docx_path,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -336,4 +376,4 @@ async def generate_report(
         )
     except Exception as exc:
         logger.error("Report generation failed: %s", exc, exc_info=True)
-        raise HTTPException(500, f"Failed to generate report: {str(exc)}")
+        raise HTTPException(500, "Failed to generate report")

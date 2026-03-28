@@ -4,8 +4,46 @@
 
 /* ── Theme CSS Custom Properties ─────────────────────────────────────────── */
 
-/* Dark theme (default) */
-:root, [data-theme="dark"] {
+/* Premium dark theme — warm-dark gallery calm with cyberpunk pulse */
+:root, [data-theme="premium-dark"] {
+  --color-bg-base: #1C1B1A;
+  --color-bg-panel: #2E2D2B;
+  --color-bg-surface: #4A4845;
+  --color-bg-input: #1C1B1A;
+  --color-border: rgba(122,120,114,0.15);
+  --color-border-dim: rgba(122,120,114,0.1);
+  --color-text-primary: #D8D6D0;
+  --color-text-secondary: #B0AEA8;
+  --color-text-muted: #7A7872;
+  --color-accent: #00E5FF;
+  --color-accent-dim: rgba(0,229,255,0.2);
+  --color-accent-hover: rgba(0,229,255,0.4);
+  --color-accent-subtle: rgba(0,229,255,0.06);
+  --color-accent-pink: #FF2D78;
+  --color-accent-pink-dim: rgba(255,45,120,0.1);
+  --color-accent-purple: #A855F7;
+  --color-accent-purple-dim: rgba(168,85,247,0.1);
+  --color-accent-purple-text: #A855F7;
+  --color-btn-primary-bg: #00E5FF;
+  --color-btn-primary-text: #1C1B1A;
+  --color-status-success: #BFFF00;
+  --color-status-warning: #F5A623;
+  --color-status-danger: #FF2D78;
+  --color-status-info: #00E5FF;
+  --color-glow-cyan: 0 0 8px rgba(0,229,255,0.2), 0 0 20px rgba(0,229,255,0.1);
+  --color-glow-pink: 0 0 8px rgba(255,45,120,0.15);
+  --color-navbar-bg: #2E2D2B;
+  --color-navbar-border: rgba(122,120,114,0.15);
+  --color-badge-admin-bg: rgba(255,45,120,0.1);
+  --color-badge-admin-text: #FF2D78;
+  --color-badge-surveyor-bg: rgba(0,229,255,0.06);
+  --color-badge-surveyor-text: #00E5FF;
+  --color-leaflet-popup-bg: #2E2D2B;
+  --color-leaflet-popup-shadow: rgba(0,0,0,0.5);
+}
+
+/* Dark theme — cold cyberpunk */
+[data-theme="dark"] {
   --color-bg-base: #0A0E1A;
   --color-bg-panel: #111827;
   --color-bg-surface: #1E293B;
@@ -40,6 +78,44 @@
   --color-badge-surveyor-text: #00F0FF;
   --color-leaflet-popup-bg: #111827;
   --color-leaflet-popup-shadow: rgba(0,0,0,0.6);
+}
+
+/* Premium light theme — warm-light gallery calm with cyberpunk pulse */
+[data-theme="premium-light"] {
+  --color-bg-base: #F0EDE8;
+  --color-bg-panel: #FAF8F5;
+  --color-bg-surface: #D8D6D0;
+  --color-bg-input: #FAF8F5;
+  --color-border: rgba(176,174,168,0.25);
+  --color-border-dim: rgba(176,174,168,0.2);
+  --color-text-primary: #1C1B1A;
+  --color-text-secondary: #4A4845;
+  --color-text-muted: #7A7872;
+  --color-accent: #00B8CC;
+  --color-accent-dim: rgba(0,184,204,0.15);
+  --color-accent-hover: rgba(0,184,204,0.3);
+  --color-accent-subtle: rgba(0,184,204,0.08);
+  --color-accent-pink: #FF2D78;
+  --color-accent-pink-dim: rgba(255,45,120,0.06);
+  --color-accent-purple: #A855F7;
+  --color-accent-purple-dim: rgba(168,85,247,0.06);
+  --color-accent-purple-text: #8B3FD4;
+  --color-btn-primary-bg: #1C1B1A;
+  --color-btn-primary-text: #F0EDE8;
+  --color-status-success: #7A9B00;
+  --color-status-warning: #C4850A;
+  --color-status-danger: #FF2D78;
+  --color-status-info: #00B8CC;
+  --color-glow-cyan: 0 1px 3px rgba(0,0,0,0.08);
+  --color-glow-pink: 0 1px 3px rgba(0,0,0,0.08);
+  --color-navbar-bg: #FAF8F5;
+  --color-navbar-border: rgba(176,174,168,0.3);
+  --color-badge-admin-bg: rgba(255,45,120,0.06);
+  --color-badge-admin-text: #FF2D78;
+  --color-badge-surveyor-bg: rgba(0,184,204,0.08);
+  --color-badge-surveyor-text: #00B8CC;
+  --color-leaflet-popup-bg: #FAF8F5;
+  --color-leaflet-popup-shadow: rgba(0,0,0,0.12);
 }
 
 /* Light theme */
@@ -113,6 +189,17 @@ html.theme-transitioning canvas {
 }
 
 /* ── Print / Save as PDF ────────────────────────────────────────────────── */
+
+/* ── Leaflet smooth zoom tiles ────────────────────────────────────────────── */
+.leaflet-tile-container {
+  transition: opacity 0.25s ease-in-out;
+}
+.leaflet-zoom-anim .leaflet-tile-container {
+  will-change: transform;
+}
+.leaflet-fade-anim .leaflet-popup {
+  transition: opacity 0.2s ease-in-out;
+}
 
 /* ── Leaflet map popup — dark theme override ─────────────────────────────── */
 .leaflet-popup-content-wrapper {

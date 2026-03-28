@@ -3,13 +3,14 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react"
 import type { FirmTemplate } from "../FirmTemplateSettings"
 import type { Signatory } from "./shared/SignatorySelect"
-import type { ReportMetadata, ValuerInputs, AiSectionKey, ReportContentData, ReportTypingProps, ReportTypingState } from "./types"
+import type { ReportMetadata, ValuerInputs, AiSectionKey, ReportContentData, ReportTypingProps, ReportTypingState, TemplateSchema, PanelConfig, ActiveReminder } from "./types"
 import { EMPTY_META, EMPTY_VALUER } from "./constants"
 import { calculateAllCompletions } from "./completion"
+import { evaluateReminders } from "./panelMerge"
 import { API_BASE } from "@/lib/constants"
 
 export default function useReportTypingState({
-  result, adoptedComparables, session, caseId, reportContent, onReportContentChange, onSave, valuationDate: parentValuationDate,
+  result, adoptedComparables, session, caseId, reportContent, onReportContentChange, onSave, valuationDate: parentValuationDate, activePanelSlug: parentPanelSlug, onPanelChange: parentOnPanelChange,
 }: ReportTypingProps): ReportTypingState {
   /* ── Core state ───────────────────────────────────────────────────────── */
   const [meta, setMeta] = useState<ReportMetadata>({ ...EMPTY_META, ...reportContent?.metadata })
@@ -19,6 +20,9 @@ export default function useReportTypingState({
   const [aiSections, setAiSections] = useState<Partial<Record<AiSectionKey, string>>>(reportContent?.ai_sections ?? {})
   const [aiLoading, setAiLoading] = useState<Record<AiSectionKey, boolean>>({ location_description: false, subject_development: false, subject_building: false, subject_property: false, market_commentary: false, valuation_considerations: false })
   const [aiEditing, setAiEditingState] = useState<Record<AiSectionKey, boolean>>({ location_description: false, subject_development: false, subject_building: false, subject_property: false, market_commentary: false, valuation_considerations: false })
+
+  // Track original AI outputs for feedback capture (data flywheel)
+  const aiOriginalsRef = useRef<Partial<Record<AiSectionKey, string>>>({})
 
   const [valuer, setValuer] = useState<ValuerInputs>({ ...EMPTY_VALUER, ...reportContent?.valuer_inputs })
 
@@ -43,7 +47,15 @@ export default function useReportTypingState({
   const [signatories, setSignatories] = useState<Signatory[]>([])
   const [showSignatorySettings, setShowSignatorySettings] = useState(false)
 
-  /* ── Load firm template + signatories on mount ───────────────────────── */
+  /* ── Template schema (ARTG) ─────────────────────────────────────────── */
+  const [templateSchema, setTemplateSchema] = useState<TemplateSchema | null>(null)
+  const [templateName, setTemplateName] = useState<string | null>(null)
+
+  /* ── Panel state ─────────────────────────────────────────────────────── */
+  const [activePanel, setActivePanelState] = useState<PanelConfig | null>(null)
+  const [availablePanels, setAvailablePanels] = useState<PanelConfig[]>([])
+
+  /* ── Load firm template + signatories + report template + panels on mount */
   useEffect(() => {
     if (!session?.access_token) return
     const h = { Authorization: `Bearer ${session.access_token}` }
@@ -55,6 +67,36 @@ export default function useReportTypingState({
       .then(r => r.json())
       .then(data => { if (Array.isArray(data)) setSignatories(data) })
       .catch(err => console.error("Failed to load signatories:", err))
+    // Load available panels
+    fetch(`${API_BASE}/api/panels`, { headers: h })
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setAvailablePanels(data) })
+      .catch(err => console.error("Failed to load panels:", err))
+    // Load default report template (or case-specific if template_id is set)
+    fetch(`${API_BASE}/api/templates`, { headers: h })
+      .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
+      .then((templates: any[]) => {
+        if (!Array.isArray(templates) || templates.length === 0) return
+        const defaultTpl = templates.find((t: any) => t.is_default) || templates.find((t: any) => t.source === "system") || templates[0]
+        if (defaultTpl?.id) {
+          fetch(`${API_BASE}/api/templates/${defaultTpl.id}`, { headers: h })
+            .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
+            .then(full => {
+              if (full?.schema) {
+                setTemplateSchema(full.schema as TemplateSchema)
+                setTemplateName(full.name || null)
+              }
+            })
+            .catch(err => {
+              console.error("Failed to load template schema:", err)
+              setTemplateName(null)  // clear badge if schema failed
+            })
+        }
+      })
+      .catch(err => {
+        console.error("Failed to load templates:", err)
+        setTemplateName(null)
+      })
   }, [session])
 
   /* ── Sync from parent ONLY on genuine case load (not our own edits) ── */
@@ -153,6 +195,8 @@ export default function useReportTypingState({
       const data = await res.json()
       console.log("[AI] Response keys:", Object.keys(data), "text length:", (data[key] || "").length)
       const text = data[key] || ""
+      // Store original AI output for feedback capture
+      aiOriginalsRef.current = { ...aiOriginalsRef.current, [key]: text }
       setAiSections(prev => {
         const next = { ...prev, [key]: text }
         dirtyRef.current = true
@@ -169,6 +213,23 @@ export default function useReportTypingState({
   }, [session, result, adoptedComparables, valuer, wrappedOnReportContentChange])
 
   const saveAiEdit = useCallback((key: AiSectionKey, text: string) => {
+    // ── Data flywheel: capture AI vs valuer delta ──
+    const original = aiOriginalsRef.current[key]
+    if (original && original.trim() !== text.trim() && session?.access_token) {
+      fetch(`${API_BASE}/api/feedback/narrative`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          case_id: caseId ?? null,
+          section_key: key,
+          ai_output: original,
+          valuer_output: text,
+          property_type: result?.property_type ?? null,
+          borough: result?.borough ?? result?.district ?? null,
+        }),
+      }).catch(() => {})  // fire-and-forget
+    }
+
     setAiSections(prev => {
       const next = { ...prev, [key]: text }
       dirtyRef.current = true
@@ -178,7 +239,7 @@ export default function useReportTypingState({
     setAiEditingState(prev => ({ ...prev, [key]: false }))
     // Immediate save after AI edit
     setTimeout(() => handleSaveRef.current(), 100)
-  }, [wrappedOnReportContentChange])
+  }, [wrappedOnReportContentChange, session, caseId, result])
 
   const setAiEditing = useCallback((key: AiSectionKey, editing: boolean) => {
     setAiEditingState(prev => ({ ...prev, [key]: editing }))
@@ -291,8 +352,68 @@ export default function useReportTypingState({
     [meta, valuer, aiSections, firmTemplate, result]
   )
 
+  /* ── Panel switcher ─────────────────────────────────────────────────── */
+  const setActivePanel = useCallback((slug: string | null) => {
+    parentOnPanelChange?.(slug)
+    if (!slug) {
+      setActivePanelState(null)
+      return
+    }
+    // Find from available panels (already fetched)
+    const found = availablePanels.find(p => p.slug === slug)
+    if (found) {
+      // Need full config — fetch if not already loaded
+      if (found.config) {
+        setActivePanelState(found)
+      } else if (session?.access_token) {
+        fetch(`${API_BASE}/api/panels/${slug}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+          .then(r => r.json())
+          .then(data => setActivePanelState(data))
+          .catch(err => console.error("Failed to load panel config:", err))
+      }
+    }
+  }, [availablePanels, session?.access_token, parentOnPanelChange])
+
+  // Auto-set panel from parent (e.g. when loading a case with panel_id)
+  useEffect(() => {
+    if (parentPanelSlug && availablePanels.length > 0 && activePanel?.slug !== parentPanelSlug) {
+      const found = availablePanels.find(p => p.slug === parentPanelSlug)
+      if (found) {
+        if (found.config) {
+          setActivePanelState(found)
+        } else if (session?.access_token) {
+          fetch(`${API_BASE}/api/panels/${parentPanelSlug}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          })
+            .then(r => r.json())
+            .then(data => setActivePanelState(data))
+            .catch(() => {})
+        }
+      }
+    } else if (!parentPanelSlug && activePanel) {
+      setActivePanelState(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parentPanelSlug, availablePanels])
+
+  /* ── Panel reminders (evaluated from inline_reminders + current state) */
+  const panelReminders: ActiveReminder[] = useMemo(() => {
+    if (!activePanel?.config) return []
+    return evaluateReminders(activePanel.config, {
+      comparables_count: adoptedComparables?.length || 0,
+      comparables_ranked: false, // TODO: detect from comp ordering metadata
+      fields: {
+        condition_notes: valuer.condition_notes || "",
+        market_commentary: aiSections.market_commentary || "",
+      },
+    })
+  }, [activePanel, adoptedComparables?.length, valuer.condition_notes, aiSections.market_commentary])
+
   return {
-    meta, valuer, aiSections, aiLoading, aiEditing, firmTemplate, signatories, showSignatorySettings, saving, saveFlash, showFirmSettings, firmSettingsTarget,
+    meta, valuer, aiSections, aiLoading, aiEditing, firmTemplate, signatories, showSignatorySettings, saving, saveFlash, showFirmSettings, firmSettingsTarget, templateSchema, templateName,
+    activePanel, availablePanels, panelReminders, setActivePanel,
     updateMeta, updateValuer, updateValuerBatch, generateAiSection, saveAiEdit, setAiEditing,
     setShowFirmSettings, openFirmSettingsAt, setShowSignatorySettings, setSignatories, handleFirmSaved, handleSave, numberToWords,
     sectionCompletion, overallCompletion,

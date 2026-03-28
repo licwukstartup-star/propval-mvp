@@ -12,6 +12,7 @@ interface CopyItem {
   status: string
   created_by: string
   created_at: string
+  panel_id?: string | null
 }
 
 interface CopyPoolPanelProps {
@@ -131,7 +132,7 @@ export default function CopyPoolPanel({ caseId, session, onClose, copyFlash }: C
 
   const formatDate = (iso: string) => {
     const d = new Date(iso)
-    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+    return `${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})} ${String(d.getFullYear()).slice(-2)} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
   }
 
   return (

@@ -3,10 +3,11 @@
 Phase 1: keyed by surveyor_id (same pattern as firm_templates).
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from .auth import get_current_user, get_user_supabase
+from .rate_limit import limiter
 
 router = APIRouter(prefix="/api/firm-signatories", tags=["firm-signatories"])
 
@@ -40,7 +41,8 @@ class SignatoryUpdate(BaseModel):
 # GET — list all active signatories for this surveyor
 # ---------------------------------------------------------------------------
 @router.get("")
-async def list_signatories(user=Depends(get_current_user)):
+@limiter.limit("60/minute")
+async def list_signatories(request: Request, user=Depends(get_current_user)):
     uid = user["id"]
     sb = get_user_supabase(user)
     resp = (
@@ -58,7 +60,9 @@ async def list_signatories(user=Depends(get_current_user)):
 # POST — create a new signatory
 # ---------------------------------------------------------------------------
 @router.post("")
+@limiter.limit("10/minute")
 async def create_signatory(
+    request: Request,
     body: SignatoryCreate,
     user=Depends(get_current_user),
 ):
@@ -76,7 +80,9 @@ async def create_signatory(
 # PUT — update an existing signatory
 # ---------------------------------------------------------------------------
 @router.put("/{signatory_id}")
+@limiter.limit("20/minute")
 async def update_signatory(
+    request: Request,
     signatory_id: str,
     body: SignatoryUpdate,
     user=Depends(get_current_user),
@@ -102,7 +108,9 @@ async def update_signatory(
 # DELETE — soft-delete a signatory
 # ---------------------------------------------------------------------------
 @router.delete("/{signatory_id}")
+@limiter.limit("10/minute")
 async def delete_signatory(
+    request: Request,
     signatory_id: str,
     user=Depends(get_current_user),
 ):

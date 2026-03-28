@@ -5,7 +5,11 @@ export function formatPrice(p: number) {
 }
 
 export function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  const d = new Date(iso);
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = d.toLocaleDateString("en-GB", { month: "short" });
+  const yr = String(d.getFullYear()).slice(-2);
+  return `${day} ${mon} ${yr}`;
 }
 
 export function yearsMonths(from: Date, to: Date): string {
@@ -28,5 +32,9 @@ export function fmtPsf(n: number): string {
 }
 
 export function fmtDateShort(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+  const d = new Date(iso);
+  const day = String(d.getDate()).padStart(2, "0");
+  const mon = d.toLocaleDateString("en-GB", { month: "short" });
+  const yr = String(d.getFullYear()).slice(-2);
+  return `${day} ${mon} ${yr}`;
 }

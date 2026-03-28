@@ -71,18 +71,9 @@ RSS_SOURCES: list[tuple[str, str, str, str]] = [
 # ---------------------------------------------------------------------------
 # Supabase client
 # ---------------------------------------------------------------------------
-_supabase_client = None
-
-
 def _get_supabase():
-    global _supabase_client
-    if _supabase_client is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        if url and key:
-            from supabase import create_client
-            _supabase_client = create_client(url, key)
-    return _supabase_client
+    from services.supabase_admin import get_service_client
+    return get_service_client()
 
 
 # ---------------------------------------------------------------------------
