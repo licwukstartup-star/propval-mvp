@@ -55,6 +55,19 @@ Business/
 Research/
 User entry management/
 
+# EPC PPD merge project (symlink to Research/, contains large .pt/.db files)
+EPC PPD merge project/
+
+# Model files (too large for git)
+*.pt
+
+# Log files
+backend_log*.txt
+frontend_log.txt
+
+# Supabase temp
+supabase/.temp/
+
 # Stale prototypes / old prompts
 property-cards-resizable.jsx
 prompt-*.md
